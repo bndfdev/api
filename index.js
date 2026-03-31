@@ -46,6 +46,10 @@ app.use('/countries', countryRoutes);
 const recordingRoutes = require('./routes/recordingRoutes');
 app.use('/', recordingRoutes);
 
+// Published audio routes
+const publishedAudioRoutes = require('./routes/publishedAudio');
+app.use('/', publishedAudioRoutes);
+
 // Basic route
 app.get('/', (req, res) => {
   res.send('Bondfire API is running');
@@ -108,6 +112,12 @@ const swaggerOptions = {
           type: 'apiKey',
           in: 'header',
           name: 'x-api-key',
+        },
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'verificationToken',
+          description: 'Enter the verificationToken value stored in SharedPreferences',
         },
       },
     },
