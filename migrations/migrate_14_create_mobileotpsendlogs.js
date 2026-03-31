@@ -6,7 +6,7 @@ const mongoose = require('mongoose');
 
 module.exports = {
   async up() {
-    const db = mongoose.connection;
+    const db = mongoose.connection.db;
     const collections = await db.listCollections().toArray();
     const collectionNames = collections.map(c => c.name);
     
@@ -26,7 +26,7 @@ module.exports = {
   },
   
   async down() {
-    const db = mongoose.connection;
+    const db = mongoose.connection.db;
     try {
       await db.collection('mobileotpsendlogs').drop();
       console.log('  ✓ Dropped collection: mobileotpsendlogs');
