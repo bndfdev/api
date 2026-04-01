@@ -7,9 +7,11 @@ const mongoose = require('mongoose');
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI);
 const db = mongoose.connection;
-db.on('error', console.error.bind(console, 'MongoDB connection error:'));
+db.on('error', (err) => {
+  process.stdout.write(`✗ MongoDB connection error: ${err.message}\n`);
+});
 db.once('open', () => {
-  console.log('Connected to MongoDB');
+  process.stdout.write('✓ Connected to MongoDB\n');
 });
 
 
@@ -63,7 +65,8 @@ app.use((req, res, next) => {
   const path = req.path;
   const ip = req.ip || req.connection.remoteAddress;
   
-  console.log(`[${timestamp}] ${method} ${path} - IP: ${ip}`);
+  // Use process.stdout.write for immediate flushing in PM2
+  process.stdout.write(`[${timestamp}] ${method} ${path} - IP: ${ip}\n`);
   
   // Log response after it's sent
   res.on('finish', () => {
@@ -73,7 +76,7 @@ app.use((req, res, next) => {
                        statusCode >= 400 && statusCode < 500 ? '\x1b[33m' : '\x1b[31m';
     const resetColor = '\x1b[0m';
     
-    console.log(`${statusColor}[${timestamp}] Response: ${method} ${path} - Status: ${statusCode}${resetColor}`);
+    process.stdout.write(`${statusColor}[${timestamp}] Response: ${method} ${path} - Status: ${statusCode}${resetColor}\n`);
   });
   
   next();
@@ -194,5 +197,6 @@ const swaggerSpec = swaggerJsdoc(swaggerOptions);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 app.listen(port, () => {
-  console.log(`Bondfire API listening at http://localhost:${port}`);
+  process.stdout.write(`✓ Bondfire API listening at ${serverUrl}\n`);
+  process.stdout.write(`✓ API Docs available at ${serverUrl}/api-docs\n`);
 });
