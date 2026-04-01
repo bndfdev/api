@@ -128,6 +128,9 @@ app.get('/users', (req, res) => {
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 
+// Get the server URL from environment or default to localhost
+const serverUrl = process.env.API_BASE_URL || `http://localhost:${port}`;
+
 const swaggerOptions = {
   definition: {
     openapi: '3.0.0',
@@ -138,7 +141,8 @@ const swaggerOptions = {
     },
     servers: [
       {
-        url: 'http://localhost:' + port,
+        url: serverUrl,
+        description: 'API Server',
       },
     ],
     components: {
