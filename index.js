@@ -56,6 +56,29 @@ app.use(cors(corsOptions));
 // Handle preflight requests
 app.options('*', cors(corsOptions));
 
+// Request logging middleware
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  const method = req.method;
+  const path = req.path;
+  const ip = req.ip || req.connection.remoteAddress;
+  
+  console.log(`[${timestamp}] ${method} ${path} - IP: ${ip}`);
+  
+  // Log response after it's sent
+  res.on('finish', () => {
+    const statusCode = res.statusCode;
+    const statusColor = statusCode >= 200 && statusCode < 300 ? '\x1b[32m' : 
+                       statusCode >= 300 && statusCode < 400 ? '\x1b[36m' :
+                       statusCode >= 400 && statusCode < 500 ? '\x1b[33m' : '\x1b[31m';
+    const resetColor = '\x1b[0m';
+    
+    console.log(`${statusColor}[${timestamp}] Response: ${method} ${path} - Status: ${statusCode}${resetColor}`);
+  });
+  
+  next();
+});
+
 // Serve uploaded files from API public directory
 app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
