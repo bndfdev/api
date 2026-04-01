@@ -19,7 +19,42 @@ const path = require('path');
 const port = process.env.PORT || 3000;
 app.use(express.json());
 const cors = require('cors');
-app.use(cors());
+
+// CORS configuration to fix CORS issues
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://localhost:8080',
+      'http://localhost:3001',
+      'http://localhost:4000',
+      'http://localhost:5173',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:8080',
+      'http://3.10.42.32:3000',
+      'https://3.10.42.32:3000',
+      'http://3.10.42.32',
+      'https://3.10.42.32',
+      // Add your frontend domain here if deployed
+    ];
+    
+    // Allow requests with no origin (like mobile apps, curl requests)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true); // For development, allow all. Change to false for production security
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+  optionsSuccessStatus: 200
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 
 // Serve uploaded files from API public directory
 app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
