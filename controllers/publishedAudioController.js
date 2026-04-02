@@ -4,6 +4,7 @@ const fs = require('fs');
 exports.postPublishAudio = async (req, res) => {
   try {
     const { audio_title, audio_label } = req.body;
+    const userId = req.user?._id || req.user?.id;
 
     if (!audio_title) {
       return res.status(400).json({ error: 'audio_title is required' });
@@ -28,6 +29,7 @@ exports.postPublishAudio = async (req, res) => {
     const audio_image_url = `/uploads/published_audio/images/${imageFile.filename}`;
 
     const publishedAudio = new PublishedAudio({
+      userId,
       audio_title,
       audio_label,
       audio_file_url,

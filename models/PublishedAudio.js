@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 
 const publishedAudioSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false,
+  },
   audio_title: {
     type: String,
     required: true,
