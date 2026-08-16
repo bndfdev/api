@@ -1,0 +1,40 @@
+name: CI/CD Deploy
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build || echo "No build step configured"
+
+      - name: Configure AWS credentials (assume role via OIDC)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy (placeholder)
+        run: |
+          echo "Run your deploy commands here"
+          # Example: npm run deploy
+          # Example ECR push / CloudFormation / Terraform commands
