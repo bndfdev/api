@@ -1,9 +1,14 @@
 name: CI/CD Deploy
 
 on:
-  push:
-    branches: [ main ]
+  pull_request:
+    types: [closed]
   workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to run the workflow against (main, dev, stage)'
+        required: true
+        default: 'main'
 
 permissions:
   id-token: write
@@ -12,9 +17,14 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true && contains(fromJSON('["main","dev","stage"]'), github.event.pull_request.base.ref)) ||
+      (github.event_name == 'workflow_dispatch' && contains(fromJSON('["main","dev","stage"]'), github.event.inputs.branch))
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.event.inputs.branch }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
