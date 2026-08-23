@@ -45,7 +45,7 @@ jobs:
         run: npm run build || echo "No build step configured"
 
       - name: Configure AWS credentials (assume role via OIDC)
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION }}
