@@ -8,9 +8,7 @@ exports.createRecording = async (req, res) => {
     const userEmail = req.user?.email;
     const { title, description, duration, isPublic } = req.body;
 
-    console.log('[createRecording] Request body:', req.body);
     console.log('[createRecording] User email:', userEmail);
-    console.log('[createRecording] File:', req.file);
 
     if (!req.file) {
       console.error('[createRecording] No file uploaded');
@@ -58,7 +56,7 @@ exports.createRecording = async (req, res) => {
       recording: savedRecording,
     });
   } catch (err) {
-    console.error('[createRecording] Error:', err);
+    console.error('[createRecording] Failed to save recording');
     res.status(500).json({ error: 'Failed to save recording: ' + err.message });
   }
 };
@@ -83,7 +81,7 @@ exports.getUserRecordings = async (req, res) => {
       recordings,
     });
   } catch (err) {
-    console.error('[getUserRecordings] Error:', err);
+    console.error('[getUserRecordings] Failed to load recordings');
     res.status(500).json({ error: 'Failed to fetch recordings' });
   }
 };
@@ -122,7 +120,7 @@ exports.deleteRecording = async (req, res) => {
       message: 'Recording deleted',
     });
   } catch (err) {
-    console.error('[deleteRecording] Error:', err);
+    console.error('[deleteRecording] Failed to delete recording');
     res.status(500).json({ error: 'Failed to delete recording' });
   }
 };
@@ -141,7 +139,7 @@ exports.getRecordingById = async (req, res) => {
       recording,
     });
   } catch (err) {
-    console.error('[getRecordingById] Error:', err);
+    console.error('[getRecordingById] Failed to load recording');
     res.status(500).json({ error: 'Failed to fetch recording' });
   }
 };

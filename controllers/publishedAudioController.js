@@ -46,7 +46,7 @@ exports.postPublishAudio = async (req, res) => {
       data: saved,
     });
   } catch (err) {
-    console.error('[postPublishAudio] Error:', err);
+    console.error('[postPublishAudio] Failed to publish audio');
     res.status(500).json({ error: 'Internal server error' });
   }
 };

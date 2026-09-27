@@ -7,8 +7,8 @@ const mongoose = require('mongoose');
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI);
 const db = mongoose.connection;
-db.on('error', (err) => {
-  process.stdout.write(`✗ MongoDB connection error: ${err.message}\n`);
+db.on('error', () => {
+  process.stdout.write('✗ MongoDB connection error\n');
 });
 db.once('open', () => {
   process.stdout.write('✓ Connected to MongoDB\n');

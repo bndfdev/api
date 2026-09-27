@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
+    "test": "node --test",
     "migrate": "node migrations/runner.js",
     "migrate:rollback": "node migrations/runner.js rollback",
     "setup": "npm run migrate && npm start"
