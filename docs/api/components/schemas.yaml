@@ -1,0 +1,1309 @@
+# Shared data shapes for the Bondfire API v1.
+# Referenced from the path files as '../components/schemas.yaml#/<Name>'.
+
+# ---------------------------------------------------------------------------
+# Primitives
+# ---------------------------------------------------------------------------
+
+Id:
+  type: string
+  description: Opaque identifier. Clients must not parse it or assume a format.
+  minLength: 1
+  maxLength: 64
+  examples: ['6650f1c2a4b7e9d3c1f00a12']
+
+Timestamp:
+  type: string
+  format: date-time
+  description: RFC 3339 timestamp, always UTC (`Z`).
+  examples: ['2026-09-27T10:15:00Z']
+
+Email:
+  type: string
+  format: email
+  maxLength: 254
+  description: |
+    Email address. The server trims whitespace, lowercases the domain and
+    compares the whole address case-insensitively. `name+tag@` addresses are
+    accepted and treated as distinct accounts. Internationalised domains are
+    accepted and stored in punycode.
+  examples: ['amelia.jane@example.com']
+
+MaskedDestination:
+  type: string
+  description: Where a code was sent, partly hidden for display (never the full value).
+  examples: ['a•••••e@example.com', '+1 •••-•••-0123']
+
+PhoneNumber:
+  type: string
+  description: Phone number in E.164 format (`+` then country code and number, digits only).
+  pattern: '^\+[1-9][0-9]{6,14}$'
+  examples: ['+14155550123']
+
+OtpCode:
+  type: string
+  description: One-time code as typed by the user. Exactly 6 ASCII digits; leading zeros are significant.
+  pattern: '^[0-9]{6}$'
+  examples: ['048213']
+
+Password:
+  type: string
+  format: password
+  writeOnly: true
+  minLength: 12
+  maxLength: 128
+  description: |
+    New password. Policy (also served by `GET /config`): 12–128 characters,
+    at least one uppercase letter, one digit and one symbol. Any Unicode is
+    allowed; it is NFKC-normalised before hashing and never truncated.
+    The server may also reject passwords found in known breach lists
+    (`PASSWORD_COMPROMISED`).
+
+DateOfBirth:
+  type: string
+  format: date
+  description: |
+    Calendar date `YYYY-MM-DD` with no time zone. Must be a real date, not in
+    the future, and the person must be at least `minimumAge` (13) years old
+    and at most 120 years old.
+  examples: ['2000-01-12']
+
+LanguageTag:
+  type: string
+  description: BCP 47 language tag from `GET /config` → `supportedLanguages`.
+  pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+  examples: ['en', 'es', 'hi']
+
+Gender:
+  type: string
+  description: As offered on the Figma gender screen (1261:31795).
+  enum: [female, male, non_binary, prefer_not_to_say]
+
+Platform:
+  type: string
+  enum: [ios, android, web]
+
+# ---------------------------------------------------------------------------
+# Errors (RFC 9457 problem details)
+# ---------------------------------------------------------------------------
+
+Problem:
+  type: object
+  description: |
+    Every error response uses this shape with content type
+    `application/problem+json`. Clients branch on `code`, never on `title`
+    or `detail` (those are human-readable and may be translated).
+  required: [type, title, status, code, requestId]
+  properties:
+    type:
+      type: string
+      format: uri-reference
+      description: Stable link to documentation for this error code.
+      examples: ['https://api.bondfire.app/errors/email-taken']
+    title:
+      type: string
+      description: Short, human-readable summary, localised via `Accept-Language`.
+      examples: ['Email already registered']
+    status:
+      type: integer
+      minimum: 400
+      maximum: 599
+    detail:
+      type: string
+      description: Human-readable explanation safe to show to the user.
+    instance:
+      type: string
+      description: Path of the request that failed.
+      examples: ['/v1/auth/signup/email']
+    code:
+      $ref: '#/ErrorCode'
+    requestId:
+      type: string
+      description: Same value as the `X-Request-Id` response header. Quote it in bug reports.
+    retryAfterSeconds:
+      type: integer
+      minimum: 0
+      description: Present for 423, 429 and 503. Mirrors the `Retry-After` header.
+    errors:
+      type: array
+      description: Field-level problems (422 only). One entry per invalid field.
+      items:
+        $ref: '#/FieldError'
+    meta:
+      type: object
+      description: Extra machine-readable data for specific codes (see each operation).
+      additionalProperties: true
+
+FieldError:
+  type: object
+  required: [field, code, message]
+  properties:
+    field:
+      type: string
+      description: JSON pointer to the invalid field in the request body or a query parameter name.
+      examples: ['/password', 'q']
+    code:
+      $ref: '#/ErrorCode'
+    message:
+      type: string
+      description: Human-readable, localised.
+    meta:
+      type: object
+      additionalProperties: true
+      examples: [{ unmetRules: [uppercase, symbol] }]
+
+ErrorCode:
+  type: string
+  description: |
+    Stable, machine-readable error code. New codes may be added in v1;
+    clients must treat unknown codes by their HTTP status.
+  enum:
+    # generic
+    - MALFORMED_REQUEST
+    - VALIDATION_FAILED
+    - UNAUTHENTICATED
+    - TOKEN_EXPIRED
+    - TOKEN_INVALID
+    - FORBIDDEN
+    - GUEST_NOT_ALLOWED
+    - NOT_FOUND
+    - CONFLICT
+    - RATE_LIMITED
+    - UPGRADE_REQUIRED
+    - IDEMPOTENCY_KEY_REUSED
+    - IDEMPOTENCY_IN_PROGRESS
+    - PAYLOAD_TOO_LARGE
+    - UNSUPPORTED_MEDIA_TYPE
+    - INTERNAL_ERROR
+    - SERVICE_UNAVAILABLE
+    - MAINTENANCE
+    # email
+    - EMAIL_INVALID
+    - EMAIL_DOMAIN_NOT_ALLOWED
+    - EMAIL_TAKEN
+    - EMAIL_DELIVERY_FAILED
+    # one-time codes
+    - CHALLENGE_NOT_FOUND
+    - CHALLENGE_EXPIRED
+    - CHALLENGE_LOCKED
+    - CHALLENGE_ALREADY_USED
+    - CODE_INCORRECT
+    - CODE_FORMAT_INVALID
+    - RESEND_TOO_SOON
+    - SEND_LIMIT_REACHED
+    # sign-up and passwords
+    - SIGNUP_TOKEN_INVALID
+    - SIGNUP_TOKEN_EXPIRED
+    - PASSWORD_POLICY_VIOLATION
+    - PASSWORD_COMPROMISED
+    - PASSWORD_REUSED
+    - PASSWORD_INCORRECT
+    - AGE_REQUIREMENT_NOT_MET
+    # login and sessions
+    - INVALID_CREDENTIALS
+    - ACCOUNT_LOCKED
+    - ACCOUNT_SUSPENDED
+    - ACCOUNT_PENDING_DELETION
+    - ACCOUNT_DELETED
+    - REFRESH_TOKEN_INVALID
+    - REFRESH_TOKEN_REUSED
+    - SESSION_REVOKED
+    - SESSION_NOT_FOUND
+    - REAUTH_REQUIRED
+    - RESET_TOKEN_INVALID
+    - RESET_TOKEN_EXPIRED
+    # social login
+    - SOCIAL_PROVIDER_UNSUPPORTED
+    - SOCIAL_TOKEN_INVALID
+    - SOCIAL_NONCE_MISMATCH
+    - SOCIAL_EMAIL_UNVERIFIED
+    - ACCOUNT_LINK_REQUIRED
+    - LINK_TOKEN_INVALID
+    - IDENTITY_ALREADY_LINKED
+    - LAST_LOGIN_METHOD
+    # phone
+    - PHONE_INVALID
+    - PHONE_REGION_UNSUPPORTED
+    - PHONE_TYPE_NOT_ALLOWED
+    - PHONE_TAKEN
+    - SMS_DELIVERY_FAILED
+    # profile
+    - NAME_INVALID
+    - DATE_OF_BIRTH_INVALID
+    - DATE_OF_BIRTH_LOCKED
+    - LANGUAGE_UNSUPPORTED
+    # legal
+    - LEGAL_DOCUMENT_NOT_FOUND
+    - LEGAL_VERSION_OUTDATED
+    - CONSENT_REQUIRED
+    # onboarding
+    - ONBOARDING_STEP_INVALID
+    - ONBOARDING_STEP_NOT_SKIPPABLE
+    # interests and catalog
+    - INTEREST_NOT_FOUND
+    - INTEREST_LIMIT_EXCEEDED
+    - SEARCH_QUERY_INVALID
+    - CURSOR_INVALID
+    # media
+    - UPLOAD_NOT_FOUND
+    - UPLOAD_EXPIRED
+    - UPLOAD_INCOMPLETE
+    - UPLOAD_PURPOSE_MISMATCH
+    - IMAGE_UNREADABLE
+    - IMAGE_TOO_SMALL
+    - IMAGE_DIMENSIONS_TOO_LARGE
+    - IMAGE_REJECTED
+    - CROP_INVALID
+
+# ---------------------------------------------------------------------------
+# Client and device
+# ---------------------------------------------------------------------------
+
+DeviceInfo:
+  type: object
+  description: |
+    Describes the app install making the request. Sent on every call that
+    creates a session so sessions can be listed and revoked per device.
+  required: [installationId, platform, appVersion]
+  additionalProperties: false
+  properties:
+    installationId:
+      type: string
+      format: uuid
+      description: Random UUID generated on first launch and kept until the app is uninstalled. Not a hardware identifier.
+    platform:
+      $ref: '#/Platform'
+    appVersion:
+      type: string
+      pattern: '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$'
+      examples: ['1.4.0+42']
+    osVersion:
+      type: string
+      maxLength: 32
+      examples: ['iOS 18.1']
+    model:
+      type: string
+      maxLength: 64
+      description: Marketing model name, for the session list only.
+      examples: ['iPhone 16']
+    locale:
+      type: string
+      maxLength: 35
+      examples: ['en-IN']
+    timeZone:
+      type: string
+      maxLength: 64
+      description: IANA zone name, used to compute age on the user's local date.
+      examples: ['Asia/Kolkata']
+
+DeviceRegistration:
+  type: object
+  description: Push notification registration for one app install.
+  required: [platform, pushProvider, pushToken]
+  additionalProperties: false
+  properties:
+    platform:
+      $ref: '#/Platform'
+    pushProvider:
+      type: string
+      enum: [apns, fcm, webpush]
+    pushToken:
+      type: string
+      minLength: 1
+      maxLength: 4096
+    appVersion:
+      type: string
+    locale:
+      type: string
+      maxLength: 35
+    timeZone:
+      type: string
+      maxLength: 64
+    notificationsEnabled:
+      type: boolean
+      description: Mirrors the OS permission so the server does not send to a silenced device.
+
+# ---------------------------------------------------------------------------
+# App configuration
+# ---------------------------------------------------------------------------
+
+AppConfig:
+  type: object
+  description: |
+    Everything the app would otherwise hardcode. Cache it (see `ETag`) and
+    refresh on launch; the app must still work with the last cached copy.
+  required: [minimumSupportedVersion, passwordPolicy, otp, minimumAge, supportedLanguages, legal, features, limits]
+  properties:
+    minimumSupportedVersion:
+      type: object
+      description: Older builds receive `426 UPGRADE_REQUIRED` on every call.
+      properties:
+        ios: { type: string, examples: ['1.0.0'] }
+        android: { type: string, examples: ['1.0.0'] }
+        web: { type: string, examples: ['1.0.0'] }
+    latestVersion:
+      type: object
+      description: Used to show an optional "update available" prompt.
+      properties:
+        ios: { type: string }
+        android: { type: string }
+        web: { type: string }
+    passwordPolicy:
+      $ref: '#/PasswordPolicy'
+    otp:
+      type: object
+      required: [length, ttlSeconds, resendCooldownSeconds, maxAttempts]
+      properties:
+        length: { type: integer, const: 6 }
+        ttlSeconds: { type: integer, examples: [600] }
+        resendCooldownSeconds: { type: integer, examples: [30] }
+        maxAttempts: { type: integer, examples: [5] }
+    minimumAge:
+      type: integer
+      examples: [13]
+    supportedLanguages:
+      type: array
+      items:
+        type: object
+        required: [tag, name, nativeName]
+        properties:
+          tag: { $ref: '#/LanguageTag' }
+          name: { type: string, examples: ['Hindi'] }
+          nativeName: { type: string, examples: ['हिन्दी'] }
+    legal:
+      type: object
+      required: [termsVersion, privacyVersion]
+      properties:
+        termsVersion: { type: string, examples: ['2026-09-01'] }
+        privacyVersion: { type: string, examples: ['2026-09-01'] }
+    features:
+      type: object
+      description: Remote switches, so a feature can be turned off without an app release.
+      properties:
+        guestMode: { type: boolean }
+        phoneVerificationRequired: { type: boolean }
+        socialLogin:
+          type: object
+          properties:
+            apple: { type: boolean }
+            google: { type: boolean }
+            facebook: { type: boolean }
+    limits:
+      type: object
+      properties:
+        maxInterests: { type: integer, examples: [100] }
+        avatarMaxBytes: { type: integer, examples: [10485760] }
+        bannerMaxBytes: { type: integer, examples: [10485760] }
+        nameMaxLength: { type: integer, examples: [50] }
+
+PasswordPolicy:
+  type: object
+  required: [minLength, maxLength, requireUppercase, requireLowercase, requireDigit, requireSymbol]
+  properties:
+    minLength: { type: integer, examples: [12] }
+    maxLength: { type: integer, examples: [128] }
+    requireUppercase: { type: boolean, examples: [true] }
+    requireLowercase: { type: boolean, examples: [false] }
+    requireDigit: { type: boolean, examples: [true] }
+    requireSymbol: { type: boolean, examples: [true] }
+
+# ---------------------------------------------------------------------------
+# One-time-code challenges
+# ---------------------------------------------------------------------------
+
+ChallengePurpose:
+  type: string
+  description: What a verified code unlocks.
+  enum: [signup_email, password_reset, phone_verification]
+
+Challenge:
+  type: object
+  description: |
+    A one-time code that was sent somewhere. The code itself is never
+    returned. A resend keeps the same `id` and invalidates the previous code.
+  required: [id, purpose, channel, destination, codeLength, expiresAt, resendAvailableAt, attemptsRemaining, sendsRemaining]
+  properties:
+    id:
+      $ref: '#/Id'
+    purpose:
+      $ref: '#/ChallengePurpose'
+    channel:
+      type: string
+      enum: [email, sms]
+    destination:
+      $ref: '#/MaskedDestination'
+    codeLength:
+      type: integer
+      const: 6
+    expiresAt:
+      description: When the current code stops working (10 minutes after it was sent).
+      $ref: '#/Timestamp'
+    resendAvailableAt:
+      description: Earliest time a resend is accepted. Drives the "Send again in N seconds" label.
+      $ref: '#/Timestamp'
+    attemptsRemaining:
+      type: integer
+      minimum: 0
+      description: Wrong-code attempts left before the challenge locks.
+    sendsRemaining:
+      type: integer
+      minimum: 0
+      description: Sends left for this destination in the rolling 24-hour window.
+
+ChallengeVerifyRequest:
+  type: object
+  required: [code]
+  additionalProperties: false
+  properties:
+    code:
+      $ref: '#/OtpCode'
+
+ChallengeVerification:
+  description: Result of a correct code. Shape depends on the challenge purpose.
+  oneOf:
+    - $ref: '#/SignupEmailVerified'
+    - $ref: '#/PasswordResetVerified'
+    - $ref: '#/PhoneVerified'
+  discriminator:
+    propertyName: purpose
+    mapping:
+      signup_email: '#/SignupEmailVerified'
+      password_reset: '#/PasswordResetVerified'
+      phone_verification: '#/PhoneVerified'
+
+SignupEmailVerified:
+  type: object
+  required: [purpose, email, signupToken, signupTokenExpiresAt]
+  properties:
+    purpose:
+      type: string
+      const: signup_email
+    email:
+      $ref: '#/Email'
+    signupToken:
+      type: string
+      description: Single-use proof that this email was verified. Only valid for `POST /auth/signup/complete`, for 30 minutes.
+    signupTokenExpiresAt:
+      $ref: '#/Timestamp'
+
+PasswordResetVerified:
+  type: object
+  required: [purpose, resetToken, resetTokenExpiresAt]
+  properties:
+    purpose:
+      type: string
+      const: password_reset
+    resetToken:
+      type: string
+      description: Single-use token for `POST /auth/password-reset/complete`, valid for 15 minutes.
+    resetTokenExpiresAt:
+      $ref: '#/Timestamp'
+
+PhoneVerified:
+  type: object
+  required: [purpose, phoneNumber, verifiedAt]
+  properties:
+    purpose:
+      type: string
+      const: phone_verification
+    phoneNumber:
+      $ref: '#/PhoneNumber'
+    verifiedAt:
+      $ref: '#/Timestamp'
+
+# ---------------------------------------------------------------------------
+# Auth requests and sessions
+# ---------------------------------------------------------------------------
+
+EmailRequest:
+  type: object
+  required: [email]
+  additionalProperties: false
+  properties:
+    email:
+      $ref: '#/Email'
+
+EmailAvailability:
+  type: object
+  required: [email, available]
+  properties:
+    email:
+      $ref: '#/Email'
+    available:
+      type: boolean
+      description: '`false` when the address already has an account.'
+    suggestion:
+      description: Likely typo fix for the domain, if any (for a "Did you mean …?" hint).
+      oneOf:
+        - $ref: '#/Email'
+        - type: 'null'
+      examples: ['amelia.jane@gmail.com']
+
+SignupCompleteRequest:
+  type: object
+  required: [signupToken, password, device]
+  additionalProperties: false
+  properties:
+    signupToken:
+      type: string
+    password:
+      $ref: '#/Password'
+    device:
+      $ref: '#/DeviceInfo'
+    preferredLanguage:
+      $ref: '#/LanguageTag'
+
+LoginRequest:
+  type: object
+  required: [email, password, device]
+  additionalProperties: false
+  properties:
+    email:
+      $ref: '#/Email'
+    password:
+      type: string
+      format: password
+      writeOnly: true
+      minLength: 1
+      maxLength: 128
+      description: Not checked against the current policy, so older passwords keep working.
+    device:
+      $ref: '#/DeviceInfo'
+
+GuestSessionRequest:
+  type: object
+  required: [device, dateOfBirth]
+  additionalProperties: false
+  properties:
+    device:
+      $ref: '#/DeviceInfo'
+    dateOfBirth:
+      $ref: '#/DateOfBirth'
+    preferredLanguage:
+      $ref: '#/LanguageTag'
+
+RefreshRequest:
+  type: object
+  required: [refreshToken]
+  additionalProperties: false
+  properties:
+    refreshToken:
+      type: string
+
+LogoutRequest:
+  type: object
+  additionalProperties: false
+  properties:
+    refreshToken:
+      type: string
+      description: Optional. When sent, that refresh token is revoked even if the access token has already expired.
+
+PasswordResetCompleteRequest:
+  type: object
+  required: [resetToken, newPassword, device]
+  additionalProperties: false
+  properties:
+    resetToken:
+      type: string
+    newPassword:
+      $ref: '#/Password'
+    device:
+      $ref: '#/DeviceInfo'
+
+PasswordChangeRequest:
+  type: object
+  required: [newPassword]
+  additionalProperties: false
+  properties:
+    currentPassword:
+      type: string
+      format: password
+      writeOnly: true
+      maxLength: 128
+      description: Required when the account already has a password. Omitted when a social-only account sets its first password (then `X-Reauth-Token` is required).
+    newPassword:
+      $ref: '#/Password'
+    signOutOtherSessions:
+      type: boolean
+      default: true
+
+ReauthenticateRequest:
+  type: object
+  description: Exactly one of `password` or `social` is required.
+  additionalProperties: false
+  properties:
+    password:
+      type: string
+      format: password
+      writeOnly: true
+      maxLength: 128
+    social:
+      $ref: '#/SocialCredential'
+  oneOf:
+    - required: [password]
+    - required: [social]
+
+ReauthToken:
+  type: object
+  required: [reauthToken, expiresAt]
+  properties:
+    reauthToken:
+      type: string
+      description: Send as `X-Reauth-Token` on sensitive calls (delete account, change email, unlink a login method). Valid 5 minutes.
+    expiresAt:
+      $ref: '#/Timestamp'
+
+TokenPair:
+  type: object
+  required: [tokenType, accessToken, accessTokenExpiresAt, refreshToken, refreshTokenExpiresAt]
+  properties:
+    tokenType:
+      type: string
+      const: Bearer
+    accessToken:
+      type: string
+      description: 'Short-lived JWT (15 minutes). Send as `Authorization: Bearer <accessToken>`.'
+    accessTokenExpiresAt:
+      $ref: '#/Timestamp'
+    refreshToken:
+      type: string
+      description: |
+        Opaque, single-use. Every refresh returns a new one and retires the
+        old one. Store it in the Keychain / Android Keystore, never in plain
+        storage.
+    refreshTokenExpiresAt:
+      $ref: '#/Timestamp'
+
+Session:
+  type: object
+  description: Returned by every call that signs someone in.
+  required: [tokens, session, user, isNewUser]
+  properties:
+    tokens:
+      $ref: '#/TokenPair'
+    session:
+      $ref: '#/SessionInfo'
+    user:
+      $ref: '#/User'
+    isNewUser:
+      type: boolean
+      description: '`true` when this call created the account (sign-up, first social login, new guest).'
+
+SessionInfo:
+  type: object
+  required: [id, createdAt, lastActiveAt, current, device]
+  properties:
+    id:
+      $ref: '#/Id'
+    createdAt:
+      $ref: '#/Timestamp'
+    lastActiveAt:
+      $ref: '#/Timestamp'
+    current:
+      type: boolean
+      description: '`true` for the session making the request.'
+    signInMethod:
+      type: string
+      enum: [password, apple, google, facebook, guest, password_reset]
+    device:
+      type: object
+      properties:
+        platform: { $ref: '#/Platform' }
+        model: { type: string }
+        appVersion: { type: string }
+    approximateLocation:
+      type: string
+      description: City-level location from the IP address, for the session list only.
+      examples: ['Bengaluru, IN']
+
+SessionList:
+  type: object
+  required: [data]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/SessionInfo'
+
+# ---------------------------------------------------------------------------
+# Social login
+# ---------------------------------------------------------------------------
+
+SocialProvider:
+  type: string
+  enum: [apple, google, facebook]
+
+SocialCredential:
+  type: object
+  description: |
+    What the native provider SDK returned on the phone. The server verifies
+    it with the provider; the app never sends a provider password.
+    - apple: `idToken` (+ `authorizationCode` so the server can revoke the Apple token on account deletion) and `nonce`.
+    - google: `idToken` (audience = our iOS/Android/web client IDs).
+    - facebook: `accessToken` (checked with the Graph API `debug_token`) or a Limited Login `idToken` with `nonce` on iOS.
+  required: [provider]
+  additionalProperties: false
+  properties:
+    provider:
+      $ref: '#/SocialProvider'
+    idToken:
+      type: string
+    accessToken:
+      type: string
+    authorizationCode:
+      type: string
+    nonce:
+      type: string
+      description: The raw nonce whose SHA-256 was passed to the provider SDK. Prevents token replay.
+    givenName:
+      type: string
+      maxLength: 50
+      description: Apple only sends the name on the very first authorisation; forward it once.
+    familyName:
+      type: string
+      maxLength: 50
+
+SocialLoginRequest:
+  type: object
+  required: [credential, device]
+  additionalProperties: false
+  properties:
+    credential:
+      $ref: '#/SocialCredential'
+    device:
+      $ref: '#/DeviceInfo'
+    preferredLanguage:
+      $ref: '#/LanguageTag'
+
+LinkIdentityRequest:
+  type: object
+  description: Links a social login to the signed-in account. Send either the `linkToken` from an `ACCOUNT_LINK_REQUIRED` error, or a fresh credential.
+  additionalProperties: false
+  properties:
+    linkToken:
+      type: string
+    credential:
+      $ref: '#/SocialCredential'
+  oneOf:
+    - required: [linkToken]
+    - required: [credential]
+
+Identity:
+  type: object
+  required: [provider, linkedAt]
+  properties:
+    provider:
+      type: string
+      enum: [password, apple, google, facebook]
+    email:
+      description: Email the provider shared, if any (Apple may give a private relay address).
+      oneOf:
+        - $ref: '#/Email'
+        - type: 'null'
+    linkedAt:
+      $ref: '#/Timestamp'
+
+IdentityList:
+  type: object
+  required: [data]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Identity'
+
+# ---------------------------------------------------------------------------
+# Users and profile
+# ---------------------------------------------------------------------------
+
+AccountType:
+  type: string
+  enum: [user, guest]
+
+User:
+  type: object
+  description: The signed-in account as its owner sees it (private view).
+  required: [id, accountType, status, onboarding, consents, createdAt, updatedAt]
+  properties:
+    id:
+      $ref: '#/Id'
+    accountType:
+      $ref: '#/AccountType'
+    status:
+      type: string
+      enum: [active, pending_deletion]
+    deletionScheduledAt:
+      description: Set while `status` is `pending_deletion`; signing in before then cancels the deletion.
+      oneOf:
+        - $ref: '#/Timestamp'
+        - type: 'null'
+    email:
+      oneOf:
+        - $ref: '#/Email'
+        - type: 'null'
+    emailVerified:
+      type: boolean
+    phoneNumber:
+      oneOf:
+        - $ref: '#/PhoneNumber'
+        - type: 'null'
+    phoneVerified:
+      type: boolean
+    name:
+      type: [string, 'null']
+      maxLength: 50
+    dateOfBirth:
+      oneOf:
+        - $ref: '#/DateOfBirth'
+        - type: 'null'
+    gender:
+      oneOf:
+        - $ref: '#/Gender'
+        - type: 'null'
+    preferredLanguage:
+      oneOf:
+        - $ref: '#/LanguageTag'
+        - type: 'null'
+    avatar:
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    banner:
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    stats:
+      type: object
+      properties:
+        followers: { type: integer, minimum: 0 }
+        following: { type: integer, minimum: 0 }
+    loginMethods:
+      type: array
+      items:
+        type: string
+        enum: [password, apple, google, facebook]
+    onboarding:
+      $ref: '#/Onboarding'
+    consents:
+      $ref: '#/ConsentStatus'
+    createdAt:
+      $ref: '#/Timestamp'
+    updatedAt:
+      $ref: '#/Timestamp'
+
+UserUpdate:
+  type: object
+  description: |
+    Partial update (JSON Merge Patch semantics). Send only the fields that
+    change; `null` clears a nullable field. At least one field is required.
+  minProperties: 1
+  additionalProperties: false
+  properties:
+    name:
+      type: [string, 'null']
+      minLength: 1
+      maxLength: 50
+      description: Trimmed; inner whitespace collapsed; control and zero-width characters rejected (`NAME_INVALID`). Emoji allowed.
+    dateOfBirth:
+      $ref: '#/DateOfBirth'
+    gender:
+      oneOf:
+        - $ref: '#/Gender'
+        - type: 'null'
+    preferredLanguage:
+      $ref: '#/LanguageTag'
+
+AccountDeletionRequest:
+  type: object
+  additionalProperties: false
+  properties:
+    reason:
+      type: string
+      maxLength: 500
+
+AccountDeletion:
+  type: object
+  required: [status, deletionScheduledAt]
+  properties:
+    status:
+      type: string
+      const: pending_deletion
+    deletionScheduledAt:
+      $ref: '#/Timestamp'
+
+# ---------------------------------------------------------------------------
+# Onboarding
+# ---------------------------------------------------------------------------
+
+OnboardingStepName:
+  type: string
+  description: Steps of the Figma onboarding flow, in order.
+  enum: [email_verified, password_set, phone_verified, date_of_birth, terms_accepted, gender, interests, profile]
+
+Onboarding:
+  type: object
+  description: |
+    Server-side onboarding progress, so a user who reinstalls or switches
+    phones resumes where they stopped. Data steps complete automatically
+    when their data is saved; `interests` and `profile` can also be skipped.
+  required: [status, steps]
+  properties:
+    status:
+      type: string
+      enum: [in_progress, completed]
+    nextStep:
+      description: First step still pending, or `null` when everything is done or skipped.
+      oneOf:
+        - $ref: '#/OnboardingStepName'
+        - type: 'null'
+    steps:
+      type: array
+      items:
+        $ref: '#/OnboardingStep'
+
+OnboardingStep:
+  type: object
+  required: [step, status, skippable]
+  properties:
+    step:
+      $ref: '#/OnboardingStepName'
+    status:
+      type: string
+      enum: [pending, completed, skipped]
+    skippable:
+      type: boolean
+    updatedAt:
+      oneOf:
+        - $ref: '#/Timestamp'
+        - type: 'null'
+
+OnboardingStepUpdate:
+  type: object
+  required: [status]
+  additionalProperties: false
+  properties:
+    status:
+      type: string
+      enum: [completed, skipped]
+
+# ---------------------------------------------------------------------------
+# Legal
+# ---------------------------------------------------------------------------
+
+LegalDocumentType:
+  type: string
+  enum: [terms, privacy]
+
+LegalDocument:
+  type: object
+  required: [type, version, title, summary, url, effectiveAt, requiresAcceptance]
+  properties:
+    type:
+      $ref: '#/LegalDocumentType'
+    version:
+      type: string
+      examples: ['2026-09-01']
+    title:
+      type: string
+      examples: ['Terms and Conditions']
+    summary:
+      type: string
+      description: The short excerpt shown on the Terms screen (Figma 1270:11938).
+    url:
+      type: string
+      format: uri
+      description: Full text, opened in the in-app browser.
+    effectiveAt:
+      $ref: '#/Timestamp'
+    requiresAcceptance:
+      type: boolean
+
+ConsentRequest:
+  type: object
+  required: [documentType, version, accepted]
+  additionalProperties: false
+  properties:
+    documentType:
+      $ref: '#/LegalDocumentType'
+    version:
+      type: string
+      description: The version the user actually saw. Rejected with `LEGAL_VERSION_OUTDATED` if a newer one is live.
+    accepted:
+      type: boolean
+      const: true
+      description: Declining is not recorded; the app signs the user out instead.
+
+Consent:
+  type: object
+  required: [documentType, version, acceptedAt]
+  properties:
+    documentType:
+      $ref: '#/LegalDocumentType'
+    version:
+      type: string
+    acceptedAt:
+      $ref: '#/Timestamp'
+
+ConsentList:
+  type: object
+  required: [data]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Consent'
+
+ConsentStatus:
+  type: object
+  required: [termsUpToDate, privacyUpToDate]
+  properties:
+    termsAcceptedVersion:
+      type: [string, 'null']
+    termsUpToDate:
+      type: boolean
+      description: '`false` when a newer terms version needs acceptance; the app shows the Terms screen again.'
+    privacyAcceptedVersion:
+      type: [string, 'null']
+    privacyUpToDate:
+      type: boolean
+
+# ---------------------------------------------------------------------------
+# Interests and catalog
+# ---------------------------------------------------------------------------
+
+InterestKind:
+  type: string
+  description: |
+    What an interest points at. Maps the Figma content types; new kinds may
+    be added, so clients must render unknown kinds generically.
+  enum: [heritage, place, genre, artist, album, song, story, playlist, favorite]
+
+Interest:
+  type: object
+  required: [id, kind, title]
+  properties:
+    id:
+      $ref: '#/Id'
+    kind:
+      $ref: '#/InterestKind'
+    title:
+      type: string
+      examples: ['San Francisco']
+    subtitle:
+      type: [string, 'null']
+      examples: ['Daya']
+    image:
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    presentation:
+      type: object
+      description: Layout hint for the featured grid (Figma 1261:36247).
+      properties:
+        size:
+          type: string
+          enum: [small, large]
+          default: small
+
+InterestPage:
+  type: object
+  required: [data, page]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Interest'
+    page:
+      $ref: '#/PageInfo'
+
+UserInterests:
+  type: object
+  required: [data, updatedAt]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Interest'
+    updatedAt:
+      oneOf:
+        - $ref: '#/Timestamp'
+        - type: 'null'
+
+UserInterestsReplace:
+  type: object
+  required: [interestIds]
+  additionalProperties: false
+  properties:
+    interestIds:
+      type: array
+      description: The full new selection. Duplicates are ignored; an empty list clears it (Figma lets the user continue with nothing selected).
+      maxItems: 100
+      items:
+        $ref: '#/Id'
+
+Country:
+  type: object
+  required: [code, name, dialCode, flagEmoji, phoneSignupSupported]
+  properties:
+    code:
+      type: string
+      description: ISO 3166-1 alpha-2.
+      pattern: '^[A-Z]{2}$'
+      examples: ['US']
+    name:
+      type: string
+      description: Localised via `Accept-Language`.
+      examples: ['United States']
+    dialCode:
+      type: string
+      pattern: '^\+[0-9]{1,4}$'
+      examples: ['+1']
+    flagEmoji:
+      type: string
+      examples: ['🇺🇸']
+    exampleNumber:
+      type: string
+      description: National format example for the input placeholder.
+      examples: ['415-555-0123']
+    phoneSignupSupported:
+      type: boolean
+      description: '`false` for regions we cannot send SMS to (the app greys them out).'
+    contentAvailable:
+      type: boolean
+      description: Whether Bondfire content is available there (Figma note - "only shipping in US").
+
+CountryList:
+  type: object
+  required: [data]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Country'
+    defaultCountryCode:
+      type: string
+      description: Best guess from the request IP, for preselecting the phone picker.
+      examples: ['US']
+
+PageInfo:
+  type: object
+  required: [hasMore]
+  properties:
+    nextCursor:
+      type: [string, 'null']
+      description: Pass as `cursor` to get the next page. Opaque; expires after 24 hours (`CURSOR_INVALID`).
+    hasMore:
+      type: boolean
+
+# ---------------------------------------------------------------------------
+# Media
+# ---------------------------------------------------------------------------
+
+Image:
+  type: object
+  required: [url, width, height, status]
+  properties:
+    url:
+      type: string
+      format: uri
+      description: CDN URL of the default size. URLs change when the image changes, so they can be cached forever.
+    width:
+      type: integer
+    height:
+      type: integer
+    status:
+      type: string
+      enum: [processing, ready, rejected]
+      description: '`processing` right after upload while variants and moderation run; poll `GET /me` or wait for the next fetch.'
+    blurhash:
+      type: [string, 'null']
+      description: Tiny placeholder to paint while the image loads.
+    variants:
+      type: object
+      description: Resized copies keyed by width in pixels.
+      additionalProperties:
+        type: string
+        format: uri
+      examples: [{ '128': 'https://cdn.bondfire.app/a/128.jpg', '512': 'https://cdn.bondfire.app/a/512.jpg' }]
+
+ImagePurpose:
+  type: string
+  enum: [avatar, banner]
+
+ImageCrop:
+  type: object
+  description: |
+    Crop rectangle in the original image, as fractions of its width and
+    height (0–1) after applying EXIF orientation. Avatars must be square in
+    pixels; banners use the Figma band ratio (393:264, about 1.49:1) within 2%.
+  required: [x, y, width, height]
+  additionalProperties: false
+  properties:
+    x: { type: number, minimum: 0, maximum: 1 }
+    y: { type: number, minimum: 0, maximum: 1 }
+    width: { type: number, exclusiveMinimum: 0, maximum: 1 }
+    height: { type: number, exclusiveMinimum: 0, maximum: 1 }
+
+UploadIntentRequest:
+  type: object
+  required: [purpose, contentType, contentLength]
+  additionalProperties: false
+  properties:
+    purpose:
+      $ref: '#/ImagePurpose'
+    contentType:
+      type: string
+      enum: [image/jpeg, image/png, image/webp, image/heic, image/heif]
+    contentLength:
+      type: integer
+      minimum: 1
+      maximum: 10485760
+    sha256:
+      type: string
+      pattern: '^[a-f0-9]{64}$'
+      description: Optional checksum; the storage rejects a body that does not match.
+
+UploadIntent:
+  type: object
+  required: [uploadId, uploadUrl, method, headers, expiresAt]
+  properties:
+    uploadId:
+      $ref: '#/Id'
+    uploadUrl:
+      type: string
+      format: uri
+      description: Pre-signed storage URL. Upload the raw bytes there directly, not to the API.
+    method:
+      type: string
+      const: PUT
+    headers:
+      type: object
+      description: Headers the upload request must carry exactly.
+      additionalProperties:
+        type: string
+    expiresAt:
+      description: The URL stops working at this time (15 minutes).
+      $ref: '#/Timestamp'
+
+ImageSetFromUpload:
+  type: object
+  required: [uploadId, crop]
+  additionalProperties: false
+  properties:
+    uploadId:
+      $ref: '#/Id'
+    crop:
+      $ref: '#/ImageCrop'
+
+ImageSetMultipart:
+  type: object
+  required: [file, crop]
+  properties:
+    file:
+      type: string
+      contentMediaType: application/octet-stream
+      description: JPEG, PNG, WebP or HEIC, at most 10 MB.
+    crop:
+      description: JSON-encoded `ImageCrop`.
+      type: string
+      contentMediaType: application/json

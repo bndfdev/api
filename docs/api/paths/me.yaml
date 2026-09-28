@@ -1,0 +1,819 @@
+# The signed-in account (/me): profile, phone, onboarding, consents,
+# interests, photos, sessions, linked logins, devices.
+
+me:
+  get:
+    operationId: getMe
+    tags: [Account]
+    summary: Get the signed-in account
+    description: |
+      Called on launch after restoring tokens. `onboarding.nextStep` tells
+      the app which onboarding screen to resume; `consents.termsUpToDate:
+      false` means the Terms screen must be shown again. Guests get
+      `accountType: guest`.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IfNoneMatch'
+    responses:
+      '200':
+        description: The account.
+        headers:
+          ETag:
+            $ref: '../components/headers.yaml#/ETag'
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/User'
+      '304': { $ref: '../components/responses.yaml#/NotModified' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  patch:
+    operationId: updateMe
+    tags: [Account]
+    summary: Update name, date of birth, gender or language
+    description: |
+      Used by the birthday, gender and Your Profile (name) screens. Saving a
+      field completes its onboarding step automatically.
+
+      - **Age gate:** a date of birth under `minimumAge` (13) is rejected
+        with `AGE_REQUIREMENT_NOT_MET`; the account is flagged and the app
+        must sign out and show the "not eligible" screen. The rejected date
+        is not stored.
+      - Age is computed on the user's local date (`device.timeZone`), so a
+        birthday today counts; 29 February birthdays turn a year older on
+        1 March in non-leap years.
+      - Once set, date of birth can be changed only once (typo fix) within
+        30 days; after that `DATE_OF_BIRTH_LOCKED` (support can change it).
+      - Guests can set `preferredLanguage` only.
+
+      Errors: stale `If-Match` (412), `DATE_OF_BIRTH_LOCKED` (409), `NAME_INVALID`, `DATE_OF_BIRTH_INVALID`,
+      `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED` (422),
+      `GUEST_NOT_ALLOWED` (403).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IfMatch'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+    requestBody:
+      required: true
+      content:
+        application/merge-patch+json:
+          schema:
+            $ref: '../components/schemas.yaml#/UserUpdate'
+          examples:
+            birthday:
+              value: { dateOfBirth: '2000-01-12' }
+            gender:
+              value: { gender: non_binary }
+            name:
+              value: { name: Amelia Jane }
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/UserUpdate'
+    responses:
+      '200':
+        description: Updated account.
+        headers:
+          ETag:
+            $ref: '../components/headers.yaml#/ETag'
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/User'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '412': { $ref: '../components/responses.yaml#/PreconditionFailed' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: deleteMe
+    tags: [Account]
+    summary: Delete the account
+    description: |
+      Required in-app by the App Store and Play Store. Needs a fresh
+      `X-Reauth-Token`.
+
+      - Accounts are soft-deleted for 30 days (`202`, `pending_deletion`),
+        then all personal data and photos are erased. Signing in before
+        then cancels the deletion.
+      - All sessions are revoked immediately; Apple tokens are revoked with Apple.
+      - Guests are deleted immediately (`204`) and need no reauth token.
+
+      Errors: `REAUTH_REQUIRED` (401).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ReauthToken'
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/AccountDeletionRequest'
+    responses:
+      '202':
+        description: Deletion scheduled.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/AccountDeletion'
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+mePassword:
+  put:
+    operationId: changePassword
+    tags: [Account]
+    summary: Change (or set a first) password
+    description: |
+      For accounts that already have a password, `currentPassword` is
+      required. Social-only accounts set a first password by omitting
+      `currentPassword` and sending `X-Reauth-Token` instead
+      (`REAUTH_REQUIRED` otherwise). Other sessions are signed out unless
+      `signOutOtherSessions` is `false`.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `PASSWORD_INCORRECT`,
+      `PASSWORD_POLICY_VIOLATION`, `PASSWORD_COMPROMISED`,
+      `PASSWORD_REUSED` (422), `ACCOUNT_LOCKED` (423).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - name: X-Reauth-Token
+        in: header
+        required: false
+        description: Required only when setting a first password (no `currentPassword`).
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/PasswordChangeRequest'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '423': { $ref: '../components/responses.yaml#/Locked' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+mePhoneVerification:
+  post:
+    operationId: startPhoneVerification
+    tags: [Account]
+    summary: Send an SMS code to add or change the phone number
+    description: |
+      Enter your phone number screen (Figma 1261:31662) → Enter the code we
+      texted you (1261:31680). Verify with `POST /auth/challenges/{id}/verify`.
+
+      - The number is parsed and normalised to E.164 (libphonenumber) using
+        the country picked in the app; the verified number replaces any
+        previous one only after the code is accepted.
+      - Only regions with `phoneSignupSupported: true` in `GET /countries`.
+      - Premium-rate and (optionally) VoIP numbers are refused to stop SMS
+        fraud (`PHONE_TYPE_NOT_ALLOWED`); sends are also limited per
+        country prefix.
+      - The same number already verified on this account returns `409 CONFLICT`.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `PHONE_TAKEN`, `CONFLICT` (409),
+      `PHONE_INVALID`, `PHONE_REGION_UNSUPPORTED`,
+      `PHONE_TYPE_NOT_ALLOWED` (422), `SEND_LIMIT_REACHED` (429),
+      `SMS_DELIVERY_FAILED` (503).
+    x-rate-limit:
+      - { key: phone, limit: 5, window: 24h }
+      - { key: account, limit: 10, window: 24h }
+      - { key: country-prefix, limit: 1000, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [phoneNumber]
+            additionalProperties: false
+            properties:
+              phoneNumber:
+                $ref: '../components/schemas.yaml#/PhoneNumber'
+              channel:
+                type: string
+                enum: [sms]
+                default: sms
+                description: Reserved for WhatsApp or voice later.
+    responses:
+      '202':
+        description: Code sent.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Challenge'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
+mePhone:
+  delete:
+    operationId: removePhone
+    tags: [Account]
+    summary: Remove the phone number
+    description: Idempotent. When `/config` → `features.phoneVerificationRequired` is on, the `phone_verified` onboarding step returns to pending.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meOnboarding:
+  get:
+    operationId: getOnboarding
+    tags: [Onboarding]
+    summary: Get onboarding progress
+    description: Same object as `User.onboarding`; cheap to poll.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: Progress.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Onboarding'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meOnboardingStep:
+  put:
+    operationId: updateOnboardingStep
+    tags: [Onboarding]
+    summary: Mark an onboarding step completed or skipped
+    description: |
+      Data steps (`email_verified`, `password_set`, `phone_verified`,
+      `date_of_birth`, `terms_accepted`, `gender`) complete themselves when
+      their data is saved; marking them `completed` without the data is
+      `ONBOARDING_STEP_INVALID`. `interests` and `profile` can be `skipped`
+      ("Later" on Set up profile) or `completed` explicitly. Idempotent.
+
+      Errors: `ONBOARDING_STEP_INVALID`, `ONBOARDING_STEP_NOT_SKIPPABLE` (422).
+    parameters:
+      - $ref: '../components/parameters.yaml#/OnboardingStep'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/OnboardingStepUpdate'
+    responses:
+      '200':
+        description: Updated progress.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Onboarding'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meConsents:
+  get:
+    operationId: listConsents
+    tags: [Legal]
+    summary: List accepted legal documents
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: Consent history, newest first.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/ConsentList'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  post:
+    operationId: acceptLegalDocument
+    tags: [Legal]
+    summary: Record that the user accepted a legal document
+    description: |
+      "Accept" on Terms and Conditions (Figma 1270:11938). Stores the
+      version, time, IP and install for audit. Accepting the same version
+      again returns the existing record (`200`). "Decline" sends nothing:
+      the app signs out and returns to Welcome.
+
+      Errors: `LEGAL_DOCUMENT_NOT_FOUND` (404), `LEGAL_VERSION_OUTDATED`
+      (409, `meta.currentVersion`; the app reloads the document and asks again).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ConsentRequest'
+          example:
+            documentType: terms
+            version: '2026-09-01'
+            accepted: true
+    responses:
+      '200':
+        description: Already accepted; existing record.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Consent'
+      '201':
+        description: Recorded.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Consent'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meInterests:
+  get:
+    operationId: getMyInterests
+    tags: [Interests]
+    summary: Get the user's selected interests
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: Selected interests (items no longer in the catalog are left out).
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/UserInterests'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  put:
+    operationId: replaceMyInterests
+    tags: [Interests]
+    summary: Replace the whole selection
+    description: |
+      "Next" on Tell us what you're interested in (Figma 1261:36247).
+      Replaces the selection in one call and completes the `interests`
+      onboarding step. An empty list is allowed. Guests may call it; the
+      selection moves to their account when they sign up.
+
+      Errors: `INTEREST_NOT_FOUND` (422, `meta.unknownIds`),
+      `INTEREST_LIMIT_EXCEEDED` (422).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/UserInterestsReplace'
+    responses:
+      '200':
+        description: The saved selection.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/UserInterests'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meInterest:
+  put:
+    operationId: addMyInterest
+    tags: [Interests]
+    summary: Add one interest
+    description: Idempotent (adding twice is fine). For per-tap follow buttons outside onboarding.
+    parameters:
+      - $ref: '../components/parameters.yaml#/InterestId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: removeMyInterest
+    tags: [Interests]
+    summary: Remove one interest
+    description: Idempotent (removing something not selected is fine).
+    parameters:
+      - $ref: '../components/parameters.yaml#/InterestId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meMediaUploads:
+  post:
+    operationId: createUploadIntent
+    tags: [Media]
+    summary: Get a pre-signed URL to upload a photo
+    description: |
+      Step 1 of the scalable upload path: the app uploads the bytes straight
+      to storage (not through the API), then calls `PUT /me/avatar` or
+      `PUT /me/banner` with the `uploadId`. Unused uploads are deleted after
+      24 hours.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `PAYLOAD_TOO_LARGE` (413),
+      `UNSUPPORTED_MEDIA_TYPE` (415).
+    x-rate-limit:
+      - { key: account, limit: 30, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/UploadIntentRequest'
+    responses:
+      '201':
+        description: Upload URL issued.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/UploadIntent'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '413': { $ref: '../components/responses.yaml#/PayloadTooLarge' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meAvatar:
+  put:
+    operationId: setAvatar
+    tags: [Media]
+    summary: Set the profile photo
+    description: |
+      Save on Your avatar (Figma 1261:32306). Two ways to send the photo,
+      same result:
+
+      - `application/json` with an `uploadId` from `POST /me/media/uploads`
+        (recommended; scales to any number of users).
+      - `multipart/form-data` with the file itself (simple path for the
+        first release; max 10 MB).
+
+      Processing: EXIF orientation applied, then **all EXIF removed**
+      (including GPS); HEIC converted; crop applied (must be square);
+      resized to 128/256/512/1024 px; moderation. `status` is `processing`
+      until done; a rejected image is removed and `IMAGE_REJECTED` is
+      reported on the next `GET /me` as `avatar: null`.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `UPLOAD_NOT_FOUND` (404),
+      `UPLOAD_EXPIRED` (410), `PAYLOAD_TOO_LARGE` (413),
+      `UNSUPPORTED_MEDIA_TYPE` (415), `UPLOAD_INCOMPLETE`,
+      `UPLOAD_PURPOSE_MISMATCH`, `IMAGE_UNREADABLE`, `IMAGE_TOO_SMALL`
+      (under 200×200 after crop), `IMAGE_DIMENSIONS_TOO_LARGE` (over 8000 px
+      per side), `CROP_INVALID`, `IMAGE_REJECTED` (422).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ImageSetFromUpload'
+        multipart/form-data:
+          schema:
+            $ref: '../components/schemas.yaml#/ImageSetMultipart'
+          encoding:
+            file:
+              contentType: image/jpeg, image/png, image/webp, image/heic, image/heif
+            crop:
+              contentType: application/json
+    responses:
+      '200':
+        description: New avatar (may still be `processing`).
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Image'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '410': { $ref: '../components/responses.yaml#/Gone' }
+      '413': { $ref: '../components/responses.yaml#/PayloadTooLarge' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: removeAvatar
+    tags: [Media]
+    summary: Remove the profile photo
+    description: Idempotent. Files are deleted from storage and CDN caches purged.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meBanner:
+  put:
+    operationId: setBanner
+    tags: [Media]
+    summary: Set the profile banner
+    description: |
+      Save on Your profile banner (Figma 1261:32324). Same rules as
+      `PUT /me/avatar`, except the crop uses the banner ratio 393:264
+      (±2%), minimum 786×528 px after crop, resized to 786/1179/1572 px wide.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ImageSetFromUpload'
+        multipart/form-data:
+          schema:
+            $ref: '../components/schemas.yaml#/ImageSetMultipart'
+          encoding:
+            file:
+              contentType: image/jpeg, image/png, image/webp, image/heic, image/heif
+            crop:
+              contentType: application/json
+    responses:
+      '200':
+        description: New banner (may still be `processing`).
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Image'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '410': { $ref: '../components/responses.yaml#/Gone' }
+      '413': { $ref: '../components/responses.yaml#/PayloadTooLarge' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: removeBanner
+    tags: [Media]
+    summary: Remove the profile banner
+    description: Idempotent.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meSessions:
+  get:
+    operationId: listSessions
+    tags: [Sessions]
+    summary: List signed-in devices
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: Active sessions, current first.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/SessionList'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: revokeOtherSessions
+    tags: [Sessions]
+    summary: Sign out every other device
+    description: Keeps the current session. Idempotent.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meSession:
+  delete:
+    operationId: revokeSession
+    tags: [Sessions]
+    summary: Sign out one device
+    description: |
+      Revoking the current session is the same as logout. Access tokens
+      already issued to that device stay valid until they expire (at most
+      15 minutes) unless the server keeps a revocation list.
+
+      Errors: `SESSION_NOT_FOUND` (404).
+    parameters:
+      - $ref: '../components/parameters.yaml#/SessionId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meIdentities:
+  get:
+    operationId: listIdentities
+    tags: [Sessions]
+    summary: List the ways this account can sign in
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: Linked sign-in methods.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/IdentityList'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  post:
+    operationId: linkIdentity
+    tags: [Sessions]
+    summary: Link Apple, Google or Facebook to this account
+    description: |
+      Finishes the `ACCOUNT_LINK_REQUIRED` flow (send `linkToken`), or links
+      a provider from settings (send `credential`).
+
+      Errors: `LINK_TOKEN_INVALID`, `SOCIAL_TOKEN_INVALID` (401),
+      `IDENTITY_ALREADY_LINKED` (409, that provider account belongs to
+      another Bondfire user).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/LinkIdentityRequest'
+    responses:
+      '201':
+        description: Linked.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Identity'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meIdentity:
+  delete:
+    operationId: unlinkIdentity
+    tags: [Sessions]
+    summary: Unlink a sign-in method
+    description: |
+      Needs `X-Reauth-Token`. The last remaining way to sign in cannot be
+      removed (`LAST_LOGIN_METHOD`, 409).
+    parameters:
+      - $ref: '../components/parameters.yaml#/Provider'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ReauthToken'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meDevice:
+  put:
+    operationId: registerDevice
+    tags: [Devices]
+    summary: Register or update this install for push notifications
+    description: |
+      Idempotent upsert keyed by install. Call after sign-in, whenever the
+      push token changes, and when the OS notification permission changes.
+      A push token moving to another account is detached from the old one.
+      Guests allowed.
+    parameters:
+      - $ref: '../components/parameters.yaml#/InstallationId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/DeviceRegistration'
+    responses:
+      '200':
+        description: Saved.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/DeviceRegistration'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: unregisterDevice
+    tags: [Devices]
+    summary: Stop push notifications to this install
+    description: Idempotent. Called on logout.
+    parameters:
+      - $ref: '../components/parameters.yaml#/InstallationId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
