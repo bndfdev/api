@@ -2,6 +2,30 @@ require('dotenv').config();
 
 const REQUIRED = ['MONGODB_URI'];
 
+// Origins allowed when CORS_ORIGINS is unset outside production (local tools,
+// the admin panel and the old dev host). In production unset means none.
+const DEV_CORS_ORIGINS = Object.freeze([
+  'http://localhost:3000',
+  'http://localhost:8080',
+  'http://localhost:3001',
+  'http://localhost:4000',
+  'http://localhost:5173',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:8080',
+  'http://3.10.42.32:3000',
+  'https://3.10.42.32:3000',
+  'http://3.10.42.32',
+  'https://3.10.42.32',
+]);
+
+/** Parse a comma-separated origin list: trimmed, empty entries and a trailing slash dropped. */
+function parseOrigins(value) {
+  return String(value)
+    .split(',')
+    .map((o) => o.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+}
+
 /**
  * Build the runtime config from an env map.
  * With `validate` (default) throws an Error naming any missing required vars
@@ -27,14 +51,23 @@ function loadConfig(env = process.env, { validate = true } = {}) {
   }
   const port = portValid && env.PORT ? Number(env.PORT) : 3000;
 
+  const isProduction = nodeEnv === 'production';
+  let corsOrigins;
+  if (env.CORS_ORIGINS !== undefined && env.CORS_ORIGINS.trim() !== '') {
+    corsOrigins = parseOrigins(env.CORS_ORIGINS);
+  } else {
+    corsOrigins = isProduction ? [] : [...DEV_CORS_ORIGINS];
+  }
+
   return Object.freeze({
     env: nodeEnv,
-    isProduction: nodeEnv === 'production',
+    isProduction,
     isTest,
     port,
     mongodbUri: env.MONGODB_URI,
     logLevel: env.LOG_LEVEL || (isTest ? 'silent' : 'info'),
     apiBaseUrl: env.API_BASE_URL || undefined,
+    corsOrigins: Object.freeze(corsOrigins),
   });
 }
 

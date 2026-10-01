@@ -50,3 +50,28 @@ test('httpLogger omits query strings and credentials', async () => {
     assert.ok(!out.includes(leaked), `leaked ${leaked}`);
   }
 });
+
+test('httpLogger levels: probe 503 and 4xx warn, other 5xx error, 2xx info', async () => {
+  const express = require('express');
+  const request = require('supertest');
+  const { createHttpLogger } = require('../src/lib/logger');
+  const chunks = [];
+  const destination = new Writable({
+    write(chunk, _enc, cb) {
+      chunks.push(JSON.parse(chunk.toString()));
+      cb();
+    },
+  });
+  const app = express();
+  app.use(createHttpLogger(createLogger({ level: 'info', destination })));
+  app.get('/health/ready', (req, res) => res.status(503).json({}));
+  app.get('/bad', (req, res) => res.status(422).json({}));
+  app.get('/boom', (req, res) => res.status(500).json({}));
+  app.get('/ok', (req, res) => res.json({}));
+  for (const url of ['/health/ready', '/bad', '/boom', '/ok']) await request(app).get(url);
+  const levelOf = (url) => chunks.find((c) => c.req && c.req.url === url).level;
+  assert.equal(levelOf('/health/ready'), 40);
+  assert.equal(levelOf('/bad'), 40);
+  assert.equal(levelOf('/boom'), 50);
+  assert.equal(levelOf('/ok'), 30);
+});

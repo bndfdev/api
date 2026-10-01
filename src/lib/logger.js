@@ -38,6 +38,13 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/;
 function createHttpLogger(baseLogger = logger) {
   return pinoHttp({
     logger: baseLogger,
+    // Probes and client mistakes are expected: only unexpected 5xx logs as error.
+    customLogLevel(req, res, err) {
+      if (res.statusCode >= 500 || err) {
+        return String(req.url).split('?')[0].startsWith('/health/ready') ? 'warn' : 'error';
+      }
+      return res.statusCode >= 400 ? 'warn' : 'info';
+    },
     genReqId(req, res) {
       const incoming = req.headers['x-request-id'];
       const id = typeof incoming === 'string' && REQUEST_ID_PATTERN.test(incoming)

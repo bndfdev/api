@@ -1,43 +1,15 @@
 const path = require('node:path');
 const express = require('express');
-const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const { config } = require('./config');
 const { httpLogger } = require('./lib/logger');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
+const { applySecurity } = require('./middleware/security');
+const { openApiValidator } = require('./middleware/validate');
+const { router: healthRouter } = require('./modules/health/routes');
 
 const ROOT = path.join(__dirname, '..');
-
-// Legacy CORS behaviour, unchanged for now (permissive).
-const corsOptions = {
-  origin(origin, callback) {
-    const allowedOrigins = [
-      'http://localhost:3000',
-      'http://localhost:8080',
-      'http://localhost:3001',
-      'http://localhost:4000',
-      'http://localhost:5173',
-      'http://127.0.0.1:3000',
-      'http://127.0.0.1:8080',
-      'http://3.10.42.32:3000',
-      'https://3.10.42.32:3000',
-      'http://3.10.42.32',
-      'https://3.10.42.32',
-    ];
-
-    // Allow requests with no origin (like mobile apps, curl requests)
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(null, true); // For development, allow all.
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
-  optionsSuccessStatus: 200,
-};
 
 /**
  * Build the express app. Does not connect to MongoDB and does not listen.
@@ -50,8 +22,7 @@ function createApp({ extend } = {}) {
   app.disable('x-powered-by');
   app.use(httpLogger);
 
-  app.use(cors(corsOptions));
-  app.options('*', cors(corsOptions));
+  applySecurity(app, config);
 
   app.use(express.json({ limit: '100kb' }));
 
@@ -132,8 +103,15 @@ function createApp({ extend } = {}) {
 
   if (extend) extend(app);
 
+  // The spec documents /health and /health/ready as unversioned (root only).
+  // The legacy GET /health above answers first; the router adds /health/ready.
+  app.use(healthRouter);
+
   const v1 = express.Router();
-  // v1 routes are added by feature modules; unmatched /v1 paths get a problem 404.
+  // Every /v1 request is validated against the OpenAPI spec first. Feature
+  // modules mount after the validator; documented-but-unimplemented operations
+  // and unknown paths fall through to the problem 404.
+  v1.use(openApiValidator(config));
   v1.use(notFound);
   app.use('/v1', v1);
 

@@ -33,3 +33,20 @@ test('loadConfig reads values and freezes the result', () => {
   assert.equal(cfg.logLevel, 'warn');
   assert.ok(Object.isFrozen(cfg));
 });
+
+test('corsOrigins: unset gives the dev list outside production and none in production', () => {
+  const dev = loadConfig({ NODE_ENV: 'test' });
+  assert.ok(dev.corsOrigins.includes('http://localhost:3000'));
+  assert.ok(Object.isFrozen(dev.corsOrigins));
+  const prod = loadConfig({ NODE_ENV: 'production', MONGODB_URI: 'mongodb://x/y' });
+  assert.deepEqual([...prod.corsOrigins], []);
+  assert.deepEqual([...loadConfig({ NODE_ENV: 'production', MONGODB_URI: 'mongodb://x/y', CORS_ORIGINS: '   ' }).corsOrigins], []);
+});
+
+test('corsOrigins: CORS_ORIGINS is split, trimmed and replaces the dev list', () => {
+  const cfg = loadConfig({
+    NODE_ENV: 'test',
+    CORS_ORIGINS: ' https://app.bondfire.app , https://admin.bondfire.app/ ,, ',
+  });
+  assert.deepEqual([...cfg.corsOrigins], ['https://app.bondfire.app', 'https://admin.bondfire.app']);
+});
