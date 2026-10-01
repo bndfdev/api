@@ -2530,6 +2530,7 @@ components:
         - FORBIDDEN
         - GUEST_NOT_ALLOWED
         - NOT_FOUND
+        - METHOD_NOT_ALLOWED
         - CONFLICT
         - RATE_LIMITED
         - UPGRADE_REQUIRED
