@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const { loadConfig } = require('./config');
 const { logger } = require('./lib/logger');
 const { createApp } = require('./app');
+const passwords = require('./lib/passwords');
 
 /** Validate config, connect to MongoDB, start listening and wire graceful shutdown. */
 async function start() {
@@ -36,6 +37,14 @@ async function start() {
     logger.error({ err: err.message }, 'MongoDB initial connection failed');
     process.exit(1);
   });
+
+  // Make the dummy password hash now, so the first login for an unknown email is not slower than the rest.
+  // (If it fails it is simply tried again on first use.)
+  try {
+    await passwords.dummyHash();
+  } catch (err) {
+    logger.warn({ err: err.message }, 'could not prepare the dummy password hash; it will be tried again on first use');
+  }
 
   const server = createApp().listen(config.port, () => {
     logger.info({ port: config.port }, 'Bondfire API listening');

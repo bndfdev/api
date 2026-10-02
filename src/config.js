@@ -26,6 +26,9 @@ const TOKEN_LIMITS = Object.freeze({
   refreshTtlDays: 180,
   refreshGraceSeconds: 120,
 });
+// OWASP's minimum for argon2id (memory in KiB), and the most a deployment may ask for.
+const ARGON2_DEFAULTS = Object.freeze({ memoryKib: 19456, timeCost: 2, parallelism: 1 });
+const ARGON2_LIMITS = Object.freeze({ memoryKib: 1048576, timeCost: 10, parallelism: 16 });
 // Most reverse proxies (load balancers, CDNs) we would ever stack in front of the API.
 const MAX_TRUSTED_PROXY_HOPS = 10;
 
@@ -267,6 +270,13 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     if (testRecipients.length === 0) invalid.push('CODE_TEST_RECIPIENTS (required when CODE_TEST_MODE is true)');
     if (!/^\d{6}$/.test(testValue)) invalid.push('CODE_TEST_VALUE (must be exactly 6 digits when CODE_TEST_MODE is true)');
   }
+  // --- Password hashing (argon2id) ---
+  // Defaults are the OWASP minimum for argon2id: 19 MiB of memory, 2 passes, 1 lane. Raise them as hardware allows.
+  const argon2MemoryKib = readBoundedInt(env, 'ARGON2_MEMORY_KIB', ARGON2_DEFAULTS.memoryKib, ARGON2_LIMITS.memoryKib, invalid);
+  const argon2TimeCost = readBoundedInt(env, 'ARGON2_TIME_COST', ARGON2_DEFAULTS.timeCost, ARGON2_LIMITS.timeCost, invalid);
+  const argon2Parallelism = readBoundedInt(env, 'ARGON2_PARALLELISM', ARGON2_DEFAULTS.parallelism, ARGON2_LIMITS.parallelism, invalid);
+  if (argon2MemoryKib < 8 * argon2Parallelism) invalid.push('ARGON2_MEMORY_KIB (must be at least 8 times ARGON2_PARALLELISM)');
+
   // Printing codes to the log is a development convenience only.
   const logCodesRequested = readBool(env, 'LOG_CODES_IN_DEV', invalid);
 
@@ -316,6 +326,7 @@ function loadConfig(env = process.env, { validate = true } = {}) {
       ephemeral,
     }),
     refreshToken: Object.freeze({ ttlDays: refreshTtlDays, graceSeconds: refreshGraceSeconds }),
+    passwords: Object.freeze({ memoryKib: argon2MemoryKib, timeCost: argon2TimeCost, parallelism: argon2Parallelism }),
     tokenEncKey,
     tokenEncKeyEphemeral,
     codes: Object.freeze({

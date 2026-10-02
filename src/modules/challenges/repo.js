@@ -75,6 +75,19 @@ async function markVerified({ id, codeHash, at }) {
 }
 
 /**
+ * Undo `markVerified` (and the attempt it counted) for a verification whose follow-up failed, so the user
+ * keeps the code they entered. Only the verification made at `at` is undone.
+ * @returns {Promise<boolean>}
+ */
+async function unmarkVerified({ id, at }) {
+  const result = await Challenge.updateOne(
+    { _id: id, verifiedAt: new Date(at) },
+    { $set: { verifiedAt: null }, $inc: { attempts: -1 } },
+  );
+  return result.modifiedCount === 1;
+}
+
+/**
  * Step 1 of a resend: take the right to send, and start the cooldown. Only an
  * unused, unexpired challenge whose last send is at least `cooldownMs` old can
  * be claimed, and only one of several simultaneous requests wins. The code and
@@ -156,6 +169,7 @@ module.exports = {
   releaseActiveKey,
   registerAttempt,
   markVerified,
+  unmarkVerified,
   claimResend,
   commitResend,
   reserveSend,

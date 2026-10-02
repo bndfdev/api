@@ -424,14 +424,17 @@ function createChallengeService({
   /**
    * Check a code. On success the challenge is used up (it cannot be verified
    * again) and the caller gets what it needs to issue the next token.
-   * @param {{challengeId: string, code: string, installationId: string, userId?: string}} input
+   * @param {{challengeId: string, code: string, installationId: string, userId?: string, allowedPurposes?: string[]}} input
+   *   `allowedPurposes`: the purposes the caller can finish. A challenge for any other purpose "does not exist",
+   *   and nothing is counted or used up, so one that this caller cannot finish is never spent by it.
    * @returns {Promise<{challenge: object, purpose: string, channel: string, destination: string,
    *   userId: string | null, installationId: string, verifiedAt: string}>}
    *   `destination` is the normalised, unmasked address; `challenge` is the `Challenge` shape.
    */
-  async function verify({ challengeId, code, installationId, userId }) {
+  async function verify({ challengeId, code, installationId, userId, allowedPurposes }) {
     const at = clock();
     const doc = await loadOwned({ challengeId, installationId, userId });
+    if (allowedPurposes && !allowedPurposes.includes(doc.purpose)) throw notFound();
     const problem = refusal(doc, at, { refuseLocked: true });
     if (problem) throw problem;
 
@@ -470,7 +473,18 @@ function createChallengeService({
     };
   }
 
-  return { start, get, resend, verify };
+  /**
+   * Undo a successful `verify` whose follow-up (for example handing out a sign-up token) failed, so a code
+   * the user entered correctly is not lost: the challenge can be verified again with the same code, and the
+   * correct attempt does not count against the 5. Does nothing if the challenge has changed since.
+   * @param {{challengeId: string, verifiedAt: string}} verified the `challenge.id` and `verifiedAt` that `verify` returned
+   * @returns {Promise<boolean>} whether it was undone
+   */
+  async function reopen({ challengeId, verifiedAt }) {
+    return repo.unmarkVerified({ id: challengeId, at: Date.parse(verifiedAt) });
+  }
+
+  return { start, get, resend, verify, reopen };
 }
 
 module.exports = { createChallengeService, RULES };
