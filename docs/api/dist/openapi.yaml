@@ -1,0 +1,4246 @@
+openapi: 3.1.0
+info:
+  title: Bondfire API
+  version: 1.0.0-draft.1
+  summary: Accounts, onboarding, profile and catalog for the Bondfire app.
+  description: |
+    **Status: draft for review.** Contract between the Bondfire app and the
+    `api` server for everything the onboarding flow needs. Design notes,
+    edge cases and the migration from today's endpoints are in
+    `docs/api/README.md`.
+
+    ## Conventions (apply to every endpoint)
+
+    - **Base URL** `https://api.bondfire.app/v1`. Breaking changes ship as
+      `/v2`; additive changes (new fields, new error codes, new enum values)
+      do not, so clients must ignore unknown fields and handle unknown enum
+      values.
+    - **JSON only**, UTF-8, `camelCase` fields. Timestamps are RFC 3339 UTC;
+      calendar dates (date of birth) are `YYYY-MM-DD`. Absent and `null`
+      mean "not set".
+    - **Headers on every request:** `X-Client-Platform`, `X-Client-Version`
+      and `X-Installation-Id` (the install's random UUID). Builds below the
+      minimum version get `426 UPGRADE_REQUIRED`. `Accept-Language` picks
+      the language of human-readable messages.
+    - **Auth:** `Authorization: Bearer <accessToken>` (15-minute JWT). Get
+      new tokens with `POST /auth/token/refresh` (refresh tokens rotate and
+      are single-use). Guests use the same scheme with limited rights.
+    - **Errors** are RFC 9457 problem details (`application/problem+json`)
+      with a stable `code`. Branch on `code`, never on text.
+    - **Retries:** send `Idempotency-Key` (UUID) on calls that send codes,
+      create accounts or upload, and reuse it when retrying the same action.
+    - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
+      operation are listed under `x-rate-limit`.
+    - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
+      `page.hasMore`).
+    - **Every response** carries `X-Request-Id`; errors repeat it as
+      `requestId`.
+    - **Transport:** HTTPS only (HSTS). Tokens, codes and passwords are
+      never logged.
+  contact:
+    name: Bondfire engineering
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: https://api.bondfire.app/v1
+    description: Production
+  - url: https://staging-api.bondfire.app/v1
+    description: Staging
+  - url: http://localhost:3000/v1
+    description: Local development
+security:
+  - bearerAuth: []
+tags:
+  - name: Meta
+    description: Health, app configuration.
+  - name: Auth
+    description: Sign-up, one-time codes, login, social login, guest, tokens, password reset.
+  - name: Account
+    description: The signed-in user's profile, password, phone and deletion.
+  - name: Onboarding
+    description: Server-side onboarding progress so the flow resumes on any device.
+  - name: Legal
+    description: Terms and privacy documents and the user's acceptance.
+  - name: Interests
+    description: The interest catalog and the user's selection.
+  - name: Catalog
+    description: Reference data (countries).
+  - name: Media
+    description: Profile photo and banner.
+  - name: Sessions
+    description: Signed-in devices and linked sign-in methods.
+  - name: Devices
+    description: Push notification registration.
+paths:
+  /health:
+    servers:
+      - url: https://api.bondfire.app
+      - url: https://staging-api.bondfire.app
+      - url: http://localhost:3000
+    get:
+      operationId: getHealth
+      tags:
+        - Meta
+      summary: Liveness check (unversioned)
+      description: For load balancers. Answers without touching the database.
+      security: []
+      responses:
+        '200':
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    const: ok
+        '429':
+          description: Too many probes from one address (edge rate limit).
+  /health/ready:
+    servers:
+      - url: https://api.bondfire.app
+      - url: https://staging-api.bondfire.app
+      - url: http://localhost:3000
+    get:
+      operationId: getReadiness
+      tags:
+        - Meta
+      summary: Readiness check (unversioned)
+      description: Checks the database and required providers. `503` takes the instance out of rotation.
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/readiness'
+        '429':
+          description: Too many probes from one address (edge rate limit).
+        '503':
+          description: A dependency is down.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/readiness'
+  /config:
+    get:
+      operationId: getConfig
+      tags:
+        - Meta
+      summary: App configuration
+      description: |
+        First call on every launch (before sign-in). Supplies the password
+        policy, code timings, minimum age, languages, legal versions, feature
+        switches and upload limits, so none of these are hardcoded in the app.
+        Supports `If-None-Match`.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Current configuration.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppConfig'
+              example:
+                minimumSupportedVersion:
+                  ios: 1.0.0
+                  android: 1.0.0
+                  web: 1.0.0
+                latestVersion:
+                  ios: 1.4.0
+                  android: 1.4.0
+                  web: 1.4.0
+                passwordPolicy:
+                  minLength: 12
+                  maxLength: 128
+                  requireUppercase: true
+                  requireLowercase: false
+                  requireDigit: true
+                  requireSymbol: true
+                otp:
+                  length: 6
+                  ttlSeconds: 600
+                  resendCooldownSeconds: 30
+                  maxAttempts: 5
+                minimumAge: 13
+                supportedLanguages:
+                  - tag: en
+                    name: English
+                    nativeName: English
+                  - tag: es
+                    name: Spanish
+                    nativeName: Español
+                  - tag: fr
+                    name: French
+                    nativeName: Français
+                  - tag: de
+                    name: German
+                    nativeName: Deutsch
+                  - tag: hi
+                    name: Hindi
+                    nativeName: हिन्दी
+                legal:
+                  termsVersion: '2026-09-01'
+                  privacyVersion: '2026-09-01'
+                features:
+                  guestMode: true
+                  phoneVerificationRequired: true
+                  socialLogin:
+                    apple: false
+                    google: false
+                    facebook: false
+                limits:
+                  maxInterests: 100
+                  avatarMaxBytes: 10485760
+                  bannerMaxBytes: 10485760
+                  nameMaxLength: 50
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /legal/{documentType}:
+    get:
+      operationId: getLegalDocument
+      tags:
+        - Legal
+      summary: Current version of the terms or privacy policy
+      description: |
+        Feeds the Terms and Conditions screen (Figma 1270:11938): `title`,
+        `summary` excerpt and a link to the full text. Localised by
+        `Accept-Language` when a translation exists.
+
+        Errors: `LEGAL_DOCUMENT_NOT_FOUND` (404).
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/LegalDocumentType'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The live document.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegalDocument'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /countries:
+    get:
+      operationId: listCountries
+      tags:
+        - Catalog
+      summary: Countries for the phone picker
+      description: |
+        Every country with dial code and flag, sorted by localised name, plus
+        a `defaultCountryCode` guessed from the IP. Small and rarely changes:
+        cache with `ETag` (`max-age` 1 day). Countries sharing a dial code
+        (e.g. +1) are separate entries.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: Countries.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CountryList'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /interests/featured:
+    get:
+      operationId: listFeaturedInterests
+      tags:
+        - Interests
+      summary: Curated interests for the onboarding grid
+      description: |
+        "Tell us what you're interested in" (Figma 1261:36247). A curated,
+        region-aware list; `presentation.size` says which items are drawn as
+        the large card. Guests allowed. Items already selected by the user
+        are still returned (the app marks them).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of featured interests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InterestPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /interests/search:
+    get:
+      operationId: searchInterests
+      tags:
+        - Interests
+      summary: Search interests
+      description: |
+        Search Interests screen (Figma 1372:42256).
+
+        - `q` is trimmed; empty `q` returns popular items for the chosen kinds.
+        - Matching ignores case and accents ("Coastin" finds "Coastin’") and
+          supports prefixes as the user types; the app debounces (~300 ms)
+          and cancels stale requests.
+        - Results are paginated with a cursor; a cursor from a different
+          query or older than 24 hours is `CURSOR_INVALID`.
+
+        Errors: `SEARCH_QUERY_INVALID`, `CURSOR_INVALID` (422).
+      security:
+        - bearerAuth: []
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+          description: Search text.
+        - name: kind
+          in: query
+          required: false
+          description: Filter row (Figma icons). Repeat to combine, e.g. `kind=artist&kind=album`.
+          style: form
+          explode: true
+          schema:
+            type: array
+            maxItems: 9
+            items:
+              $ref: '#/components/schemas/InterestKind'
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - relevance
+              - popular
+              - recent
+              - alphabetical
+            default: relevance
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/AcceptLanguage'
+      responses:
+        '200':
+          description: A page of results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InterestPage'
+              example:
+                data:
+                  - id: int_paradise
+                    kind: album
+                    title: Paradise
+                    subtitle: Daya
+                    image:
+                      url: https://cdn.bondfire.app/i/paradise.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                page:
+                  nextCursor: eyJvIjoyMH0
+                  hasMore: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /interests/{interestId}:
+    get:
+      operationId: getInterest
+      tags:
+        - Interests
+      summary: Get one interest
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/InterestId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/AcceptLanguage'
+      responses:
+        '200':
+          description: The interest.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Interest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/email/availability:
+    post:
+      operationId: checkEmailAvailability
+      tags:
+        - Auth
+      summary: Check whether an email can be used to sign up
+      description: |
+        Used by the Email address screen (Figma 1261:31574) before sending a
+        code, so the user sees "already registered" without waiting for mail.
+
+        **Enumeration trade-off:** this reveals whether an address has an
+        account. It is limited hard (see `x-rate-limit`) and returns the same
+        timing for both answers. If product prefers full privacy, the app can
+        skip this call and rely on `POST /auth/signup/email`.
+
+        Errors: `EMAIL_INVALID`, `EMAIL_DOMAIN_NOT_ALLOWED` (422),
+        `RATE_LIMITED` (429).
+      security: []
+      x-rate-limit:
+        - key: ip
+          limit: 30
+          window: 1h
+        - key: installation
+          limit: 20
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '200':
+          description: Availability of the address.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmailAvailability'
+              examples:
+                available:
+                  value:
+                    email: new.user@example.com
+                    available: true
+                    suggestion: null
+                taken:
+                  value:
+                    email: amelia.jane@example.com
+                    available: false
+                    suggestion: null
+                typo:
+                  value:
+                    email: amelia.jane@gmial.com
+                    available: true
+                    suggestion: amelia.jane@gmail.com
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/signup/email:
+    post:
+      operationId: startEmailSignup
+      tags:
+        - Auth
+      summary: Send a sign-up code to an email address
+      description: |
+        Starts sign-up (Figma 1261:31574 → 1261:31607). Sends a 6-digit code
+        valid for 10 minutes and returns the challenge to verify it.
+
+        - Calling again for the same email and install returns the **same
+          challenge** (no new code) until it expires, so a double tap never
+          sends two emails.
+        - The email is normalised before the check (trimmed, domain lowercased).
+        - Nothing is created in the user table until `POST /auth/signup/complete`.
+
+        Errors: `EMAIL_TAKEN` (409), `EMAIL_INVALID`,
+        `EMAIL_DOMAIN_NOT_ALLOWED` (422), `SEND_LIMIT_REACHED` (429, 5 sends
+        per address per 24 h), `EMAIL_DELIVERY_FAILED` (503).
+      security: []
+      x-rate-limit:
+        - key: email
+          limit: 5
+          window: 24h
+        - key: ip
+          limit: 20
+          window: 1h
+        - key: installation
+          limit: 10
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '202':
+          description: Code sent (or an unexpired one already exists).
+          headers:
+            RateLimit:
+              $ref: '#/components/headers/RateLimit'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Challenge'
+              example:
+                id: chl_01J8Z4A7
+                purpose: signup_email
+                channel: email
+                destination: a•••••e@example.com
+                codeLength: 6
+                expiresAt: '2026-09-27T10:25:00Z'
+                resendAvailableAt: '2026-09-27T10:15:30Z'
+                attemptsRemaining: 5
+                sendsRemaining: 4
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/signup/complete:
+    post:
+      operationId: completeSignup
+      tags:
+        - Auth
+      summary: Create the account (set password) and sign in
+      description: |
+        Create password screen (Figma 1261:31642). Creates the user with the
+        verified email and returns a session. The `signupToken` is single-use.
+
+        **Guest upgrade:** when called with a guest access token in
+        `Authorization`, the guest's date of birth, language, interests and
+        consents move to the new account and the guest session ends.
+
+        Errors: `SIGNUP_TOKEN_INVALID`, `SIGNUP_TOKEN_EXPIRED` (401),
+        `EMAIL_TAKEN` (409, someone finished sign-up for this email first),
+        `PASSWORD_POLICY_VIOLATION` (422, `errors[0].meta.unmetRules`),
+        `PASSWORD_COMPROMISED`, `LANGUAGE_UNSUPPORTED` (422).
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupCompleteRequest'
+      responses:
+        '201':
+          description: Account created and signed in. `user.onboarding.nextStep` is `phone_verified`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/challenges/{challengeId}:
+    get:
+      operationId: getChallenge
+      tags:
+        - Auth
+      summary: Get a challenge's current state
+      description: |
+        Lets the code screen restore its countdown and attempts after the app
+        was killed or the phone rotated. Public for sign-up and reset
+        challenges; phone challenges need the owner's access token.
+
+        Errors: `CHALLENGE_NOT_FOUND` (404, also when called from another
+        install), `CHALLENGE_EXPIRED` (410).
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ChallengeId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+      responses:
+        '200':
+          description: The challenge.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Challenge'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/challenges/{challengeId}/resend:
+    post:
+      operationId: resendChallenge
+      tags:
+        - Auth
+      summary: Send a new code for the same challenge
+      description: |
+        "Send again" on the code screens. Allowed once `resendAvailableAt` has
+        passed (30 s cooldown). The new code replaces the old one, the
+        attempt counter resets and `expiresAt` moves to 10 minutes from now.
+
+        Errors: `CHALLENGE_NOT_FOUND` (404), `CHALLENGE_ALREADY_USED` (409),
+        `CHALLENGE_EXPIRED` (410, start over), `CHALLENGE_LOCKED` (423),
+        `RESEND_TOO_SOON` / `SEND_LIMIT_REACHED` (429),
+        `EMAIL_DELIVERY_FAILED` / `SMS_DELIVERY_FAILED` (503).
+      security:
+        - {}
+        - bearerAuth: []
+      x-rate-limit:
+        - key: challenge
+          limit: 1
+          window: 30s
+        - key: destination
+          limit: 5
+          window: 24h
+      parameters:
+        - $ref: '#/components/parameters/ChallengeId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: New code sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Challenge'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '423':
+          $ref: '#/components/responses/Locked'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/challenges/{challengeId}/verify:
+    post:
+      operationId: verifyChallenge
+      tags:
+        - Auth
+      summary: Verify a one-time code
+      description: |
+        The code screens auto-submit at 6 digits. A correct code consumes the
+        challenge and returns what it unlocks (see `ChallengeVerification`):
+        a `signupToken`, a `resetToken`, or a verified phone number.
+
+        - Codes are compared in constant time; only a hash is stored.
+        - After 5 wrong codes the challenge locks (`CHALLENGE_LOCKED`); the
+          user must request a new code, which counts toward the daily limit.
+        - Leading/trailing spaces are trimmed; anything but 6 digits is
+          `CODE_FORMAT_INVALID` and does **not** use up an attempt.
+        - Phone challenges need the owner's access token. If another account
+          verified the same number in the meantime, this returns `PHONE_TAKEN`.
+
+        Errors: `CHALLENGE_NOT_FOUND` (404), `CHALLENGE_ALREADY_USED`,
+        `PHONE_TAKEN` (409), `CHALLENGE_EXPIRED` (410), `CODE_INCORRECT`
+        (422, `meta.attemptsRemaining`), `CODE_FORMAT_INVALID` (422),
+        `CHALLENGE_LOCKED` (423).
+      security:
+        - {}
+        - bearerAuth: []
+      x-rate-limit:
+        - key: challenge
+          limit: 5
+          window: challenge-lifetime
+        - key: ip
+          limit: 60
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ChallengeId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChallengeVerifyRequest'
+      responses:
+        '200':
+          description: Code accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeVerification'
+              examples:
+                signup:
+                  value:
+                    purpose: signup_email
+                    email: amelia.jane@example.com
+                    signupToken: sgt_2b7c…
+                    signupTokenExpiresAt: '2026-09-27T10:45:00Z'
+                reset:
+                  value:
+                    purpose: password_reset
+                    resetToken: rst_9f1a…
+                    resetTokenExpiresAt: '2026-09-27T10:30:00Z'
+                phone:
+                  value:
+                    purpose: phone_verification
+                    phoneNumber: '+14155550123'
+                    verifiedAt: '2026-09-27T10:16:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '422':
+          description: Wrong or malformed code.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/code-incorrect
+                title: That code isn't right
+                status: 422
+                code: CODE_INCORRECT
+                requestId: req_01J8Z3K5QH
+                meta:
+                  attemptsRemaining: 3
+        '423':
+          $ref: '#/components/responses/Locked'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/login:
+    post:
+      operationId: login
+      tags:
+        - Auth
+      summary: Sign in with email and password
+      description: |
+        Enter email → Enter password screens (Figma 1261:31330, 1372:27858).
+
+        - Wrong email and wrong password give the **same** error and timing
+          (`INVALID_CREDENTIALS`), so an attacker cannot learn which emails exist.
+        - An account that only uses Apple/Google/Facebook has no password and
+          also gets `INVALID_CREDENTIALS`.
+        - Lockout: 5 failures in 15 minutes lock password login for 15
+          minutes (`ACCOUNT_LOCKED`, 423 + `Retry-After`). A password reset
+          clears the lock. Limits are per account **and** per IP, so one
+          attacker cannot lock out every user.
+        - Signing in while `pending_deletion` cancels the deletion.
+
+        Errors: `INVALID_CREDENTIALS` (401), `ACCOUNT_SUSPENDED` (403),
+        `ACCOUNT_LOCKED` (423), `RATE_LIMITED` (429).
+      security: []
+      x-rate-limit:
+        - key: account
+          limit: 5
+          window: 15m
+        - key: ip
+          limit: 50
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/social:
+    post:
+      operationId: socialLogin
+      tags:
+        - Auth
+      summary: Sign in or sign up with Apple, Google or Facebook
+      description: |
+        The app runs the provider's native SDK and sends the result here; the
+        server verifies it with the provider (signature, audience, expiry,
+        nonce) and issues our own session. No Firebase involved.
+
+        Account rules:
+        1. Provider account already linked → sign in.
+        2. Not linked, and no Bondfire account has that email → create one
+           (`isNewUser: true`, `201`). Onboarding continues at date of birth.
+        3. Not linked, but a password account has the same **verified** email
+           → `409 ACCOUNT_LINK_REQUIRED`. `meta.linkToken` (10 min) lets the
+           user sign in with their password and then call
+           `POST /me/identities` to link. Never auto-link silently.
+        4. Provider gives no email (Apple "Hide My Email" relay is fine;
+           Facebook may give none) → account without email; the user can add
+           one later.
+        5. Provider says the email is unverified → `SOCIAL_EMAIL_UNVERIFIED`.
+
+        Apple only sends the name on first authorisation; the app forwards
+        `givenName`/`familyName` once. On account deletion the server revokes
+        the Apple token (App Store requirement).
+
+        Errors: `SOCIAL_TOKEN_INVALID`, `SOCIAL_NONCE_MISMATCH` (401),
+        `ACCOUNT_SUSPENDED` (403), `ACCOUNT_LINK_REQUIRED` (409),
+        `SOCIAL_PROVIDER_UNSUPPORTED`, `SOCIAL_EMAIL_UNVERIFIED` (422),
+        `SERVICE_UNAVAILABLE` (503, provider down).
+      security: []
+      x-rate-limit:
+        - key: ip
+          limit: 30
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SocialLoginRequest'
+      responses:
+        '200':
+          description: Signed in to an existing account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '201':
+          description: New account created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: An account with this email exists and must be linked first.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/account-link-required
+                title: You already have an account
+                status: 409
+                code: ACCOUNT_LINK_REQUIRED
+                detail: Sign in with your password to connect Google.
+                requestId: req_01J8Z3K5QH
+                meta:
+                  linkToken: lnk_7d2e…
+                  email: a•••••e@example.com
+                  existingLoginMethods:
+                    - password
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/guest:
+    post:
+      operationId: startGuestSession
+      tags:
+        - Auth
+      summary: Continue as a guest
+      description: |
+        Continue as a guest → birthday (Figma 1261:31699, 1261:31730). The
+        Figma note makes the birthday mandatory for guests too.
+
+        - Idempotent per install: the same `installationId` gets back its
+          existing guest account (`200`) instead of a new one (`201`).
+        - Guest tokens get `accountType: guest` and can browse, pick
+          interests and register for push. Account-only endpoints return
+          `403 GUEST_NOT_ALLOWED`; the app then offers sign-up, which carries
+          the guest's data over (see `POST /auth/signup/complete`).
+        - Guest accounts unused for 180 days are deleted.
+
+        Errors: `FORBIDDEN` (403, guest mode switched off in `/config`),
+        `DATE_OF_BIRTH_INVALID`, `AGE_REQUIREMENT_NOT_MET`,
+        `LANGUAGE_UNSUPPORTED` (422).
+      security: []
+      x-rate-limit:
+        - key: ip
+          limit: 20
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuestSessionRequest'
+      responses:
+        '200':
+          description: Existing guest for this install, signed in again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '201':
+          description: New guest created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/token/refresh:
+    post:
+      operationId: refreshTokens
+      tags:
+        - Auth
+      summary: Swap a refresh token for a new token pair
+      description: |
+        Called when an access token expires (`401 TOKEN_EXPIRED`) or shortly
+        before. Refresh tokens rotate: each one works **once**.
+
+        - **Reuse detection:** presenting an already-used refresh token
+          revokes that whole session (`REFRESH_TOKEN_REUSED`) because it may
+          have been stolen.
+        - **Grace window:** two refreshes racing from the same install within
+          30 seconds both get the same new pair, so parallel requests after
+          waking from background do not log the user out.
+        - The app must serialise refreshes (one in flight at a time).
+
+        Errors: `REFRESH_TOKEN_INVALID`, `REFRESH_TOKEN_REUSED`,
+        `SESSION_REVOKED` (401), `ACCOUNT_SUSPENDED` (403).
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: New tokens. Replace both stored tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/logout:
+    post:
+      operationId: logout
+      tags:
+        - Auth
+      summary: Sign out this session
+      description: |
+        Revokes the current session. Always returns `204`, even if the tokens
+        were already expired or revoked, so the app can clear local state
+        unconditionally. The app also unregisters its push token.
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/password-reset:
+    post:
+      operationId: startPasswordReset
+      tags:
+        - Auth
+      summary: Send a password-reset code
+      description: |
+        "Reset password" on the password screen. **Always returns `202`** with
+        a challenge, whether or not the email has an account, so this cannot
+        be used to discover accounts. For unknown emails no mail is sent and
+        every code is rejected as `CODE_INCORRECT`.
+
+        Accounts without a password (social-only) receive an email explaining
+        how they sign in instead of a code.
+
+        Errors: `EMAIL_INVALID` (422), `SEND_LIMIT_REACHED` (429),
+        `EMAIL_DELIVERY_FAILED` (503).
+      security: []
+      x-rate-limit:
+        - key: email
+          limit: 5
+          window: 24h
+        - key: ip
+          limit: 20
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+      responses:
+        '202':
+          description: If the account exists, a code was sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Challenge'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /auth/password-reset/complete:
+    post:
+      operationId: completePasswordReset
+      tags:
+        - Auth
+      summary: Set a new password and sign in
+      description: |
+        Create password screen in the reset flow (Figma 1372:27665), then Home.
+
+        - Revokes **every** other session of the account and clears any login lock.
+        - Sends a "your password was changed" email.
+        - The new password must differ from the current one (`PASSWORD_REUSED`).
+
+        Errors: `RESET_TOKEN_INVALID`, `RESET_TOKEN_EXPIRED` (401),
+        `PASSWORD_POLICY_VIOLATION`, `PASSWORD_COMPROMISED`,
+        `PASSWORD_REUSED` (422).
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetCompleteRequest'
+      responses:
+        '200':
+          description: Password changed; signed in on this device.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/reauthenticate:
+    post:
+      operationId: reauthenticate
+      tags:
+        - Auth
+      summary: Confirm identity before a sensitive action
+      description: |
+        Returns a 5-minute `reauthToken` for sensitive calls (delete account,
+        unlink a login method, set a first password). Social-only users
+        re-confirm with a fresh provider credential.
+
+        Wrong password is `422 PASSWORD_INCORRECT` (not 401, which would sign
+        the user out). 5 failures lock it like login (`ACCOUNT_LOCKED`, 423).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReauthenticateRequest'
+      responses:
+        '200':
+          description: Re-authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReauthToken'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me:
+    get:
+      operationId: getMe
+      tags:
+        - Account
+      summary: Get the signed-in account
+      description: |
+        Called on launch after restoring tokens. `onboarding.nextStep` tells
+        the app which onboarding screen to resume; `consents.termsUpToDate:
+        false` means the Terms screen must be shown again. Guests get
+        `accountType: guest`.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IfNoneMatch'
+      responses:
+        '200':
+          description: The account.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '304':
+          $ref: '#/components/responses/NotModified'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateMe
+      tags:
+        - Account
+      summary: Update name, date of birth, gender or language
+      description: |
+        Used by the birthday, gender and Your Profile (name) screens. Saving a
+        field completes its onboarding step automatically.
+
+        - **Age gate:** a date of birth under `minimumAge` (13) is rejected
+          with `AGE_REQUIREMENT_NOT_MET`; the account is flagged and the app
+          must sign out and show the "not eligible" screen. The rejected date
+          is not stored.
+        - Age is computed on the user's local date (`device.timeZone`), so a
+          birthday today counts; 29 February birthdays turn a year older on
+          1 March in non-leap years.
+        - Once set, date of birth can be changed only once (typo fix) within
+          30 days; after that `DATE_OF_BIRTH_LOCKED` (support can change it).
+        - Guests can set `preferredLanguage` only.
+
+        Errors: stale `If-Match` (412), `DATE_OF_BIRTH_LOCKED` (409), `NAME_INVALID`, `DATE_OF_BIRTH_INVALID`,
+        `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED` (422),
+        `GUEST_NOT_ALLOWED` (403).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/AcceptLanguage'
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+            examples:
+              birthday:
+                value:
+                  dateOfBirth: '2000-01-12'
+              gender:
+                value:
+                  gender: non_binary
+              name:
+                value:
+                  name: Amelia Jane
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdate'
+      responses:
+        '200':
+          description: Updated account.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteMe
+      tags:
+        - Account
+      summary: Delete the account
+      description: |
+        Required in-app by the App Store and Play Store. Needs a fresh
+        `X-Reauth-Token`.
+
+        - Accounts are soft-deleted for 30 days (`202`, `pending_deletion`),
+          then all personal data and photos are erased. Signing in before
+          then cancels the deletion.
+        - All sessions are revoked immediately; Apple tokens are revoked with Apple.
+        - Guests are deleted immediately (`204`) and need no reauth token.
+
+        Errors: `REAUTH_REQUIRED` (401).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ReauthToken'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeletionRequest'
+      responses:
+        '202':
+          description: Deletion scheduled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDeletion'
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/password:
+    put:
+      operationId: changePassword
+      tags:
+        - Account
+      summary: Change (or set a first) password
+      description: |
+        For accounts that already have a password, `currentPassword` is
+        required. Social-only accounts set a first password by omitting
+        `currentPassword` and sending `X-Reauth-Token` instead
+        (`REAUTH_REQUIRED` otherwise). Other sessions are signed out unless
+        `signOutOtherSessions` is `false`.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `PASSWORD_INCORRECT`,
+        `PASSWORD_POLICY_VIOLATION`, `PASSWORD_COMPROMISED`,
+        `PASSWORD_REUSED` (422), `ACCOUNT_LOCKED` (423).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - name: X-Reauth-Token
+          in: header
+          required: false
+          description: Required only when setting a first password (no `currentPassword`).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordChangeRequest'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '423':
+          $ref: '#/components/responses/Locked'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/phone:
+    delete:
+      operationId: removePhone
+      tags:
+        - Account
+      summary: Remove the phone number
+      description: Idempotent. When `/config` → `features.phoneVerificationRequired` is on, the `phone_verified` onboarding step returns to pending.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/phone/verification:
+    post:
+      operationId: startPhoneVerification
+      tags:
+        - Account
+      summary: Send an SMS code to add or change the phone number
+      description: |
+        Enter your phone number screen (Figma 1261:31662) → Enter the code we
+        texted you (1261:31680). Verify with `POST /auth/challenges/{id}/verify`.
+
+        - The number is parsed and normalised to E.164 (libphonenumber) using
+          the country picked in the app; the verified number replaces any
+          previous one only after the code is accepted.
+        - Only regions with `phoneSignupSupported: true` in `GET /countries`.
+        - Premium-rate and (optionally) VoIP numbers are refused to stop SMS
+          fraud (`PHONE_TYPE_NOT_ALLOWED`); sends are also limited per
+          country prefix.
+        - The same number already verified on this account returns `409 CONFLICT`.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `PHONE_TAKEN`, `CONFLICT` (409),
+        `PHONE_INVALID`, `PHONE_REGION_UNSUPPORTED`,
+        `PHONE_TYPE_NOT_ALLOWED` (422), `SEND_LIMIT_REACHED` (429),
+        `SMS_DELIVERY_FAILED` (503).
+      x-rate-limit:
+        - key: phone
+          limit: 5
+          window: 24h
+        - key: account
+          limit: 10
+          window: 24h
+        - key: country-prefix
+          limit: 1000
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - phoneNumber
+              additionalProperties: false
+              properties:
+                phoneNumber:
+                  $ref: '#/components/schemas/PhoneNumber'
+                channel:
+                  type: string
+                  enum:
+                    - sms
+                  default: sms
+                  description: Reserved for WhatsApp or voice later.
+      responses:
+        '202':
+          description: Code sent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Challenge'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /me/onboarding:
+    get:
+      operationId: getOnboarding
+      tags:
+        - Onboarding
+      summary: Get onboarding progress
+      description: Same object as `User.onboarding`; cheap to poll.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: Progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Onboarding'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/onboarding/steps/{step}:
+    put:
+      operationId: updateOnboardingStep
+      tags:
+        - Onboarding
+      summary: Mark an onboarding step completed or skipped
+      description: |
+        Data steps (`email_verified`, `password_set`, `phone_verified`,
+        `date_of_birth`, `terms_accepted`, `gender`) complete themselves when
+        their data is saved; marking them `completed` without the data is
+        `ONBOARDING_STEP_INVALID`. `interests` and `profile` can be `skipped`
+        ("Later" on Set up profile) or `completed` explicitly. Idempotent.
+
+        Errors: `ONBOARDING_STEP_INVALID`, `ONBOARDING_STEP_NOT_SKIPPABLE` (422).
+      parameters:
+        - $ref: '#/components/parameters/OnboardingStep'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OnboardingStepUpdate'
+      responses:
+        '200':
+          description: Updated progress.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Onboarding'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/consents:
+    get:
+      operationId: listConsents
+      tags:
+        - Legal
+      summary: List accepted legal documents
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: Consent history, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: acceptLegalDocument
+      tags:
+        - Legal
+      summary: Record that the user accepted a legal document
+      description: |
+        "Accept" on Terms and Conditions (Figma 1270:11938). Stores the
+        version, time, IP and install for audit. Accepting the same version
+        again returns the existing record (`200`). "Decline" sends nothing:
+        the app signs out and returns to Welcome.
+
+        Errors: `LEGAL_DOCUMENT_NOT_FOUND` (404), `LEGAL_VERSION_OUTDATED`
+        (409, `meta.currentVersion`; the app reloads the document and asks again).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsentRequest'
+            example:
+              documentType: terms
+              version: '2026-09-01'
+              accepted: true
+      responses:
+        '200':
+          description: Already accepted; existing record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consent'
+        '201':
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Consent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/interests:
+    get:
+      operationId: getMyInterests
+      tags:
+        - Interests
+      summary: Get the user's selected interests
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: Selected interests (items no longer in the catalog are left out).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInterests'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: replaceMyInterests
+      tags:
+        - Interests
+      summary: Replace the whole selection
+      description: |
+        "Next" on Tell us what you're interested in (Figma 1261:36247).
+        Replaces the selection in one call and completes the `interests`
+        onboarding step. An empty list is allowed. Guests may call it; the
+        selection moves to their account when they sign up.
+
+        Errors: `INTEREST_NOT_FOUND` (422, `meta.unknownIds`),
+        `INTEREST_LIMIT_EXCEEDED` (422).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserInterestsReplace'
+      responses:
+        '200':
+          description: The saved selection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInterests'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/interests/{interestId}:
+    put:
+      operationId: addMyInterest
+      tags:
+        - Interests
+      summary: Add one interest
+      description: Idempotent (adding twice is fine). For per-tap follow buttons outside onboarding.
+      parameters:
+        - $ref: '#/components/parameters/InterestId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: removeMyInterest
+      tags:
+        - Interests
+      summary: Remove one interest
+      description: Idempotent (removing something not selected is fine).
+      parameters:
+        - $ref: '#/components/parameters/InterestId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/media/uploads:
+    post:
+      operationId: createUploadIntent
+      tags:
+        - Media
+      summary: Get a pre-signed URL to upload a photo
+      description: |
+        Step 1 of the scalable upload path: the app uploads the bytes straight
+        to storage (not through the API), then calls `PUT /me/avatar` or
+        `PUT /me/banner` with the `uploadId`. Unused uploads are deleted after
+        24 hours.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `PAYLOAD_TOO_LARGE` (413),
+        `UNSUPPORTED_MEDIA_TYPE` (415).
+      x-rate-limit:
+        - key: account
+          limit: 30
+          window: 1h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadIntentRequest'
+      responses:
+        '201':
+          description: Upload URL issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadIntent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/avatar:
+    put:
+      operationId: setAvatar
+      tags:
+        - Media
+      summary: Set the profile photo
+      description: |
+        Save on Your avatar (Figma 1261:32306). Two ways to send the photo,
+        same result:
+
+        - `application/json` with an `uploadId` from `POST /me/media/uploads`
+          (recommended; scales to any number of users).
+        - `multipart/form-data` with the file itself (simple path for the
+          first release; max 10 MB).
+
+        Processing: EXIF orientation applied, then **all EXIF removed**
+        (including GPS); HEIC converted; crop applied (must be square);
+        resized to 128/256/512/1024 px; moderation. `status` is `processing`
+        until done; a rejected image is removed and `IMAGE_REJECTED` is
+        reported on the next `GET /me` as `avatar: null`.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `UPLOAD_NOT_FOUND` (404),
+        `UPLOAD_EXPIRED` (410), `PAYLOAD_TOO_LARGE` (413),
+        `UNSUPPORTED_MEDIA_TYPE` (415), `UPLOAD_INCOMPLETE`,
+        `UPLOAD_PURPOSE_MISMATCH`, `IMAGE_UNREADABLE`, `IMAGE_TOO_SMALL`
+        (under 200×200 after crop), `IMAGE_DIMENSIONS_TOO_LARGE` (over 8000 px
+        per side), `CROP_INVALID`, `IMAGE_REJECTED` (422).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageSetFromUpload'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ImageSetMultipart'
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp, image/heic, image/heif
+              crop:
+                contentType: application/json
+      responses:
+        '200':
+          description: New avatar (may still be `processing`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Image'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: removeAvatar
+      tags:
+        - Media
+      summary: Remove the profile photo
+      description: Idempotent. Files are deleted from storage and CDN caches purged.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/banner:
+    put:
+      operationId: setBanner
+      tags:
+        - Media
+      summary: Set the profile banner
+      description: |
+        Save on Your profile banner (Figma 1261:32324). Same rules as
+        `PUT /me/avatar`, except the crop uses the banner ratio 393:264
+        (±2%), minimum 786×528 px after crop, resized to 786/1179/1572 px wide.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageSetFromUpload'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ImageSetMultipart'
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp, image/heic, image/heif
+              crop:
+                contentType: application/json
+      responses:
+        '200':
+          description: New banner (may still be `processing`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Image'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Gone'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: removeBanner
+      tags:
+        - Media
+      summary: Remove the profile banner
+      description: Idempotent.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/sessions:
+    get:
+      operationId: listSessions
+      tags:
+        - Sessions
+      summary: List signed-in devices
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: Active sessions, current first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: revokeOtherSessions
+      tags:
+        - Sessions
+      summary: Sign out every other device
+      description: Keeps the current session. Idempotent.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/sessions/{sessionId}:
+    delete:
+      operationId: revokeSession
+      tags:
+        - Sessions
+      summary: Sign out one device
+      description: |
+        Revoking the current session is the same as logout. Access tokens
+        already issued to that device stay valid until they expire (at most
+        15 minutes) unless the server keeps a revocation list.
+
+        Errors: `SESSION_NOT_FOUND` (404).
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/identities:
+    get:
+      operationId: listIdentities
+      tags:
+        - Sessions
+      summary: List the ways this account can sign in
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: Linked sign-in methods.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdentityList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: linkIdentity
+      tags:
+        - Sessions
+      summary: Link Apple, Google or Facebook to this account
+      description: |
+        Finishes the `ACCOUNT_LINK_REQUIRED` flow (send `linkToken`), or links
+        a provider from settings (send `credential`).
+
+        Errors: `LINK_TOKEN_INVALID`, `SOCIAL_TOKEN_INVALID` (401),
+        `IDENTITY_ALREADY_LINKED` (409, that provider account belongs to
+        another Bondfire user).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LinkIdentityRequest'
+      responses:
+        '201':
+          description: Linked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Identity'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/identities/{provider}:
+    delete:
+      operationId: unlinkIdentity
+      tags:
+        - Sessions
+      summary: Unlink a sign-in method
+      description: |
+        Needs `X-Reauth-Token`. The last remaining way to sign in cannot be
+        removed (`LAST_LOGIN_METHOD`, 409).
+      parameters:
+        - $ref: '#/components/parameters/Provider'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ReauthToken'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/devices/{installationId}:
+    put:
+      operationId: registerDevice
+      tags:
+        - Devices
+      summary: Register or update this install for push notifications
+      description: |
+        Idempotent upsert keyed by install. Call after sign-in, whenever the
+        push token changes, and when the OS notification permission changes.
+        A push token moving to another account is detached from the old one.
+        Guests allowed.
+      parameters:
+        - $ref: '#/components/parameters/InstallationId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceRegistration'
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceRegistration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: unregisterDevice
+      tags:
+        - Devices
+      summary: Stop push notifications to this install
+      description: Idempotent. Called on logout.
+      parameters:
+        - $ref: '#/components/parameters/InstallationId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Access token from any sign-in call. JWT signed with ES256; claims:
+        `sub` (user id), `sid` (session id), `acct` (`user` | `guest`),
+        `iat`, `exp` (15 minutes), `iss`, `aud`. Clients treat it as opaque.
+  schemas:
+    readiness:
+      type: object
+      required:
+        - status
+        - checks
+      properties:
+        status:
+          type: string
+          enum:
+            - ready
+            - degraded
+            - down
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            enum:
+              - ok
+              - failing
+          examples:
+            - database: ok
+              email: ok
+              sms: failing
+              storage: ok
+    Platform:
+      type: string
+      enum:
+        - ios
+        - android
+        - web
+    PasswordPolicy:
+      type: object
+      required:
+        - minLength
+        - maxLength
+        - requireUppercase
+        - requireLowercase
+        - requireDigit
+        - requireSymbol
+      properties:
+        minLength:
+          type: integer
+          examples:
+            - 12
+        maxLength:
+          type: integer
+          examples:
+            - 128
+        requireUppercase:
+          type: boolean
+          examples:
+            - true
+        requireLowercase:
+          type: boolean
+          examples:
+            - false
+        requireDigit:
+          type: boolean
+          examples:
+            - true
+        requireSymbol:
+          type: boolean
+          examples:
+            - true
+    LanguageTag:
+      type: string
+      description: BCP 47 language tag from `GET /config` → `supportedLanguages`.
+      pattern: ^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$
+      examples:
+        - en
+        - es
+        - hi
+    AppConfig:
+      type: object
+      description: |
+        Everything the app would otherwise hardcode. Cache it (see `ETag`) and
+        refresh on launch; the app must still work with the last cached copy.
+      required:
+        - minimumSupportedVersion
+        - passwordPolicy
+        - otp
+        - minimumAge
+        - supportedLanguages
+        - legal
+        - features
+        - limits
+      properties:
+        minimumSupportedVersion:
+          type: object
+          description: Older builds receive `426 UPGRADE_REQUIRED` on every call.
+          properties:
+            ios:
+              type: string
+              examples:
+                - 1.0.0
+            android:
+              type: string
+              examples:
+                - 1.0.0
+            web:
+              type: string
+              examples:
+                - 1.0.0
+        latestVersion:
+          type: object
+          description: Used to show an optional "update available" prompt.
+          properties:
+            ios:
+              type: string
+            android:
+              type: string
+            web:
+              type: string
+        passwordPolicy:
+          $ref: '#/components/schemas/PasswordPolicy'
+        otp:
+          type: object
+          required:
+            - length
+            - ttlSeconds
+            - resendCooldownSeconds
+            - maxAttempts
+          properties:
+            length:
+              type: integer
+              const: 6
+            ttlSeconds:
+              type: integer
+              examples:
+                - 600
+            resendCooldownSeconds:
+              type: integer
+              examples:
+                - 30
+            maxAttempts:
+              type: integer
+              examples:
+                - 5
+        minimumAge:
+          type: integer
+          examples:
+            - 13
+        supportedLanguages:
+          type: array
+          items:
+            type: object
+            required:
+              - tag
+              - name
+              - nativeName
+            properties:
+              tag:
+                $ref: '#/components/schemas/LanguageTag'
+              name:
+                type: string
+                examples:
+                  - Hindi
+              nativeName:
+                type: string
+                examples:
+                  - हिन्दी
+        legal:
+          type: object
+          required:
+            - termsVersion
+            - privacyVersion
+          properties:
+            termsVersion:
+              type: string
+              examples:
+                - '2026-09-01'
+            privacyVersion:
+              type: string
+              examples:
+                - '2026-09-01'
+        features:
+          type: object
+          description: Remote switches, so a feature can be turned off without an app release.
+          properties:
+            guestMode:
+              type: boolean
+            phoneVerificationRequired:
+              type: boolean
+            socialLogin:
+              type: object
+              properties:
+                apple:
+                  type: boolean
+                google:
+                  type: boolean
+                facebook:
+                  type: boolean
+        limits:
+          type: object
+          properties:
+            maxInterests:
+              type: integer
+              examples:
+                - 100
+            avatarMaxBytes:
+              type: integer
+              examples:
+                - 10485760
+            bannerMaxBytes:
+              type: integer
+              examples:
+                - 10485760
+            nameMaxLength:
+              type: integer
+              examples:
+                - 50
+    ErrorCode:
+      type: string
+      description: |
+        Stable, machine-readable error code. New codes may be added in v1;
+        clients must treat unknown codes by their HTTP status.
+      enum:
+        - MALFORMED_REQUEST
+        - VALIDATION_FAILED
+        - UNAUTHENTICATED
+        - TOKEN_EXPIRED
+        - TOKEN_INVALID
+        - FORBIDDEN
+        - GUEST_NOT_ALLOWED
+        - NOT_FOUND
+        - METHOD_NOT_ALLOWED
+        - CONFLICT
+        - RATE_LIMITED
+        - UPGRADE_REQUIRED
+        - IDEMPOTENCY_KEY_REUSED
+        - IDEMPOTENCY_IN_PROGRESS
+        - PAYLOAD_TOO_LARGE
+        - UNSUPPORTED_MEDIA_TYPE
+        - INTERNAL_ERROR
+        - SERVICE_UNAVAILABLE
+        - MAINTENANCE
+        - EMAIL_INVALID
+        - EMAIL_DOMAIN_NOT_ALLOWED
+        - EMAIL_TAKEN
+        - EMAIL_DELIVERY_FAILED
+        - CHALLENGE_NOT_FOUND
+        - CHALLENGE_EXPIRED
+        - CHALLENGE_LOCKED
+        - CHALLENGE_ALREADY_USED
+        - CODE_INCORRECT
+        - CODE_FORMAT_INVALID
+        - RESEND_TOO_SOON
+        - SEND_LIMIT_REACHED
+        - SIGNUP_TOKEN_INVALID
+        - SIGNUP_TOKEN_EXPIRED
+        - PASSWORD_POLICY_VIOLATION
+        - PASSWORD_COMPROMISED
+        - PASSWORD_REUSED
+        - PASSWORD_INCORRECT
+        - AGE_REQUIREMENT_NOT_MET
+        - INVALID_CREDENTIALS
+        - ACCOUNT_LOCKED
+        - ACCOUNT_SUSPENDED
+        - ACCOUNT_PENDING_DELETION
+        - ACCOUNT_DELETED
+        - REFRESH_TOKEN_INVALID
+        - REFRESH_TOKEN_REUSED
+        - SESSION_REVOKED
+        - SESSION_NOT_FOUND
+        - REAUTH_REQUIRED
+        - RESET_TOKEN_INVALID
+        - RESET_TOKEN_EXPIRED
+        - SOCIAL_PROVIDER_UNSUPPORTED
+        - SOCIAL_TOKEN_INVALID
+        - SOCIAL_NONCE_MISMATCH
+        - SOCIAL_EMAIL_UNVERIFIED
+        - ACCOUNT_LINK_REQUIRED
+        - LINK_TOKEN_INVALID
+        - IDENTITY_ALREADY_LINKED
+        - LAST_LOGIN_METHOD
+        - PHONE_INVALID
+        - PHONE_REGION_UNSUPPORTED
+        - PHONE_TYPE_NOT_ALLOWED
+        - PHONE_TAKEN
+        - SMS_DELIVERY_FAILED
+        - NAME_INVALID
+        - DATE_OF_BIRTH_INVALID
+        - DATE_OF_BIRTH_LOCKED
+        - LANGUAGE_UNSUPPORTED
+        - LEGAL_DOCUMENT_NOT_FOUND
+        - LEGAL_VERSION_OUTDATED
+        - CONSENT_REQUIRED
+        - ONBOARDING_STEP_INVALID
+        - ONBOARDING_STEP_NOT_SKIPPABLE
+        - INTEREST_NOT_FOUND
+        - INTEREST_LIMIT_EXCEEDED
+        - SEARCH_QUERY_INVALID
+        - CURSOR_INVALID
+        - UPLOAD_NOT_FOUND
+        - UPLOAD_EXPIRED
+        - UPLOAD_INCOMPLETE
+        - UPLOAD_PURPOSE_MISMATCH
+        - IMAGE_UNREADABLE
+        - IMAGE_TOO_SMALL
+        - IMAGE_DIMENSIONS_TOO_LARGE
+        - IMAGE_REJECTED
+        - CROP_INVALID
+    FieldError:
+      type: object
+      required:
+        - field
+        - code
+        - message
+      properties:
+        field:
+          type: string
+          description: JSON pointer to the invalid field in the request body or a query parameter name.
+          examples:
+            - /password
+            - q
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: Human-readable, localised.
+        meta:
+          type: object
+          additionalProperties: true
+          examples:
+            - unmetRules:
+                - uppercase
+                - symbol
+    Problem:
+      type: object
+      description: |
+        Every error response uses this shape with content type
+        `application/problem+json`. Clients branch on `code`, never on `title`
+        or `detail` (those are human-readable and may be translated).
+      required:
+        - type
+        - title
+        - status
+        - code
+        - requestId
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: Stable link to documentation for this error code.
+          examples:
+            - https://api.bondfire.app/errors/email-taken
+        title:
+          type: string
+          description: Short, human-readable summary, localised via `Accept-Language`.
+          examples:
+            - Email already registered
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+          description: Human-readable explanation safe to show to the user.
+        instance:
+          type: string
+          description: Path of the request that failed.
+          examples:
+            - /v1/auth/signup/email
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        requestId:
+          type: string
+          description: Same value as the `X-Request-Id` response header. Quote it in bug reports.
+        retryAfterSeconds:
+          type: integer
+          minimum: 0
+          description: Present for 423, 429 and 503. Mirrors the `Retry-After` header.
+        errors:
+          type: array
+          description: Field-level problems (422 only). One entry per invalid field.
+          items:
+            $ref: '#/components/schemas/FieldError'
+        meta:
+          type: object
+          description: Extra machine-readable data for specific codes (see each operation).
+          additionalProperties: true
+    LegalDocumentType:
+      type: string
+      enum:
+        - terms
+        - privacy
+    Timestamp:
+      type: string
+      format: date-time
+      description: RFC 3339 timestamp, always UTC (`Z`).
+      examples:
+        - '2026-09-27T10:15:00Z'
+    LegalDocument:
+      type: object
+      required:
+        - type
+        - version
+        - title
+        - summary
+        - url
+        - effectiveAt
+        - requiresAcceptance
+      properties:
+        type:
+          $ref: '#/components/schemas/LegalDocumentType'
+        version:
+          type: string
+          examples:
+            - '2026-09-01'
+        title:
+          type: string
+          examples:
+            - Terms and Conditions
+        summary:
+          type: string
+          description: The short excerpt shown on the Terms screen (Figma 1270:11938).
+        url:
+          type: string
+          format: uri
+          description: Full text, opened in the in-app browser.
+        effectiveAt:
+          $ref: '#/components/schemas/Timestamp'
+        requiresAcceptance:
+          type: boolean
+    Country:
+      type: object
+      required:
+        - code
+        - name
+        - dialCode
+        - flagEmoji
+        - phoneSignupSupported
+      properties:
+        code:
+          type: string
+          description: ISO 3166-1 alpha-2.
+          pattern: ^[A-Z]{2}$
+          examples:
+            - US
+        name:
+          type: string
+          description: Localised via `Accept-Language`.
+          examples:
+            - United States
+        dialCode:
+          type: string
+          pattern: ^\+[0-9]{1,4}$
+          examples:
+            - '+1'
+        flagEmoji:
+          type: string
+          examples:
+            - 🇺🇸
+        exampleNumber:
+          type: string
+          description: National format example for the input placeholder.
+          examples:
+            - 415-555-0123
+        phoneSignupSupported:
+          type: boolean
+          description: '`false` for regions we cannot send SMS to (the app greys them out).'
+        contentAvailable:
+          type: boolean
+          description: Whether Bondfire content is available there (Figma note - "only shipping in US").
+    CountryList:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Country'
+        defaultCountryCode:
+          type: string
+          description: Best guess from the request IP, for preselecting the phone picker.
+          examples:
+            - US
+    Id:
+      type: string
+      description: Opaque identifier. Clients must not parse it or assume a format.
+      minLength: 1
+      maxLength: 64
+      examples:
+        - 6650f1c2a4b7e9d3c1f00a12
+    InterestKind:
+      type: string
+      description: |
+        What an interest points at. Maps the Figma content types; new kinds may
+        be added, so clients must render unknown kinds generically.
+      enum:
+        - heritage
+        - place
+        - genre
+        - artist
+        - album
+        - song
+        - story
+        - playlist
+        - favorite
+    Image:
+      type: object
+      required:
+        - url
+        - width
+        - height
+        - status
+      properties:
+        url:
+          type: string
+          format: uri
+          description: CDN URL of the default size. URLs change when the image changes, so they can be cached forever.
+        width:
+          type: integer
+        height:
+          type: integer
+        status:
+          type: string
+          enum:
+            - processing
+            - ready
+            - rejected
+          description: '`processing` right after upload while variants and moderation run; poll `GET /me` or wait for the next fetch.'
+        blurhash:
+          type:
+            - string
+            - 'null'
+          description: Tiny placeholder to paint while the image loads.
+        variants:
+          type: object
+          description: Resized copies keyed by width in pixels.
+          additionalProperties:
+            type: string
+            format: uri
+          examples:
+            - '128': https://cdn.bondfire.app/a/128.jpg
+              '512': https://cdn.bondfire.app/a/512.jpg
+    Interest:
+      type: object
+      required:
+        - id
+        - kind
+        - title
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        kind:
+          $ref: '#/components/schemas/InterestKind'
+        title:
+          type: string
+          examples:
+            - San Francisco
+        subtitle:
+          type:
+            - string
+            - 'null'
+          examples:
+            - Daya
+        image:
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        presentation:
+          type: object
+          description: Layout hint for the featured grid (Figma 1261:36247).
+          properties:
+            size:
+              type: string
+              enum:
+                - small
+                - large
+              default: small
+    PageInfo:
+      type: object
+      required:
+        - hasMore
+      properties:
+        nextCursor:
+          type:
+            - string
+            - 'null'
+          description: Pass as `cursor` to get the next page. Opaque; expires after 24 hours (`CURSOR_INVALID`).
+        hasMore:
+          type: boolean
+    InterestPage:
+      type: object
+      required:
+        - data
+        - page
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Interest'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    Email:
+      type: string
+      format: email
+      maxLength: 254
+      description: |
+        Email address. The server trims whitespace, lowercases the domain and
+        compares the whole address case-insensitively. `name+tag@` addresses are
+        accepted and treated as distinct accounts. Internationalised domains are
+        accepted and stored in punycode.
+      examples:
+        - amelia.jane@example.com
+    EmailRequest:
+      type: object
+      required:
+        - email
+      additionalProperties: false
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+    EmailAvailability:
+      type: object
+      required:
+        - email
+        - available
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+        available:
+          type: boolean
+          description: '`false` when the address already has an account.'
+        suggestion:
+          description: Likely typo fix for the domain, if any (for a "Did you mean …?" hint).
+          oneOf:
+            - $ref: '#/components/schemas/Email'
+            - type: 'null'
+          examples:
+            - amelia.jane@gmail.com
+    ChallengePurpose:
+      type: string
+      description: What a verified code unlocks.
+      enum:
+        - signup_email
+        - password_reset
+        - phone_verification
+    MaskedDestination:
+      type: string
+      description: Where a code was sent, partly hidden for display (never the full value).
+      examples:
+        - a•••••e@example.com
+        - +1 •••-•••-0123
+    Challenge:
+      type: object
+      description: |
+        A one-time code that was sent somewhere. The code itself is never
+        returned. A resend keeps the same `id` and invalidates the previous code.
+      required:
+        - id
+        - purpose
+        - channel
+        - destination
+        - codeLength
+        - expiresAt
+        - resendAvailableAt
+        - attemptsRemaining
+        - sendsRemaining
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        purpose:
+          $ref: '#/components/schemas/ChallengePurpose'
+        channel:
+          type: string
+          enum:
+            - email
+            - sms
+        destination:
+          $ref: '#/components/schemas/MaskedDestination'
+        codeLength:
+          type: integer
+          const: 6
+        expiresAt:
+          description: When the current code stops working (10 minutes after it was sent).
+          $ref: '#/components/schemas/Timestamp'
+        resendAvailableAt:
+          description: Earliest time a resend is accepted. Drives the "Send again in N seconds" label.
+          $ref: '#/components/schemas/Timestamp'
+        attemptsRemaining:
+          type: integer
+          minimum: 0
+          description: Wrong-code attempts left before the challenge locks.
+        sendsRemaining:
+          type: integer
+          minimum: 0
+          description: Sends left for this destination in the rolling 24-hour window.
+    Password:
+      type: string
+      format: password
+      writeOnly: true
+      minLength: 12
+      maxLength: 128
+      description: |
+        New password. Policy (also served by `GET /config`): 12–128 characters,
+        at least one uppercase letter, one digit and one symbol. Any Unicode is
+        allowed; it is NFKC-normalised before hashing and never truncated.
+        The server may also reject passwords found in known breach lists
+        (`PASSWORD_COMPROMISED`).
+    DeviceInfo:
+      type: object
+      description: |
+        Describes the app install making the request. Sent on every call that
+        creates a session so sessions can be listed and revoked per device.
+      required:
+        - installationId
+        - platform
+        - appVersion
+      additionalProperties: false
+      properties:
+        installationId:
+          type: string
+          format: uuid
+          description: Random UUID generated on first launch and kept until the app is uninstalled. Not a hardware identifier.
+        platform:
+          $ref: '#/components/schemas/Platform'
+        appVersion:
+          type: string
+          pattern: ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$
+          examples:
+            - 1.4.0+42
+        osVersion:
+          type: string
+          maxLength: 32
+          examples:
+            - iOS 18.1
+        model:
+          type: string
+          maxLength: 64
+          description: Marketing model name, for the session list only.
+          examples:
+            - iPhone 16
+        locale:
+          type: string
+          maxLength: 35
+          examples:
+            - en-IN
+        timeZone:
+          type: string
+          maxLength: 64
+          description: IANA zone name, used to compute age on the user's local date.
+          examples:
+            - Asia/Kolkata
+    SignupCompleteRequest:
+      type: object
+      required:
+        - signupToken
+        - password
+        - device
+      additionalProperties: false
+      properties:
+        signupToken:
+          type: string
+        password:
+          $ref: '#/components/schemas/Password'
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+        preferredLanguage:
+          $ref: '#/components/schemas/LanguageTag'
+    TokenPair:
+      type: object
+      required:
+        - tokenType
+        - accessToken
+        - accessTokenExpiresAt
+        - refreshToken
+        - refreshTokenExpiresAt
+      properties:
+        tokenType:
+          type: string
+          const: Bearer
+        accessToken:
+          type: string
+          description: 'Short-lived JWT (15 minutes). Send as `Authorization: Bearer <accessToken>`.'
+        accessTokenExpiresAt:
+          $ref: '#/components/schemas/Timestamp'
+        refreshToken:
+          type: string
+          description: |
+            Opaque, single-use. Every refresh returns a new one and retires the
+            old one. Store it in the Keychain / Android Keystore, never in plain
+            storage.
+        refreshTokenExpiresAt:
+          $ref: '#/components/schemas/Timestamp'
+    SessionInfo:
+      type: object
+      required:
+        - id
+        - createdAt
+        - lastActiveAt
+        - current
+        - device
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        lastActiveAt:
+          $ref: '#/components/schemas/Timestamp'
+        current:
+          type: boolean
+          description: '`true` for the session making the request.'
+        signInMethod:
+          type: string
+          enum:
+            - password
+            - apple
+            - google
+            - facebook
+            - guest
+            - password_reset
+        device:
+          type: object
+          properties:
+            platform:
+              $ref: '#/components/schemas/Platform'
+            model:
+              type: string
+            appVersion:
+              type: string
+        approximateLocation:
+          type: string
+          description: City-level location from the IP address, for the session list only.
+          examples:
+            - Bengaluru, IN
+    AccountType:
+      type: string
+      enum:
+        - user
+        - guest
+    PhoneNumber:
+      type: string
+      description: Phone number in E.164 format (`+` then country code and number, digits only).
+      pattern: ^\+[1-9][0-9]{6,14}$
+      examples:
+        - '+14155550123'
+    DateOfBirth:
+      type: string
+      format: date
+      description: |
+        Calendar date `YYYY-MM-DD` with no time zone. Must be a real date, not in
+        the future, and the person must be at least `minimumAge` (13) years old
+        and at most 120 years old.
+      examples:
+        - '2000-01-12'
+    Gender:
+      type: string
+      description: As offered on the Figma gender screen (1261:31795).
+      enum:
+        - female
+        - male
+        - non_binary
+        - prefer_not_to_say
+    OnboardingStepName:
+      type: string
+      description: Steps of the Figma onboarding flow, in order.
+      enum:
+        - email_verified
+        - password_set
+        - phone_verified
+        - date_of_birth
+        - terms_accepted
+        - gender
+        - interests
+        - profile
+    OnboardingStep:
+      type: object
+      required:
+        - step
+        - status
+        - skippable
+      properties:
+        step:
+          $ref: '#/components/schemas/OnboardingStepName'
+        status:
+          type: string
+          enum:
+            - pending
+            - completed
+            - skipped
+        skippable:
+          type: boolean
+        updatedAt:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+    Onboarding:
+      type: object
+      description: |
+        Server-side onboarding progress, so a user who reinstalls or switches
+        phones resumes where they stopped. Data steps complete automatically
+        when their data is saved; `interests` and `profile` can also be skipped.
+      required:
+        - status
+        - steps
+      properties:
+        status:
+          type: string
+          enum:
+            - in_progress
+            - completed
+        nextStep:
+          description: First step still pending, or `null` when everything is done or skipped.
+          oneOf:
+            - $ref: '#/components/schemas/OnboardingStepName'
+            - type: 'null'
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnboardingStep'
+    ConsentStatus:
+      type: object
+      required:
+        - termsUpToDate
+        - privacyUpToDate
+      properties:
+        termsAcceptedVersion:
+          type:
+            - string
+            - 'null'
+        termsUpToDate:
+          type: boolean
+          description: '`false` when a newer terms version needs acceptance; the app shows the Terms screen again.'
+        privacyAcceptedVersion:
+          type:
+            - string
+            - 'null'
+        privacyUpToDate:
+          type: boolean
+    User:
+      type: object
+      description: The signed-in account as its owner sees it (private view).
+      required:
+        - id
+        - accountType
+        - status
+        - onboarding
+        - consents
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        accountType:
+          $ref: '#/components/schemas/AccountType'
+        status:
+          type: string
+          enum:
+            - active
+            - pending_deletion
+        deletionScheduledAt:
+          description: Set while `status` is `pending_deletion`; signing in before then cancels the deletion.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        email:
+          oneOf:
+            - $ref: '#/components/schemas/Email'
+            - type: 'null'
+        emailVerified:
+          type: boolean
+        phoneNumber:
+          oneOf:
+            - $ref: '#/components/schemas/PhoneNumber'
+            - type: 'null'
+        phoneVerified:
+          type: boolean
+        name:
+          type:
+            - string
+            - 'null'
+          maxLength: 50
+        dateOfBirth:
+          oneOf:
+            - $ref: '#/components/schemas/DateOfBirth'
+            - type: 'null'
+        gender:
+          oneOf:
+            - $ref: '#/components/schemas/Gender'
+            - type: 'null'
+        preferredLanguage:
+          oneOf:
+            - $ref: '#/components/schemas/LanguageTag'
+            - type: 'null'
+        avatar:
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        banner:
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        stats:
+          type: object
+          properties:
+            followers:
+              type: integer
+              minimum: 0
+            following:
+              type: integer
+              minimum: 0
+        loginMethods:
+          type: array
+          items:
+            type: string
+            enum:
+              - password
+              - apple
+              - google
+              - facebook
+        onboarding:
+          $ref: '#/components/schemas/Onboarding'
+        consents:
+          $ref: '#/components/schemas/ConsentStatus'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    Session:
+      type: object
+      description: Returned by every call that signs someone in.
+      required:
+        - tokens
+        - session
+        - user
+        - isNewUser
+      properties:
+        tokens:
+          $ref: '#/components/schemas/TokenPair'
+        session:
+          $ref: '#/components/schemas/SessionInfo'
+        user:
+          $ref: '#/components/schemas/User'
+        isNewUser:
+          type: boolean
+          description: '`true` when this call created the account (sign-up, first social login, new guest).'
+    OtpCode:
+      type: string
+      description: One-time code as typed by the user. Exactly 6 ASCII digits; leading zeros are significant.
+      pattern: ^[0-9]{6}$
+      examples:
+        - '048213'
+    ChallengeVerifyRequest:
+      type: object
+      required:
+        - code
+      additionalProperties: false
+      properties:
+        code:
+          $ref: '#/components/schemas/OtpCode'
+    SignupEmailVerified:
+      type: object
+      required:
+        - purpose
+        - email
+        - signupToken
+        - signupTokenExpiresAt
+      properties:
+        purpose:
+          type: string
+          const: signup_email
+        email:
+          $ref: '#/components/schemas/Email'
+        signupToken:
+          type: string
+          description: Single-use proof that this email was verified. Only valid for `POST /auth/signup/complete`, for 30 minutes.
+        signupTokenExpiresAt:
+          $ref: '#/components/schemas/Timestamp'
+    PasswordResetVerified:
+      type: object
+      required:
+        - purpose
+        - resetToken
+        - resetTokenExpiresAt
+      properties:
+        purpose:
+          type: string
+          const: password_reset
+        resetToken:
+          type: string
+          description: Single-use token for `POST /auth/password-reset/complete`, valid for 15 minutes.
+        resetTokenExpiresAt:
+          $ref: '#/components/schemas/Timestamp'
+    PhoneVerified:
+      type: object
+      required:
+        - purpose
+        - phoneNumber
+        - verifiedAt
+      properties:
+        purpose:
+          type: string
+          const: phone_verification
+        phoneNumber:
+          $ref: '#/components/schemas/PhoneNumber'
+        verifiedAt:
+          $ref: '#/components/schemas/Timestamp'
+    ChallengeVerification:
+      description: Result of a correct code. Shape depends on the challenge purpose.
+      oneOf:
+        - $ref: '#/components/schemas/SignupEmailVerified'
+        - $ref: '#/components/schemas/PasswordResetVerified'
+        - $ref: '#/components/schemas/PhoneVerified'
+      discriminator:
+        propertyName: purpose
+        mapping:
+          signup_email: '#/components/schemas/SignupEmailVerified'
+          password_reset: '#/components/schemas/PasswordResetVerified'
+          phone_verification: '#/components/schemas/PhoneVerified'
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+        - device
+      additionalProperties: false
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          maxLength: 128
+          description: Not checked against the current policy, so older passwords keep working.
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+    SocialProvider:
+      type: string
+      enum:
+        - apple
+        - google
+        - facebook
+    SocialCredential:
+      type: object
+      description: |
+        What the native provider SDK returned on the phone. The server verifies
+        it with the provider; the app never sends a provider password.
+        - apple: `idToken` (+ `authorizationCode` so the server can revoke the Apple token on account deletion) and `nonce`.
+        - google: `idToken` (audience = our iOS/Android/web client IDs).
+        - facebook: `accessToken` (checked with the Graph API `debug_token`) or a Limited Login `idToken` with `nonce` on iOS.
+      required:
+        - provider
+      additionalProperties: false
+      properties:
+        provider:
+          $ref: '#/components/schemas/SocialProvider'
+        idToken:
+          type: string
+        accessToken:
+          type: string
+        authorizationCode:
+          type: string
+        nonce:
+          type: string
+          description: The raw nonce whose SHA-256 was passed to the provider SDK. Prevents token replay.
+        givenName:
+          type: string
+          maxLength: 50
+          description: Apple only sends the name on the very first authorisation; forward it once.
+        familyName:
+          type: string
+          maxLength: 50
+    SocialLoginRequest:
+      type: object
+      required:
+        - credential
+        - device
+      additionalProperties: false
+      properties:
+        credential:
+          $ref: '#/components/schemas/SocialCredential'
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+        preferredLanguage:
+          $ref: '#/components/schemas/LanguageTag'
+    GuestSessionRequest:
+      type: object
+      required:
+        - device
+        - dateOfBirth
+      additionalProperties: false
+      properties:
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+        dateOfBirth:
+          $ref: '#/components/schemas/DateOfBirth'
+        preferredLanguage:
+          $ref: '#/components/schemas/LanguageTag'
+    RefreshRequest:
+      type: object
+      required:
+        - refreshToken
+      additionalProperties: false
+      properties:
+        refreshToken:
+          type: string
+    LogoutRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        refreshToken:
+          type: string
+          description: Optional. When sent, that refresh token is revoked even if the access token has already expired.
+    PasswordResetCompleteRequest:
+      type: object
+      required:
+        - resetToken
+        - newPassword
+        - device
+      additionalProperties: false
+      properties:
+        resetToken:
+          type: string
+        newPassword:
+          $ref: '#/components/schemas/Password'
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+    ReauthenticateRequest:
+      type: object
+      description: Exactly one of `password` or `social` is required.
+      additionalProperties: false
+      properties:
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          maxLength: 128
+        social:
+          $ref: '#/components/schemas/SocialCredential'
+      oneOf:
+        - required:
+            - password
+        - required:
+            - social
+    ReauthToken:
+      type: object
+      required:
+        - reauthToken
+        - expiresAt
+      properties:
+        reauthToken:
+          type: string
+          description: Send as `X-Reauth-Token` on sensitive calls (delete account, change email, unlink a login method). Valid 5 minutes.
+        expiresAt:
+          $ref: '#/components/schemas/Timestamp'
+    AccountDeletionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+    AccountDeletion:
+      type: object
+      required:
+        - status
+        - deletionScheduledAt
+      properties:
+        status:
+          type: string
+          const: pending_deletion
+        deletionScheduledAt:
+          $ref: '#/components/schemas/Timestamp'
+    UserUpdate:
+      type: object
+      description: |
+        Partial update (JSON Merge Patch semantics). Send only the fields that
+        change; `null` clears a nullable field. At least one field is required.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        name:
+          type:
+            - string
+            - 'null'
+          minLength: 1
+          maxLength: 50
+          description: Trimmed; inner whitespace collapsed; control and zero-width characters rejected (`NAME_INVALID`). Emoji allowed.
+        dateOfBirth:
+          $ref: '#/components/schemas/DateOfBirth'
+        gender:
+          oneOf:
+            - $ref: '#/components/schemas/Gender'
+            - type: 'null'
+        preferredLanguage:
+          $ref: '#/components/schemas/LanguageTag'
+    PasswordChangeRequest:
+      type: object
+      required:
+        - newPassword
+      additionalProperties: false
+      properties:
+        currentPassword:
+          type: string
+          format: password
+          writeOnly: true
+          maxLength: 128
+          description: Required when the account already has a password. Omitted when a social-only account sets its first password (then `X-Reauth-Token` is required).
+        newPassword:
+          $ref: '#/components/schemas/Password'
+        signOutOtherSessions:
+          type: boolean
+          default: true
+    OnboardingStepUpdate:
+      type: object
+      required:
+        - status
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum:
+            - completed
+            - skipped
+    Consent:
+      type: object
+      required:
+        - documentType
+        - version
+        - acceptedAt
+      properties:
+        documentType:
+          $ref: '#/components/schemas/LegalDocumentType'
+        version:
+          type: string
+        acceptedAt:
+          $ref: '#/components/schemas/Timestamp'
+    ConsentList:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Consent'
+    ConsentRequest:
+      type: object
+      required:
+        - documentType
+        - version
+        - accepted
+      additionalProperties: false
+      properties:
+        documentType:
+          $ref: '#/components/schemas/LegalDocumentType'
+        version:
+          type: string
+          description: The version the user actually saw. Rejected with `LEGAL_VERSION_OUTDATED` if a newer one is live.
+        accepted:
+          type: boolean
+          const: true
+          description: Declining is not recorded; the app signs the user out instead.
+    UserInterests:
+      type: object
+      required:
+        - data
+        - updatedAt
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Interest'
+        updatedAt:
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+    UserInterestsReplace:
+      type: object
+      required:
+        - interestIds
+      additionalProperties: false
+      properties:
+        interestIds:
+          type: array
+          description: The full new selection. Duplicates are ignored; an empty list clears it (Figma lets the user continue with nothing selected).
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Id'
+    ImagePurpose:
+      type: string
+      enum:
+        - avatar
+        - banner
+    UploadIntentRequest:
+      type: object
+      required:
+        - purpose
+        - contentType
+        - contentLength
+      additionalProperties: false
+      properties:
+        purpose:
+          $ref: '#/components/schemas/ImagePurpose'
+        contentType:
+          type: string
+          enum:
+            - image/jpeg
+            - image/png
+            - image/webp
+            - image/heic
+            - image/heif
+        contentLength:
+          type: integer
+          minimum: 1
+          maximum: 10485760
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          description: Optional checksum; the storage rejects a body that does not match.
+    UploadIntent:
+      type: object
+      required:
+        - uploadId
+        - uploadUrl
+        - method
+        - headers
+        - expiresAt
+      properties:
+        uploadId:
+          $ref: '#/components/schemas/Id'
+        uploadUrl:
+          type: string
+          format: uri
+          description: Pre-signed storage URL. Upload the raw bytes there directly, not to the API.
+        method:
+          type: string
+          const: PUT
+        headers:
+          type: object
+          description: Headers the upload request must carry exactly.
+          additionalProperties:
+            type: string
+        expiresAt:
+          description: The URL stops working at this time (15 minutes).
+          $ref: '#/components/schemas/Timestamp'
+    ImageCrop:
+      type: object
+      description: |
+        Crop rectangle in the original image, as fractions of its width and
+        height (0–1) after applying EXIF orientation. Avatars must be square in
+        pixels; banners use the Figma band ratio (393:264, about 1.49:1) within 2%.
+      required:
+        - x
+        - 'y'
+        - width
+        - height
+      additionalProperties: false
+      properties:
+        x:
+          type: number
+          minimum: 0
+          maximum: 1
+        'y':
+          type: number
+          minimum: 0
+          maximum: 1
+        width:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1
+        height:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 1
+    ImageSetFromUpload:
+      type: object
+      required:
+        - uploadId
+        - crop
+      additionalProperties: false
+      properties:
+        uploadId:
+          $ref: '#/components/schemas/Id'
+        crop:
+          $ref: '#/components/schemas/ImageCrop'
+    ImageSetMultipart:
+      type: object
+      required:
+        - file
+        - crop
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          description: JPEG, PNG, WebP or HEIC, at most 10 MB.
+        crop:
+          description: JSON-encoded `ImageCrop`.
+          type: string
+          contentMediaType: application/json
+    SessionList:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionInfo'
+    Identity:
+      type: object
+      required:
+        - provider
+        - linkedAt
+      properties:
+        provider:
+          type: string
+          enum:
+            - password
+            - apple
+            - google
+            - facebook
+        email:
+          description: Email the provider shared, if any (Apple may give a private relay address).
+          oneOf:
+            - $ref: '#/components/schemas/Email'
+            - type: 'null'
+        linkedAt:
+          $ref: '#/components/schemas/Timestamp'
+    IdentityList:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Identity'
+    LinkIdentityRequest:
+      type: object
+      description: Links a social login to the signed-in account. Send either the `linkToken` from an `ACCOUNT_LINK_REQUIRED` error, or a fresh credential.
+      additionalProperties: false
+      properties:
+        linkToken:
+          type: string
+        credential:
+          $ref: '#/components/schemas/SocialCredential'
+      oneOf:
+        - required:
+            - linkToken
+        - required:
+            - credential
+    DeviceRegistration:
+      type: object
+      description: Push notification registration for one app install.
+      required:
+        - platform
+        - pushProvider
+        - pushToken
+      additionalProperties: false
+      properties:
+        platform:
+          $ref: '#/components/schemas/Platform'
+        pushProvider:
+          type: string
+          enum:
+            - apns
+            - fcm
+            - webpush
+        pushToken:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        appVersion:
+          type: string
+        locale:
+          type: string
+          maxLength: 35
+        timeZone:
+          type: string
+          maxLength: 64
+        notificationsEnabled:
+          type: boolean
+          description: Mirrors the OS permission so the server does not send to a silenced device.
+  parameters:
+    ClientPlatform:
+      name: X-Client-Platform
+      in: header
+      required: true
+      description: Sent on every request. Used for minimum-version checks and analytics.
+      schema:
+        $ref: '#/components/schemas/Platform'
+    ClientVersion:
+      name: X-Client-Version
+      in: header
+      required: true
+      description: App version (semver). Builds below `minimumSupportedVersion` get `426 UPGRADE_REQUIRED`.
+      schema:
+        type: string
+        examples:
+          - 1.4.0
+    AcceptLanguage:
+      name: Accept-Language
+      in: header
+      required: false
+      description: Language for error titles, legal summaries and country names. Falls back to English.
+      schema:
+        type: string
+        examples:
+          - hi-IN, en;q=0.8
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: ETag from a previous response. The server answers `304 Not Modified` when nothing changed.
+      schema:
+        type: string
+    LegalDocumentType:
+      name: documentType
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/LegalDocumentType'
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: '`page.nextCursor` from the previous page. Omit for the first page.'
+      schema:
+        type: string
+        maxLength: 512
+    InterestId:
+      name: interestId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+    ClientInstallation:
+      name: X-Installation-Id
+      in: header
+      required: true
+      description: |
+        The install's random UUID (same as `device.installationId`). Challenges
+        are bound to it: a code can only be verified or resent from the install
+        that requested it.
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Random UUID per user action (reuse it when retrying that same action).
+        The server stores the first response for 24 hours and replays it for
+        retries with the same key, so a flaky network never sends two codes,
+        creates two accounts or uploads twice. The same key with a different
+        body returns `422 IDEMPOTENCY_KEY_REUSED`; a retry while the first call
+        is still running returns `409 IDEMPOTENCY_IN_PROGRESS`.
+      schema:
+        type: string
+        format: uuid
+    ChallengeId:
+      name: challengeId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+    ReauthToken:
+      name: X-Reauth-Token
+      in: header
+      required: true
+      description: From `POST /auth/reauthenticate`, valid 5 minutes. Proves the user just re-entered their password.
+      schema:
+        type: string
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: |
+        ETag of the profile the client last read. When sent and stale, the
+        update is rejected with `412` so one device cannot silently overwrite
+        another's edit.
+      schema:
+        type: string
+    OnboardingStep:
+      name: step
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/OnboardingStepName'
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
+    Provider:
+      name: provider
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/SocialProvider'
+    InstallationId:
+      name: installationId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  headers:
+    ETag:
+      description: Version of the returned resource, for `If-None-Match` / `If-Match`.
+      schema:
+        type: string
+    CacheControl:
+      description: Caching rules for catalog data.
+      schema:
+        type: string
+        examples:
+          - public, max-age=3600
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 0
+    RateLimit:
+      description: |
+        Current rate-limit window (IETF `RateLimit` header draft), e.g.
+        `limit=5, remaining=2, reset=1800`. Informational; the client should
+        rely on `Retry-After` when it gets a 429.
+      schema:
+        type: string
+    RequestId:
+      description: Unique id of this request, also inside error bodies. Log it on the client for support.
+      schema:
+        type: string
+  responses:
+    NotModified:
+      description: Unchanged since the `If-None-Match` ETag; use the cached copy.
+      headers:
+        ETag:
+          $ref: '#/components/headers/ETag'
+    UpgradeRequired:
+      description: This app version is no longer supported (`UPGRADE_REQUIRED`). The app shows a blocking "Update Bondfire" screen with a store link.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/upgrade-required
+            title: Update required
+            status: 426
+            code: UPGRADE_REQUIRED
+            requestId: req_01J8Z3K5QH
+            meta:
+              minimumVersion: 1.2.0
+    TooManyRequests:
+      description: Rate limited. Wait `Retry-After` seconds; do not retry sooner.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        RateLimit:
+          $ref: '#/components/headers/RateLimit'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/resend-too-soon
+            title: Please wait before requesting another code
+            status: 429
+            code: RESEND_TOO_SOON
+            retryAfterSeconds: 22
+            requestId: req_01J8Z3K5QH
+    InternalError:
+      description: Unexpected server failure (`INTERNAL_ERROR`). Safe to retry idempotent calls with backoff.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    ServiceUnavailable:
+      description: |
+        A dependency is down (`SERVICE_UNAVAILABLE`, `EMAIL_DELIVERY_FAILED`,
+        `SMS_DELIVERY_FAILED`) or planned `MAINTENANCE`. Retry after `Retry-After`.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: The resource does not exist or is not visible to this caller.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/not-found
+            title: Not found
+            status: 404
+            code: NOT_FOUND
+            requestId: req_01J8Z3K5QH
+    Unauthorized:
+      description: |
+        Missing, invalid or expired credentials. On `TOKEN_EXPIRED` the app
+        refreshes once and retries; on any other 401 it signs the user out.
+      headers:
+        WWW-Authenticate:
+          description: '`Bearer error="invalid_token"` when a token was sent.'
+          schema:
+            type: string
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/token-expired
+            title: Access token expired
+            status: 401
+            code: TOKEN_EXPIRED
+            requestId: req_01J8Z3K5QH
+    Unprocessable:
+      description: The request is well-formed but a value is not acceptable. `errors[]` lists each field.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/validation-failed
+            title: Some details need fixing
+            status: 422
+            code: VALIDATION_FAILED
+            requestId: req_01J8Z3K5QH
+            errors:
+              - field: /password
+                code: PASSWORD_POLICY_VIOLATION
+                message: Add an uppercase letter and a symbol.
+                meta:
+                  unmetRules:
+                    - uppercase
+                    - symbol
+    BadRequest:
+      description: The body is not valid JSON, or a required header is missing (`MALFORMED_REQUEST`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/malformed-request
+            title: Malformed request
+            status: 400
+            code: MALFORMED_REQUEST
+            detail: The request body is not valid JSON.
+            requestId: req_01J8Z3K5QH
+    Conflict:
+      description: The request clashes with the current state (already taken, already used, stale version).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/email-taken
+            title: Email already registered
+            status: 409
+            code: EMAIL_TAKEN
+            detail: An account already uses this email. Try signing in instead.
+            requestId: req_01J8Z3K5QH
+    Gone:
+      description: The resource existed but has expired and cannot be used again.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/challenge-expired
+            title: Code expired
+            status: 410
+            code: CHALLENGE_EXPIRED
+            detail: This code has expired. Request a new one.
+            requestId: req_01J8Z3K5QH
+    Locked:
+      description: Temporarily locked after too many attempts. Wait `retryAfterSeconds`.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/account-locked
+            title: Too many attempts
+            status: 423
+            code: ACCOUNT_LOCKED
+            detail: Try again in 15 minutes, or reset your password.
+            retryAfterSeconds: 900
+            requestId: req_01J8Z3K5QH
+    Forbidden:
+      description: Signed in, but not allowed (for example a guest calling an account-only endpoint).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: https://api.bondfire.app/errors/guest-not-allowed
+            title: Create an account to do this
+            status: 403
+            code: GUEST_NOT_ALLOWED
+            requestId: req_01J8Z3K5QH
+    NoContent:
+      description: Done. No body.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/RequestId'
+    PreconditionFailed:
+      description: '`If-Match` did not match; the resource changed on another device. Re-read and retry.'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    UnsupportedMediaType:
+      description: Wrong `Content-Type`, or a file type that is not accepted (`UNSUPPORTED_MEDIA_TYPE`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    PayloadTooLarge:
+      description: Body or file larger than allowed (`PAYLOAD_TOO_LARGE`). `meta.maxBytes` holds the limit.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'

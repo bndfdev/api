@@ -1,0 +1,31 @@
+# Reusable response headers. Referenced as '../components/headers.yaml#/<Name>'.
+
+RequestId:
+  description: Unique id of this request, also inside error bodies. Log it on the client for support.
+  schema:
+    type: string
+
+RetryAfter:
+  description: Seconds to wait before retrying.
+  schema:
+    type: integer
+    minimum: 0
+
+RateLimit:
+  description: |
+    Current rate-limit window (IETF `RateLimit` header draft), e.g.
+    `limit=5, remaining=2, reset=1800`. Informational; the client should
+    rely on `Retry-After` when it gets a 429.
+  schema:
+    type: string
+
+ETag:
+  description: Version of the returned resource, for `If-None-Match` / `If-Match`.
+  schema:
+    type: string
+
+CacheControl:
+  description: Caching rules for catalog data.
+  schema:
+    type: string
+    examples: ['public, max-age=3600']
