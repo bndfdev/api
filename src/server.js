@@ -20,6 +20,16 @@ async function start() {
     logger.warn("ephemeral TOKEN_ENC_KEY; refresh grace data won't survive a restart");
   }
 
+  if (config.codes.hmacKeyEphemeral) {
+    logger.warn("ephemeral CODE_HMAC_KEY; codes that were sent won't work after a restart");
+  }
+  if (config.codes.testMode) {
+    logger.warn(
+      { recipients: config.codes.testRecipients.length },
+      'CODE_TEST_MODE is on: listed test recipients get a fixed code and no message is sent. Never enable this in production',
+    );
+  }
+
   mongoose.connection.on('error', (err) => logger.error({ err: err.message }, 'MongoDB connection error'));
   mongoose.connection.once('open', () => logger.info('Connected to MongoDB'));
   mongoose.connect(config.mongodbUri).catch((err) => {

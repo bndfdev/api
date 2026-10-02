@@ -1,11 +1,18 @@
 const crypto = require('node:crypto');
+const { normalizeDestination } = require('./lib/destination');
 require('dotenv').config();
 
 const REQUIRED = ['MONGODB_URI'];
-// Needed to sign access tokens and to protect the refresh grace data. Required
-// in every environment except local development and tests.
-const REQUIRED_TOKEN_VARS = ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY'];
+// Needed to sign access tokens, to protect the refresh grace data and to hash
+// one-time codes. Required in every environment except local development and tests.
+const REQUIRED_TOKEN_VARS = ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY', 'CODE_HMAC_KEY'];
+// Needed when email is sent through SMTP.
+const REQUIRED_SMTP_VARS = ['SMTP_HOST', 'SMTP_FROM'];
+// "Name <address>" or a bare address; no line breaks (header injection).
+const MAIL_FROM = /^(?:[^\s<>@]+@[^\s<>@]+|[^<>\r\n]+<[^\s<>@]+@[^\s<>@]+>)$/;
 const KEYLESS_ENVS = Object.freeze(['development', 'test']);
+// The only NODE_ENV values where CODE_TEST_MODE may be on. Exact match: 'production', 'prod' and 'Production' are all refused.
+const TEST_MODE_ENVS = Object.freeze(['staging', 'development', 'test']);
 
 const TOKEN_DEFAULTS = Object.freeze({
   accessTtlSeconds: 900,
@@ -50,6 +57,7 @@ function parseOrigins(value) {
 // loadConfig() call in the same process agrees on them.
 let ephemeralSigningKeys;
 let ephemeralEncKey;
+let ephemeralCodeKey;
 
 function getEphemeralSigningKeys() {
   if (!ephemeralSigningKeys) {
@@ -68,6 +76,11 @@ function getEphemeralEncKey() {
   return ephemeralEncKey;
 }
 
+function getEphemeralCodeKey() {
+  if (!ephemeralCodeKey) ephemeralCodeKey = crypto.randomBytes(32);
+  return ephemeralCodeKey;
+}
+
 /** PEM values in env files often carry literal "\n" sequences. */
 function normalizePem(value) {
   return value ? String(value).replace(/\\n/g, '\n').trim() : undefined;
@@ -80,6 +93,26 @@ function readBoundedInt(env, name, fallback, max, invalid) {
   if (/^\d+$/.test(raw) && Number(raw) >= 1 && Number(raw) <= max) return Number(raw);
   invalid.push(`${name} (must be an integer from 1 to ${max})`);
   return fallback;
+}
+
+/** true / false from env; unset or empty is false. Anything else is reported as invalid. */
+function readBool(env, name, invalid) {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return false;
+  const value = raw.trim().toLowerCase();
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  invalid.push(`${name} (must be true or false)`);
+  return false;
+}
+
+/** Comma-separated destinations (emails or phone numbers): trimmed and normalised, empty entries dropped. */
+function parseRecipients(value) {
+  return String(value)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => normalizeDestination(entry.includes('@') ? 'email' : 'sms', entry));
 }
 
 /** Name of the problem with the signing keys, or null when they are a usable ES256 pair. */
@@ -110,9 +143,14 @@ function signingKeyProblem(privatePem, publicPem) {
  * Build the runtime config from an env map.
  * With `validate` (default) throws an Error naming any missing or invalid vars
  * (names only, never values). MONGODB_URI is not required when NODE_ENV=test.
- * The JWT and token-encryption vars and TRUST_PROXY are required unless NODE_ENV is
- * development (also when unset) or test; there, missing keys are generated for
- * this process (`jwt.ephemeral`, `tokenEncKeyEphemeral`).
+ * The JWT, token-encryption and code-hashing vars and TRUST_PROXY are required unless
+ * NODE_ENV is development (also when unset) or test; there, missing keys are generated
+ * for this process (`jwt.ephemeral`, `tokenEncKeyEphemeral`, `codes.hmacKeyEphemeral`).
+ * Email goes through SMTP (SMTP_HOST and SMTP_FROM required, TLS required) except in
+ * development and test, where it defaults to the console provider, the only place that
+ * provider is allowed. CODE_TEST_MODE is only allowed when NODE_ENV is exactly staging,
+ * development (also when unset) or test; any other value, such as production, prod or
+ * Production, is refused.
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{validate?: boolean}} [options]
  */
@@ -121,6 +159,7 @@ function loadConfig(env = process.env, { validate = true } = {}) {
   const isTest = nodeEnv === 'test';
   const isProduction = nodeEnv === 'production';
   const mayGenerateKeys = KEYLESS_ENVS.includes(nodeEnv);
+  const emailProvider = (env.EMAIL_PROVIDER || '').trim().toLowerCase() || (mayGenerateKeys ? 'console' : 'smtp');
 
   const privatePem = normalizePem(env.JWT_PRIVATE_KEY);
   const publicPem = normalizePem(env.JWT_PUBLIC_KEY);
@@ -135,6 +174,9 @@ function loadConfig(env = process.env, { validate = true } = {}) {
       if (env.TRUST_PROXY === undefined || env.TRUST_PROXY.trim() === '') missing.push('TRUST_PROXY');
     } else if (Boolean(privatePem) !== Boolean(publicPem)) {
       missing.push(privatePem ? 'JWT_PUBLIC_KEY' : 'JWT_PRIVATE_KEY');
+    }
+    if (emailProvider === 'smtp') {
+      missing.push(...REQUIRED_SMTP_VARS.filter((name) => !env[name] || env[name].trim() === ''));
     }
     if (missing.length > 0) {
       throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
@@ -196,6 +238,54 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     }
   }
 
+  // --- One-time codes ---
+  let codeHmacKey;
+  let codeHmacKeyEphemeral = false;
+  if (env.CODE_HMAC_KEY) {
+    codeHmacKey = Buffer.from(env.CODE_HMAC_KEY, 'base64');
+    if (codeHmacKey.length !== 32) {
+      invalid.push('CODE_HMAC_KEY (must be 32 bytes, base64-encoded)');
+      codeHmacKey = undefined;
+    }
+  } else if (mayGenerateKeys) {
+    codeHmacKey = getEphemeralCodeKey();
+    codeHmacKeyEphemeral = true;
+  }
+
+  // Staging test mode: tester accounts get a fixed code and nothing is sent to them.
+  // Only on an allowlist of environments (an allowlist, so a misspelt or differently
+  // cased production name cannot switch it on); even an unvalidated config fails closed.
+  const testModeRequested = readBool(env, 'CODE_TEST_MODE', invalid);
+  const testModeAllowed = TEST_MODE_ENVS.includes(nodeEnv);
+  if (testModeRequested && !testModeAllowed) {
+    invalid.push('CODE_TEST_MODE (only allowed when NODE_ENV is staging, development or test)');
+  }
+  const codeTestMode = testModeRequested && testModeAllowed;
+  const testRecipients = codeTestMode ? parseRecipients(env.CODE_TEST_RECIPIENTS || '') : [];
+  const testValue = codeTestMode ? (env.CODE_TEST_VALUE || '').trim() : undefined;
+  if (codeTestMode) {
+    if (testRecipients.length === 0) invalid.push('CODE_TEST_RECIPIENTS (required when CODE_TEST_MODE is true)');
+    if (!/^\d{6}$/.test(testValue)) invalid.push('CODE_TEST_VALUE (must be exactly 6 digits when CODE_TEST_MODE is true)');
+  }
+  // Printing codes to the log is a development convenience only.
+  const logCodesRequested = readBool(env, 'LOG_CODES_IN_DEV', invalid);
+
+  // --- Outgoing email and SMS ---
+  if (emailProvider !== 'console' && emailProvider !== 'smtp') {
+    invalid.push('EMAIL_PROVIDER (must be console or smtp)');
+  } else if (emailProvider === 'console' && !mayGenerateKeys) {
+    invalid.push('EMAIL_PROVIDER (console only logs; it is only allowed when NODE_ENV is development or test)');
+  }
+  const smtpPort = readBoundedInt(env, 'SMTP_PORT', 587, 65535, invalid);
+  const smtpUser = env.SMTP_USER || undefined;
+  const smtpPass = env.SMTP_PASS || undefined;
+  if (Boolean(smtpUser) !== Boolean(smtpPass)) invalid.push('SMTP_USER and SMTP_PASS (set both or neither)');
+  const smtpFrom = env.SMTP_FROM ? env.SMTP_FROM.trim() : undefined;
+  if (smtpFrom && !MAIL_FROM.test(smtpFrom)) invalid.push('SMTP_FROM (must be an address or "Name <address>")');
+  // TODO(PR 4, phone verification): choose the SMS provider; only the console provider exists for now.
+  const smsProvider = (env.SMS_PROVIDER || '').trim().toLowerCase() || 'console';
+  if (smsProvider !== 'console') invalid.push('SMS_PROVIDER (only console is available for now)');
+
   if (validate) {
     if (signing.privateKey && signing.publicKey && !ephemeral) {
       const problem = signingKeyProblem(signing.privateKey, signing.publicKey);
@@ -228,6 +318,28 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     refreshToken: Object.freeze({ ttlDays: refreshTtlDays, graceSeconds: refreshGraceSeconds }),
     tokenEncKey,
     tokenEncKeyEphemeral,
+    codes: Object.freeze({
+      hmacKey: codeHmacKey,
+      hmacKeyEphemeral: codeHmacKeyEphemeral,
+      testMode: codeTestMode,
+      testRecipients: Object.freeze(testRecipients),
+      testValue,
+      logInDev: logCodesRequested && nodeEnv === 'development',
+    }),
+    email: Object.freeze({
+      provider: emailProvider,
+      smtp: Object.freeze({
+        host: env.SMTP_HOST ? env.SMTP_HOST.trim() : undefined,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        // Mail carrying codes only goes over an encrypted connection, everywhere except development and test.
+        requireTls: !mayGenerateKeys,
+        user: smtpUser,
+        pass: smtpPass,
+        from: smtpFrom,
+      }),
+    }),
+    sms: Object.freeze({ provider: smsProvider }),
   });
 }
 
