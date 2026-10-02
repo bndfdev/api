@@ -19,6 +19,8 @@ const TOKEN_LIMITS = Object.freeze({
   refreshTtlDays: 180,
   refreshGraceSeconds: 120,
 });
+// Most reverse proxies (load balancers, CDNs) we would ever stack in front of the API.
+const MAX_TRUSTED_PROXY_HOPS = 10;
 
 // Origins allowed when CORS_ORIGINS is unset outside production (local tools,
 // the admin panel and the old dev host). In production unset means none.
@@ -108,7 +110,7 @@ function signingKeyProblem(privatePem, publicPem) {
  * Build the runtime config from an env map.
  * With `validate` (default) throws an Error naming any missing or invalid vars
  * (names only, never values). MONGODB_URI is not required when NODE_ENV=test.
- * The JWT and token-encryption vars are required unless NODE_ENV is
+ * The JWT and token-encryption vars and TRUST_PROXY are required unless NODE_ENV is
  * development (also when unset) or test; there, missing keys are generated for
  * this process (`jwt.ephemeral`, `tokenEncKeyEphemeral`).
  * @param {NodeJS.ProcessEnv} [env]
@@ -127,6 +129,10 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     const missing = isTest ? [] : REQUIRED.filter((name) => !env[name]);
     if (!mayGenerateKeys) {
       missing.push(...REQUIRED_TOKEN_VARS.filter((name) => !env[name]));
+      // A deployed API must say how many proxies are in front of it (0 for none):
+      // guessing wrong would make every client look like the load balancer, or
+      // let clients choose their own IP address.
+      if (env.TRUST_PROXY === undefined || env.TRUST_PROXY.trim() === '') missing.push('TRUST_PROXY');
     } else if (Boolean(privatePem) !== Boolean(publicPem)) {
       missing.push(privatePem ? 'JWT_PUBLIC_KEY' : 'JWT_PRIVATE_KEY');
     }
@@ -177,6 +183,19 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     tokenEncKeyEphemeral = true;
   }
 
+  // How many reverse proxies sit in front of the API (0 = none). Only a hop
+  // count is accepted: trusting every X-Forwarded-For value would let a client
+  // pick its own IP address, and with it its rate-limit bucket.
+  let trustProxy = false;
+  if (env.TRUST_PROXY !== undefined && env.TRUST_PROXY.trim() !== '') {
+    const hops = env.TRUST_PROXY.trim();
+    if (/^\d+$/.test(hops) && Number(hops) <= MAX_TRUSTED_PROXY_HOPS) {
+      trustProxy = Number(hops) > 0 ? Number(hops) : false;
+    } else {
+      invalid.push(`TRUST_PROXY (must be a number of proxy hops from 0 to ${MAX_TRUSTED_PROXY_HOPS})`);
+    }
+  }
+
   if (validate) {
     if (signing.privateKey && signing.publicKey && !ephemeral) {
       const problem = signingKeyProblem(signing.privateKey, signing.publicKey);
@@ -196,6 +215,7 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     logLevel: env.LOG_LEVEL || (isTest ? 'silent' : 'info'),
     apiBaseUrl: env.API_BASE_URL || undefined,
     corsOrigins: Object.freeze(corsOrigins),
+    trustProxy,
     jwt: Object.freeze({
       privateKey: signing.privateKey,
       publicKey: signing.publicKey,

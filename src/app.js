@@ -8,18 +8,22 @@ const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { applySecurity } = require('./middleware/security');
 const { openApiValidator } = require('./middleware/validate');
 const { router: healthRouter } = require('./modules/health/routes');
+const { router: sessionsRouter } = require('./modules/sessions/routes');
 
 const ROOT = path.join(__dirname, '..');
 
 /**
  * Build the express app. Does not connect to MongoDB and does not listen.
- * @param {{extend?: (app: import('express').Express) => void}} [options]
+ * @param {{extend?: (app: import('express').Express) => void, trustProxy?: number | false}} [options]
  *   `extend` is a hook used only by tests to add routes after the legacy
- *   mounts and before the /v1 404 and error handlers.
+ *   mounts and before the /v1 404 and error handlers. `trustProxy` overrides
+ *   config.trustProxy (tests).
  */
-function createApp({ extend } = {}) {
+function createApp({ extend, trustProxy = config.trustProxy } = {}) {
   const app = express();
   app.disable('x-powered-by');
+  // How many proxies sit in front of the API (TRUST_PROXY); decides what req.ip is.
+  app.set('trust proxy', trustProxy);
   app.use(httpLogger);
 
   applySecurity(app, config);
@@ -112,6 +116,7 @@ function createApp({ extend } = {}) {
   // modules mount after the validator; documented-but-unimplemented operations
   // and unknown paths fall through to the problem 404.
   v1.use(openApiValidator(config));
+  v1.use(sessionsRouter);
   v1.use(notFound);
   app.use('/v1', v1);
 

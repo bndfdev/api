@@ -19,6 +19,7 @@ const prodEnv = (extra = {}) => ({
   ...pemPair(),
   JWT_KEY_ID: 'k1',
   TOKEN_ENC_KEY: crypto.randomBytes(32).toString('base64'),
+  TRUST_PROXY: '0',
   ...extra,
 });
 
@@ -162,9 +163,9 @@ test('production requires the token variables and names each missing one', () =>
   const base = { NODE_ENV: 'production', MONGODB_URI: 'mongodb://x/y' };
   assert.throws(
     () => loadConfig(base),
-    (err) => ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY'].every((n) => err.message.includes(n)),
+    (err) => ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY', 'TRUST_PROXY'].every((n) => err.message.includes(n)),
   );
-  for (const name of ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY']) {
+  for (const name of ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY', 'TRUST_PROXY']) {
     const env = prodEnv();
     delete env[name];
     assert.throws(() => loadConfig(env), (err) => err.message.includes(name));
@@ -176,7 +177,7 @@ test('any other NODE_ENV (staging, prod, Development, ...) requires the keys and
   for (const NODE_ENV of ['staging', 'prod', 'Development', 'qa']) {
     assert.throws(
       () => loadConfig({ NODE_ENV, MONGODB_URI: 'mongodb://x/y' }),
-      (err) => ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY'].every((n) => err.message.includes(n)),
+      (err) => ['JWT_PRIVATE_KEY', 'JWT_PUBLIC_KEY', 'JWT_KEY_ID', 'TOKEN_ENC_KEY', 'TRUST_PROXY'].every((n) => err.message.includes(n)),
       NODE_ENV,
     );
     const cfg = loadConfig({ ...prodEnv(), NODE_ENV });
@@ -218,4 +219,35 @@ test('TOKEN_ENC_KEY must be 32 bytes, base64', () => {
   }
   const key = crypto.randomBytes(32);
   assert.ok(loadConfig(prodEnv({ TOKEN_ENC_KEY: key.toString('base64') })).tokenEncKey.equals(key));
+});
+
+test('TRUST_PROXY must be set explicitly outside development and test (0 is allowed)', () => {
+  for (const NODE_ENV of ['production', 'staging']) {
+    for (const TRUST_PROXY of [undefined, '', '  ']) {
+      const env = { ...prodEnv(), NODE_ENV, TRUST_PROXY };
+      if (TRUST_PROXY === undefined) delete env.TRUST_PROXY;
+      assert.throws(() => loadConfig(env), (err) => /TRUST_PROXY/.test(err.message), NODE_ENV);
+    }
+    assert.equal(loadConfig({ ...prodEnv(), NODE_ENV, TRUST_PROXY: '0' }).trustProxy, false);
+    assert.equal(loadConfig({ ...prodEnv(), NODE_ENV, TRUST_PROXY: '1' }).trustProxy, 1);
+  }
+  // Development and tests default to no proxy.
+  assert.equal(loadConfig({ NODE_ENV: 'development', MONGODB_URI: 'mongodb://x/y' }).trustProxy, false);
+  assert.equal(loadConfig({ NODE_ENV: 'test' }).trustProxy, false);
+});
+
+test('trustProxy: off by default, a hop count when set, anything else is rejected by name', () => {
+  assert.equal(loadConfig({ NODE_ENV: 'test' }).trustProxy, false);
+  assert.equal(loadConfig({ NODE_ENV: 'test', TRUST_PROXY: '' }).trustProxy, false);
+  assert.equal(loadConfig({ NODE_ENV: 'test', TRUST_PROXY: '0' }).trustProxy, false);
+  assert.equal(loadConfig({ NODE_ENV: 'test', TRUST_PROXY: '1' }).trustProxy, 1);
+  assert.equal(loadConfig({ NODE_ENV: 'test', TRUST_PROXY: ' 2 ' }).trustProxy, 2);
+  assert.equal(loadConfig(prodEnv({ TRUST_PROXY: '10' })).trustProxy, 10);
+  // "true" and addresses would let a client choose its own IP address, so only hop counts are accepted.
+  for (const TRUST_PROXY of ['true', 'loopback', '-1', '1.5', '11', '10.0.0.1']) {
+    assert.throws(
+      () => loadConfig({ NODE_ENV: 'test', TRUST_PROXY }),
+      (err) => /TRUST_PROXY/.test(err.message) && !err.message.includes(TRUST_PROXY),
+    );
+  }
 });

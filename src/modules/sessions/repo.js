@@ -37,6 +37,14 @@ function findUserSession(userId, sessionId) {
   return Session.findOne({ _id: sessionId, userId }).lean();
 }
 
+/**
+ * Just what authentication needs to know about a session (`revokedAt`,
+ * `expiresAt`), or null when the user has no such session. Looked up by _id.
+ */
+function findSessionState(userId, sessionId) {
+  return Session.findOne({ _id: sessionId, userId }).select('revokedAt expiresAt').lean();
+}
+
 /** `{isBlocked, blockedUntil}` for the user, or null when there is no such user. */
 function findUserBlockStatus(userId) {
   return User.findById(userId).select('isBlocked blockedUntil').lean();
@@ -144,6 +152,7 @@ module.exports = {
   findRefreshToken,
   findSession,
   findUserSession,
+  findSessionState,
   findUserBlockStatus,
   insertGrace,
   findGrace,

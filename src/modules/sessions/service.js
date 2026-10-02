@@ -38,9 +38,11 @@ const refreshTokenReused = () => new ApiError({
   status: 401, code: 'REFRESH_TOKEN_REUSED', title: 'Refresh token reused',
   detail: 'This refresh token was already used, so the session was ended. Sign in again.',
 });
-const sessionRevoked = () => new ApiError({
+// `challenge`: also tell the client which scheme failed (for a request that carried a Bearer token).
+const sessionRevoked = ({ challenge = false } = {}) => new ApiError({
   status: 401, code: 'SESSION_REVOKED', title: 'Session revoked',
   detail: 'This session was signed out. Sign in again.',
+  headers: challenge ? { 'WWW-Authenticate': 'Bearer error="invalid_token"' } : undefined,
 });
 const accountSuspended = () => new ApiError({
   status: 403, code: 'ACCOUNT_SUSPENDED', title: 'Account suspended',
@@ -220,6 +222,21 @@ function createSessionService({
   }
 
   /**
+   * Check that the session named in a valid access token is still usable (used
+   * by requireAuth on every authenticated request). One indexed read by id.
+   * Throws 401 SESSION_REVOKED when the session was signed out, has expired or
+   * no longer exists: the client signs the user out in every one of those cases.
+   * @param {{userId: string, sessionId: string}} input
+   */
+  async function assertSessionActive({ userId, sessionId }) {
+    if (!isId(userId) || !isId(sessionId)) throw sessionRevoked({ challenge: true });
+    const session = await repo.findSessionState(userId, sessionId);
+    if (!session || session.revokedAt || session.expiresAt.getTime() <= clock()) {
+      throw sessionRevoked({ challenge: true });
+    }
+  }
+
+  /**
    * Sign out one of the user's sessions (idempotent). 404 SESSION_NOT_FOUND when
    * it does not exist or belongs to someone else.
    * @param {{userId: string, sessionId: string, reason?: string}} input
@@ -264,6 +281,24 @@ function createSessionService({
   }
 
   /**
+   * Log out (idempotent, never fails because of the credentials it is given).
+   * Ends the session of a verified access token and/or the session a refresh
+   * token belongs to. When both are given the refresh token must be the same
+   * user's. Unknown, expired or already-revoked credentials are ignored.
+   * @param {{auth?: {userId: string, sessionId: string}, refreshToken?: string}} input
+   */
+  async function logout({ auth, refreshToken } = {}) {
+    if (auth) {
+      try {
+        await revokeSession({ userId: auth.userId, sessionId: auth.sessionId, reason: 'logout' });
+      } catch (err) {
+        if (!(err instanceof ApiError && err.code === 'SESSION_NOT_FOUND')) throw err;
+      }
+    }
+    await revokeByRefreshToken({ refreshToken, userId: auth ? auth.userId : undefined, reason: 'logout' });
+  }
+
+  /**
    * The user's active sessions, current first, then most recently active.
    * @param {{userId: string, currentSessionId?: string}} input
    * @returns {Promise<{data: object[]}>} `SessionList`
@@ -276,7 +311,16 @@ function createSessionService({
     return { data };
   }
 
-  return { createSession, refresh, revokeSession, revokeAllOtherSessions, revokeByRefreshToken, listSessions };
+  return {
+    createSession,
+    refresh,
+    assertSessionActive,
+    revokeSession,
+    revokeAllOtherSessions,
+    revokeByRefreshToken,
+    logout,
+    listSessions,
+  };
 }
 
 module.exports = { createSessionService, ...createSessionService() };
