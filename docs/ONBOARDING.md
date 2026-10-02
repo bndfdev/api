@@ -128,7 +128,7 @@ npm test                  # unit and integration tests, no database needed
 
 | Step | What | Status |
 | --- | --- | --- |
-| 1 | **Foundation:** structure, config, logging, error format, security headers, CORS, spec validation, health, CI | In review ([#8](https://github.com/bndfdev/api/pull/8)) |
+| 1 | **Foundation:** structure, config, logging, error format, security headers, CORS, spec validation, health, CI | Done ([#8](https://github.com/bndfdev/api/pull/8)) |
 | 2 | **Login tokens and sessions:** access and refresh tokens, `requireAuth`, rate limits | In review |
 | 3 | **Sign-up and login:** email and phone codes, sign-up, login, password reset, guest. Staging has a test mode for codes (fixed code for tester accounts, never in production). | Next |
 | — | **Tester build:** staging server + the app on Android and iOS | After step 3 |
