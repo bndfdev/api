@@ -13,6 +13,13 @@ async function start() {
     process.exit(1);
   }
 
+  if (config.jwt.ephemeral) {
+    logger.warn("ephemeral signing keys; tokens won't survive a restart");
+  }
+  if (config.tokenEncKeyEphemeral) {
+    logger.warn("ephemeral TOKEN_ENC_KEY; refresh grace data won't survive a restart");
+  }
+
   mongoose.connection.on('error', (err) => logger.error({ err: err.message }, 'MongoDB connection error'));
   mongoose.connection.once('open', () => logger.info('Connected to MongoDB'));
   mongoose.connect(config.mongodbUri).catch((err) => {

@@ -15,6 +15,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # The MongoDB the tests start in memory; same version as local development.
+      MONGOMS_VERSION: '8.2.6'
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +28,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Cache MongoDB binaries
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/mongodb-memory-server
+          key: mongodb-binaries-${{ runner.os }}-${{ env.MONGOMS_VERSION }}
 
       - name: Unit and integration tests
         run: npm test
