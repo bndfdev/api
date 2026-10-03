@@ -32,6 +32,12 @@ function findByEmail(email) {
   return User.findOne({ email }).collation(CASE_INSENSITIVE).sort({ createdAt: 1, _id: 1 }).lean();
 }
 
+/** The user with this id, or null (also for an id that is not an ObjectId). */
+function findById(userId) {
+  if (!/^[0-9a-f]{24}$/i.test(String(userId))) return Promise.resolve(null);
+  return User.findById(userId).lean();
+}
+
 /**
  * Create a user. Resolves null instead of throwing when the email is taken.
  * @returns {Promise<object | null>}
@@ -143,4 +149,17 @@ async function replacePasswordHash(userId, { oldHash, newHash, algo, at }) {
   return result.modifiedCount === 1;
 }
 
-module.exports = { findByEmail, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/**
+ * Set a new password hash (a completed password reset) and clear the password-login lock, in one update:
+ * the spec says "a password reset clears the lock". The admin's `isBlocked` is left alone.
+ * @returns {Promise<boolean>} false when there is no such user
+ */
+async function setPassword(userId, { hash, algo, at }) {
+  const result = await User.updateOne(
+    { _id: userId },
+    { $set: { password: hash, passwordAlgo: algo, loginFailedCount: 0, loginFailedSince: null, loginLockedUntil: null, updatedAt: new Date(at) } },
+  );
+  return result.matchedCount === 1;
+}
+
+module.exports = { findByEmail, findById, setPassword, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

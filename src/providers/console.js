@@ -23,6 +23,9 @@ function createConsoleProvider(channel, { logger = defaultLogger, logCodes = fal
         : `${channel} code sent to ${masked} (console provider: nothing was really sent)`;
       logger.info({ channel, purpose }, message);
     },
+    async sendNotice({ to, notice }) {
+      logger.info({ channel, notice }, `${channel} notice "${notice}" for ${maskDestination(channel, to)} (console provider: nothing was really sent)`);
+    },
   };
 }
 

@@ -87,10 +87,6 @@ function toUserResponse(user) {
   };
 }
 
-// TODO(password reset PR): completing a password reset must clear the login lockout of the account:
-// set `loginFailedCount` to 0 and `loginFailedSince` and `loginLockedUntil` to null on the user
-// (users/repo.resetLoginAttempts does exactly that). The spec: "A password reset clears the lock."
-
 /** True while an admin has blocked the account (`isBlocked` with no end date, or one in the future). */
 function isSuspended(user, at) {
   return user.isBlocked === true && (!user.blockedUntil || new Date(user.blockedUntil).getTime() > at);

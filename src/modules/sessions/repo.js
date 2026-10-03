@@ -125,6 +125,11 @@ function revokeUserSessionsExcept(userId, keepSessionId, options) {
   return revokeSessions({ userId, _id: { $ne: keepSessionId } }, options);
 }
 
+/** Revoke every active session of the user. */
+function revokeUserSessions(userId, options) {
+  return revokeSessions({ userId }, options);
+}
+
 /**
  * Revoke the session a refresh token belongs to, if the token exists (and
  * belongs to `userId` when given).
@@ -162,6 +167,7 @@ module.exports = {
   touchSession,
   revokeSession,
   revokeUserSessionsExcept,
+  revokeUserSessions,
   revokeByRefreshTokenHash,
   listActiveSessions,
 };

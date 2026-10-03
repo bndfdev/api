@@ -125,11 +125,14 @@ test('an invalid query parameter is a 422 naming the parameter', async () => {
 // reach the /v1 fallthrough, which answers 404 NOT_FOUND. This changes per
 // operation as feature modules land.
 test('a valid request to a not-yet-implemented operation falls through to 404', async () => {
-  // Password reset is built in the next sign-up PR; pick another unbuilt operation when it lands.
+  // Social login comes last (after the tester build); pick another unbuilt operation when it lands.
   const res = await request(app)
-    .post('/v1/auth/password-reset')
+    .post('/v1/auth/social')
     .set(CLIENT)
-    .send({ email: 'someone@example.com' });
+    .send({
+      credential: { provider: 'google', idToken: 'eyJhbGciOiJSUzI1NiJ9.e30.c2ln' },
+      device: { installationId: CLIENT['X-Installation-Id'], platform: 'ios', appVersion: '1.4.0' },
+    });
   assertProblem(res, 404, 'NOT_FOUND');
 });
 

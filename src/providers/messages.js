@@ -41,10 +41,29 @@ function emailMessage(input) {
   };
 }
 
+// Account notices: emails that carry no code. Fixed text only, like the code messages.
+const NOTICES = Object.freeze({
+  password_changed: {
+    subject: 'Your Bondfire password was changed',
+    text: [
+      'The password for your Bondfire account was just changed, and every device was signed out.',
+      '',
+      'If this was you, there is nothing else to do.',
+      'If it was not, reset your password straight away from the app ("Reset password" on the sign-in screen).',
+    ].join('\n'),
+  },
+});
+
+/** @param {string} notice a key of NOTICES @returns {{subject: string, text: string}} */
+function noticeEmail(notice) {
+  if (!Object.hasOwn(NOTICES, notice)) throw new Error('Unknown notice');
+  return { ...NOTICES[notice] };
+}
+
 /** @returns {string} */
 function smsMessage(input) {
   check(input);
   return `Bondfire: your code is ${input.code}. It expires in ${input.expiresInMinutes} minutes.`;
 }
 
-module.exports = { emailMessage, smsMessage };
+module.exports = { emailMessage, noticeEmail, smsMessage, NOTICES };

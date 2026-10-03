@@ -5,7 +5,7 @@
  */
 const nodemailer = require('nodemailer');
 const { isValidEmail } = require('../../lib/destination');
-const { emailMessage } = require('../messages');
+const { emailMessage, noticeEmail } = require('../messages');
 
 const TIMEOUT_MS = 10000;
 
@@ -44,6 +44,12 @@ function createSmtpEmailProvider({ smtp, requireTLS = false, transport }) {
       // One plain address, exactly as the service validated it (this also keeps line breaks and extra recipients out of the headers).
       if (!isValidEmail(to)) throw new Error('Invalid recipient');
       const { subject, text } = emailMessage({ purpose, code, expiresInMinutes });
+      await mailer.sendMail({ from: smtp.from, to, subject, text });
+    },
+    /** An account notice that carries no code (see NOTICES in ../messages.js). */
+    async sendNotice({ to, notice }) {
+      if (!isValidEmail(to)) throw new Error('Invalid recipient');
+      const { subject, text } = noticeEmail(notice);
       await mailer.sendMail({ from: smtp.from, to, subject, text });
     },
   };

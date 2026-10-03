@@ -19,12 +19,14 @@ const LIMITS = Object.freeze({
   signupStartPerInstallation: { name: 'signup-email:installation', points: 10, durationSeconds: HOUR, key: byInstallation },
   verifyPerIp: { name: 'challenge-verify:ip', points: 60, durationSeconds: HOUR, key: byIp },
   loginPerIp: { name: 'login:ip', points: 50, durationSeconds: HOUR, key: byIp },
+  passwordResetPerIp: { name: 'password-reset:ip', points: 20, durationSeconds: HOUR, key: byIp },
 });
 
 /**
- * Email sign-up and login (`docs/api/paths/auth.yaml`: emailAvailability, signupEmail, challenge,
- * challengeResend, challengeVerify, signupComplete, login). Mount on the /v1 router, after the spec
- * validator. Handlers only read the request, call the service and send the answer.
+ * Email sign-up, login and password reset (`docs/api/paths/auth.yaml`: emailAvailability, signupEmail,
+ * challenge, challengeResend, challengeVerify, signupComplete, login, passwordResetStart,
+ * passwordResetComplete). Mount on the /v1 router, after the spec validator. Handlers only read the
+ * request, call the service and send the answer.
  *
  * The old `/user/*` routes (routes/user.js) are still mounted: the app uses them until it moves to these
  * endpoints. They are removed in a later cleanup PR, not here.
@@ -131,6 +133,32 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
       const session = await svc().login({
         email: req.body.email,
         password: req.body.password,
+        device: req.body.device,
+        installationId: installationId(req),
+      });
+      noStore(res).json(session);
+    }),
+  );
+
+  // POST /auth/password-reset: always 202 with a challenge, whether or not the email has an account.
+  router.post(
+    '/auth/password-reset',
+    rateLimit(LIMITS.passwordResetPerIp),
+    idempotency,
+    asyncHandler(async (req, res) => {
+      const challenge = await svc().startPasswordReset({ email: req.body.email, installationId: installationId(req) });
+      res.status(202).json(challenge);
+    }),
+  );
+
+  // POST /auth/password-reset/complete: new password, every other device signed out; 200 with the session.
+  router.post(
+    '/auth/password-reset/complete',
+    idempotency,
+    asyncHandler(async (req, res) => {
+      const session = await svc().completePasswordReset({
+        resetToken: req.body.resetToken,
+        newPassword: req.body.newPassword,
         device: req.body.device,
         installationId: installationId(req),
       });

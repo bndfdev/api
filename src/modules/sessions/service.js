@@ -265,6 +265,17 @@ function createSessionService({
   }
 
   /**
+   * Sign out every session of the user (a password reset: whoever knew the old
+   * password is signed out everywhere).
+   * @param {{userId: string, reason?: string}} input
+   */
+  async function revokeAllSessions({ userId, reason = 'password_reset' }) {
+    if (!isId(userId)) throw new Error('revokeAllSessions needs a valid userId');
+    const at = clock();
+    await repo.revokeUserSessions(userId, { reason, at: new Date(at), retainUntil: new Date(at + REVOKED_RETENTION) });
+  }
+
+  /**
    * Sign out the session a refresh token belongs to (for logout). Idempotent: an
    * unknown token is not an error. With `userId`, a token of another user is ignored.
    * @param {{refreshToken: string, userId?: string, reason?: string}} input
@@ -317,6 +328,7 @@ function createSessionService({
     assertSessionActive,
     revokeSession,
     revokeAllOtherSessions,
+    revokeAllSessions,
     revokeByRefreshToken,
     logout,
     listSessions,
