@@ -33,6 +33,9 @@ const userSchema = new mongoose.Schema({
   loginFailedSince: { type: Date, default: null },
   loginLockedUntil: { type: Date, default: null },
   updatedAt: { type: Date },
+  // When the number in `phone` was verified with a code (v1). `mobileNumberVerified` above stays the flag the
+  // admin panel and the old API read; v1 sets both.
+  phoneVerifiedAt: { type: Date },
 });
 
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:

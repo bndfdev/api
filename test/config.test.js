@@ -319,6 +319,17 @@ test('sms: only the console provider exists for now', () => {
   assert.throws(() => loadConfig({ NODE_ENV: 'test', SMS_PROVIDER: 'twilio' }), /SMS_PROVIDER/);
 });
 
+test('phone: every region and VoIP allowed by default; PHONE_REGIONS and PHONE_REFUSE_VOIP narrow it', () => {
+  const plain = loadConfig({ NODE_ENV: 'test' });
+  assert.deepEqual(plain.phone.regions, []);
+  assert.equal(plain.phone.refuseVoip, false);
+  const narrowed = loadConfig({ NODE_ENV: 'test', PHONE_REGIONS: ' us, IN ,,', PHONE_REFUSE_VOIP: 'true' });
+  assert.deepEqual(narrowed.phone.regions, ['US', 'IN']);
+  assert.equal(narrowed.phone.refuseVoip, true);
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', PHONE_REGIONS: 'USA' }), /PHONE_REGIONS/);
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', PHONE_REFUSE_VOIP: 'sometimes' }), /PHONE_REFUSE_VOIP/);
+});
+
 test('LOG_CODES_IN_DEV only takes effect in development', () => {
   const base = { MONGODB_URI: 'mongodb://x/y', LOG_CODES_IN_DEV: 'true' };
   assert.equal(loadConfig({ ...base, NODE_ENV: 'development' }).codes.logInDev, true);

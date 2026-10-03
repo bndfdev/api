@@ -162,4 +162,45 @@ async function setPassword(userId, { hash, algo, at }) {
   return result.matchedCount === 1;
 }
 
-module.exports = { findByEmail, findById, setPassword, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/** The account that has this E.164 number in `phone` (verified or not), or null. */
+function findByPhone(e164) {
+  return User.findOne({ phone: e164 }).select('_id phone mobileNumberVerified').lean();
+}
+
+/**
+ * Take this number away from every other account that has it but never verified it (the old API stored
+ * numbers before checking them). Verified holders are left alone; the caller checks for those first.
+ */
+async function releaseUnverifiedPhone(e164, exceptUserId, at) {
+  await User.updateMany(
+    { phone: e164, mobileNumberVerified: { $ne: true }, _id: { $ne: exceptUserId } },
+    { $unset: { phone: '', phoneVerifiedAt: '' }, $set: { updatedAt: new Date(at) } },
+  );
+}
+
+/**
+ * Make `e164` the user's verified number.
+ * @returns {Promise<'saved' | 'taken' | 'missing'>} 'taken' when the unique index on `phone` refuses it
+ */
+async function setVerifiedPhone(userId, e164, at) {
+  try {
+    const result = await User.updateOne(
+      { _id: userId },
+      { $set: { phone: e164, mobileNumberVerified: true, phoneVerifiedAt: new Date(at), updatedAt: new Date(at) } },
+    );
+    return result.matchedCount === 1 ? 'saved' : 'missing';
+  } catch (err) {
+    if (err && err.code === DUPLICATE_KEY) return 'taken';
+    throw err;
+  }
+}
+
+/** Remove the user's number (idempotent). */
+async function removePhone(userId, at) {
+  await User.updateOne(
+    { _id: userId },
+    { $unset: { phone: '', phoneVerifiedAt: '' }, $set: { mobileNumberVerified: false, updatedAt: new Date(at) } },
+  );
+}
+
+module.exports = { findByEmail, findById, findByPhone, setPassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

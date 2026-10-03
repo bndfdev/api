@@ -292,9 +292,17 @@ function loadConfig(env = process.env, { validate = true } = {}) {
   if (Boolean(smtpUser) !== Boolean(smtpPass)) invalid.push('SMTP_USER and SMTP_PASS (set both or neither)');
   const smtpFrom = env.SMTP_FROM ? env.SMTP_FROM.trim() : undefined;
   if (smtpFrom && !MAIL_FROM.test(smtpFrom)) invalid.push('SMTP_FROM (must be an address or "Name <address>")');
-  // TODO(PR 4, phone verification): choose the SMS provider; only the console provider exists for now.
+  // TODO(SMS provider): the real provider (Twilio Verify, AWS SNS or similar) has not been chosen; only the
+  // console provider exists, so outside test mode no text message is really sent.
   const smsProvider = (env.SMS_PROVIDER || '').trim().toLowerCase() || 'console';
   if (smsProvider !== 'console') invalid.push('SMS_PROVIDER (only console is available for now)');
+
+  // --- Phone numbers ---
+  // Which countries' numbers may be verified (ISO 3166 codes), until GET /countries says so per country.
+  // Empty means every country.
+  const phoneRegions = (env.PHONE_REGIONS || '').split(',').map((r) => r.trim().toUpperCase()).filter(Boolean);
+  if (phoneRegions.some((r) => !/^[A-Z]{2}$/.test(r))) invalid.push('PHONE_REGIONS (comma-separated two-letter country codes, like US,IN)');
+  const phoneRefuseVoip = readBool(env, 'PHONE_REFUSE_VOIP', invalid);
 
   if (validate) {
     if (signing.privateKey && signing.publicKey && !ephemeral) {
@@ -351,6 +359,7 @@ function loadConfig(env = process.env, { validate = true } = {}) {
       }),
     }),
     sms: Object.freeze({ provider: smsProvider }),
+    phone: Object.freeze({ regions: Object.freeze(phoneRegions), refuseVoip: phoneRefuseVoip }),
   });
 }
 

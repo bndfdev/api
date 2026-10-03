@@ -1,7 +1,7 @@
 /**
  * Picks the SMS provider named by config (`sms.provider`).
  *
- * TODO(PR 4, phone verification): the real SMS provider (Twilio Verify, AWS SNS
+ * TODO(SMS provider): the real SMS provider (Twilio Verify, AWS SNS
  * or similar) has not been chosen. Until then only the console provider exists,
  * so no text message is ever sent. A real one goes in `sms/<name>.js`, takes the
  * same `send({to, purpose, code, expiresInMinutes})`, and is added to the switch
