@@ -8,6 +8,40 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-03: Password reset, guests and phone verification (PR 4)
+
+**Existing data affected:**
+- **`users`: one new optional field**, `phoneVerifiedAt` (when the number in `phone` was verified with a code).
+- **`users`: existing fields the new code now writes**, the same ones the old API writes:
+  - `phone` and `mobileNumberVerified`, when a number is verified or removed;
+  - `password` and `passwordAlgo` (argon2id), plus the new-login lock fields, when a password is reset.
+- **`users`: one change to *other* accounts.** When someone verifies a phone number that a different account has in `phone` but never verified (`mobileNumberVerified` is not `true`), the number is removed from that other account (`$unset: {phone}`). Proof of ownership wins over a number that was only typed in. A number another account **has verified** is never taken: the request gets `409 PHONE_TAKEN`.
+  - Pre-flight check, to see how many unverified numbers exist:
+    ```js
+    db.users.countDocuments({ phone: { $exists: true }, mobileNumberVerified: { $ne: true } })
+    ```
+- **`sessions`: one new optional field**, `accountType` (`guest` on a guest's session; absent on an account's). Existing sessions are unaffected.
+- **No index changes on existing collections.** The existing unique sparse index on `users.phone` is relied on as it is.
+- **`guestusers` (the old API's guests, shown on the admin panel's "Guest users" page) is not touched.** New guests go to `guest_accounts` instead (below), so they don't appear on that admin page until the admin panel reads the new collection.
+
+**New collections**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `reset_tokens` | SHA-256 hashes of single-use password-reset tokens (valid 15 minutes) | `tokenHash` unique; `{purgeAt: 1}` TTL | Deleted an hour after expiry |
+| `guest_accounts` | One guest per app install: install id, date of birth, language | `installationId` unique; `{purgeAt: 1}` TTL | Deleted 180 days after the guest was last active |
+
+**Rollback:**
+- Stop the new code.
+- Drop `reset_tokens` and `guest_accounts`.
+- `users.phoneVerifiedAt` and `sessions.accountType` can stay, because nothing else reads them, or be removed with `$unset`.
+- Numbers removed from accounts that had never verified them are not restored.
+- Passwords changed through a reset are argon2id, which the old `/user/login` cannot check (as in PR 3).
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-03: Email sign-up and login (PR 3)
 
 **Existing data affected:** the `users` collection gets new optional fields and one new index. No existing field is renamed, removed or retyped, and no existing document is rewritten. A user's `password` hash (and `passwordAlgo`) is updated only when that user signs in through the new login, which upgrades bcrypt to argon2id.
