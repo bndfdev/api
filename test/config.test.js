@@ -330,6 +330,25 @@ test('phone: every region and VoIP allowed by default; PHONE_REGIONS and PHONE_R
   assert.throws(() => loadConfig({ NODE_ENV: 'test', PHONE_REFUSE_VOIP: 'sometimes' }), /PHONE_REFUSE_VOIP/);
 });
 
+test('app config: versions default to 1.0.0, switches default on, countries default to US', () => {
+  const plain = loadConfig({ NODE_ENV: 'test' });
+  assert.deepEqual(plain.app.minimumVersions, { ios: '1.0.0', android: '1.0.0', web: '1.0.0' });
+  assert.deepEqual(plain.app.latestVersions, {});
+  assert.deepEqual(plain.features, { guestMode: true, phoneVerificationRequired: true });
+  assert.deepEqual(plain.countries, { contentRegions: [], defaultCountry: 'US' });
+  const set = loadConfig({
+    NODE_ENV: 'test', APP_MIN_VERSION_IOS: '1.2.0', APP_LATEST_VERSION_ANDROID: '2.0.1', GUEST_MODE: 'false',
+    PHONE_VERIFICATION_REQUIRED: 'false', CONTENT_REGIONS: 'us', DEFAULT_COUNTRY_CODE: 'in',
+  });
+  assert.equal(set.app.minimumVersions.ios, '1.2.0');
+  assert.deepEqual(set.app.latestVersions, { android: '2.0.1' });
+  assert.deepEqual(set.features, { guestMode: false, phoneVerificationRequired: false });
+  assert.deepEqual(set.countries, { contentRegions: ['US'], defaultCountry: 'IN' });
+  for (const [name, value] of [['APP_MIN_VERSION_WEB', '1.2'], ['GUEST_MODE', 'off'], ['CONTENT_REGIONS', 'USA'], ['DEFAULT_COUNTRY_CODE', 'India']]) {
+    assert.throws(() => loadConfig({ NODE_ENV: 'test', [name]: value }), new RegExp(name));
+  }
+});
+
 test('LOG_CODES_IN_DEV only takes effect in development', () => {
   const base = { MONGODB_URI: 'mongodb://x/y', LOG_CODES_IN_DEV: 'true' };
   assert.equal(loadConfig({ ...base, NODE_ENV: 'development' }).codes.logInDev, true);

@@ -99,6 +99,22 @@ function readBoundedInt(env, name, fallback, max, invalid) {
 }
 
 /** true / false from env; unset or empty is false. Anything else is reported as invalid. */
+/** Like readBool, but unset or empty gives `fallback` (for switches that are on by default). */
+function readFlag(env, name, fallback, invalid) {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  return readBool(env, name, invalid);
+}
+
+/** A version "major.minor.patch", or `fallback` when unset. Anything else is reported as invalid. */
+function readVersion(env, name, fallback, invalid) {
+  const raw = (env[name] || '').trim();
+  if (raw === '') return fallback;
+  if (/^\d+\.\d+\.\d+$/.test(raw)) return raw;
+  invalid.push(`${name} (must be a version like 1.4.0)`);
+  return fallback;
+}
+
 function readBool(env, name, invalid) {
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return false;
@@ -304,6 +320,27 @@ function loadConfig(env = process.env, { validate = true } = {}) {
   if (phoneRegions.some((r) => !/^[A-Z]{2}$/.test(r))) invalid.push('PHONE_REGIONS (comma-separated two-letter country codes, like US,IN)');
   const phoneRefuseVoip = readBool(env, 'PHONE_REFUSE_VOIP', invalid);
 
+  // --- What GET /config tells the app ---
+  // Builds older than the minimum get 426 UPGRADE_REQUIRED on every call; the latest version only drives an
+  // optional "update available" prompt (left out of /config when unset).
+  const minimumVersions = {};
+  const latestVersions = {};
+  for (const platform of ['ios', 'android', 'web']) {
+    const key = platform.toUpperCase();
+    minimumVersions[platform] = readVersion(env, `APP_MIN_VERSION_${key}`, '1.0.0', invalid);
+    const latest = readVersion(env, `APP_LATEST_VERSION_${key}`, undefined, invalid);
+    if (latest) latestVersions[platform] = latest;
+  }
+  // Remote switches (on unless set to false).
+  const guestMode = readFlag(env, 'GUEST_MODE', true, invalid);
+  const phoneVerificationRequired = readFlag(env, 'PHONE_VERIFICATION_REQUIRED', true, invalid);
+  // Countries where Bondfire content is available (GET /countries → contentAvailable). Empty: not reported.
+  const contentRegions = (env.CONTENT_REGIONS || '').split(',').map((r) => r.trim().toUpperCase()).filter(Boolean);
+  if (contentRegions.some((r) => !/^[A-Z]{2}$/.test(r))) invalid.push('CONTENT_REGIONS (comma-separated two-letter country codes, like US)');
+  // The phone picker's preselected country when the request does not say where it comes from.
+  const defaultCountry = (env.DEFAULT_COUNTRY_CODE || 'US').trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(defaultCountry)) invalid.push('DEFAULT_COUNTRY_CODE (a two-letter country code, like US)');
+
   if (validate) {
     if (signing.privateKey && signing.publicKey && !ephemeral) {
       const problem = signingKeyProblem(signing.privateKey, signing.publicKey);
@@ -360,6 +397,9 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     }),
     sms: Object.freeze({ provider: smsProvider }),
     phone: Object.freeze({ regions: Object.freeze(phoneRegions), refuseVoip: phoneRefuseVoip }),
+    app: Object.freeze({ minimumVersions: Object.freeze(minimumVersions), latestVersions: Object.freeze(latestVersions) }),
+    features: Object.freeze({ guestMode, phoneVerificationRequired }),
+    countries: Object.freeze({ contentRegions: Object.freeze(contentRegions), defaultCountry }),
   });
 }
 

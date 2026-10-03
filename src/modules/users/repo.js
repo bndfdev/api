@@ -204,4 +204,33 @@ async function removePhone(userId, at) {
   );
 }
 
-module.exports = { findByEmail, findById, findByPhone, setPassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/**
+ * Save profile fields (PATCH /me). `guard` adds conditions the document must still meet (for example the date
+ * of birth and change count that the decision was based on), so two requests at once cannot both use the one
+ * allowed date-of-birth change.
+ * @param {string} userId
+ * @param {{set?: object, unset?: string[], guard?: object}} change
+ * @returns {Promise<boolean>} false when the user is gone or the guard no longer holds
+ */
+async function updateProfile(userId, { set = {}, unset = [], guard = {} }) {
+  const update = {};
+  if (Object.keys(set).length > 0) update.$set = set;
+  if (unset.length > 0) update.$unset = Object.fromEntries(unset.map((field) => [field, '']));
+  const result = await User.updateOne({ _id: userId, ...guard }, update);
+  return result.matchedCount === 1;
+}
+
+/** Record that a date of birth under the minimum age was entered (the date itself is not stored). */
+async function flagAgeCheck(userId, at) {
+  await User.updateOne({ _id: userId }, { $set: { ageCheckFailedAt: new Date(at) } });
+}
+
+/** Mark an optional onboarding step ('interests' or 'profile') completed or skipped. */
+async function markOnboardingStep(userId, step, status, at) {
+  await User.updateOne(
+    { _id: userId },
+    { $set: { [`onboardingSteps.${step}`]: { status, updatedAt: new Date(at) }, updatedAt: new Date(at) } },
+  );
+}
+
+module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, setPassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

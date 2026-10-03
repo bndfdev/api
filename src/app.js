@@ -12,20 +12,33 @@ const { router: healthRouter } = require('./modules/health/routes');
 const { router: sessionsRouter } = require('./modules/sessions/routes');
 const { router: defaultAuthRouter } = require('./modules/auth/routes');
 const { router: defaultPhoneRouter } = require('./modules/phone/routes');
+const { router: defaultMeRouter } = require('./modules/me/routes');
+const { router: defaultMetaRouter } = require('./modules/meta/routes');
+const { clientVersionGate: defaultVersionGate } = require('./middleware/clientVersion');
 
 const ROOT = path.join(__dirname, '..');
 
 /**
  * Build the express app. Does not connect to MongoDB and does not listen.
  * @param {{extend?: (app: import('express').Express) => void, trustProxy?: number | false,
- *   authRouter?: import('express').Router, phoneRouter?: import('express').Router}} [options]
+ *   authRouter?: import('express').Router, phoneRouter?: import('express').Router, meRouter?: import('express').Router,
+ *   metaRouter?: import('express').Router, versionGate?: Function}} [options]
  *   `extend` is a hook used only by tests to add routes after the legacy
  *   mounts and before the /v1 404 and error handlers. `trustProxy` overrides
  *   config.trustProxy (tests). `authRouter` replaces the sign-up and login
  *   routes (tests give them a fake email provider and a clock, see
- *   createAuthRouter in src/modules/auth/routes.js); `phoneRouter` likewise replaces the phone routes.
+ *   createAuthRouter in src/modules/auth/routes.js); `phoneRouter`, `meRouter` and `metaRouter` likewise
+ *   replace those routes, and `versionGate` the minimum-app-version check.
  */
-function createApp({ extend, trustProxy = config.trustProxy, authRouter = defaultAuthRouter, phoneRouter = defaultPhoneRouter } = {}) {
+function createApp({
+  extend,
+  trustProxy = config.trustProxy,
+  authRouter = defaultAuthRouter,
+  phoneRouter = defaultPhoneRouter,
+  meRouter = defaultMeRouter,
+  metaRouter = defaultMetaRouter,
+  versionGate = defaultVersionGate,
+} = {}) {
   const app = express();
   app.disable('x-powered-by');
   // How many proxies sit in front of the API (TRUST_PROXY); decides what req.ip is.
@@ -34,7 +47,8 @@ function createApp({ extend, trustProxy = config.trustProxy, authRouter = defaul
 
   applySecurity(app, config);
 
-  app.use(express.json({ limit: '100kb' }));
+  // PATCH /v1/me sends JSON Merge Patch (application/merge-patch+json), which is JSON too.
+  app.use(express.json({ limit: '100kb', type: ['application/json', 'application/merge-patch+json'] }));
 
   // Serve uploaded files from API public directory
   app.use('/uploads', express.static(path.join(ROOT, 'public/uploads')));
@@ -122,10 +136,15 @@ function createApp({ extend, trustProxy = config.trustProxy, authRouter = defaul
   // modules mount after the validator; documented-but-unimplemented operations
   // and unknown paths fall through to the problem 404.
   v1.use(trimEmail);
+  // App builds older than the minimum for their platform get 426 UPGRADE_REQUIRED, before anything else is
+  // checked: an old build may send requests in an older shape, and must see "update", not a validation error.
+  v1.use(versionGate);
   v1.use(openApiValidator(config));
+  v1.use(metaRouter);
   v1.use(sessionsRouter);
   v1.use(authRouter);
   v1.use(phoneRouter);
+  v1.use(meRouter);
   v1.use(notFound);
   app.use('/v1', v1);
 
