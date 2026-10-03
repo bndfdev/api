@@ -2532,6 +2532,7 @@ components:
         - NOT_FOUND
         - METHOD_NOT_ALLOWED
         - CONFLICT
+        - PRECONDITION_FAILED
         - RATE_LIMITED
         - UPGRADE_REQUIRED
         - IDEMPOTENCY_KEY_REUSED
