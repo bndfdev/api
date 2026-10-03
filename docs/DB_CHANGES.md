@@ -8,6 +8,42 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-03: Profile, onboarding progress and terms (PR 5)
+
+**Existing data affected:** none until a user edits their profile. Then the new code writes these existing `users` fields, in v1 formats:
+- `name`;
+- `gender`: may now hold `non_binary` or `prefer_not_to_say` as well as the old values. The model's allowed list is widened (schema only; no stored document changes). The admin panel's own model reads `gender` as free text.
+- `dateOfBirth`: always `YYYY-MM-DD`. Older documents may hold other formats; v1 reads those as "not set".
+- `preferredLanguage`: a language tag (`en`, `es`, `fr`, `de`, `hi`) where the old API stored names like `English`.
+
+**`users`: new optional fields** (absent until used)
+
+| Field | Purpose |
+| --- | --- |
+| `dateOfBirthSetAt`, `dateOfBirthChanges` | When the date of birth was first set, and how often it changed since (one typo fix within 30 days) |
+| `ageCheckFailedAt` | When a date of birth under the minimum age (13) was entered. The date itself is not stored. |
+| `onboardingSteps.interests`, `onboardingSteps.profile` | `{status, updatedAt}` when the user marked an optional step done or skipped ("Later") |
+
+**New collection**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `consents` | One record per accepted legal document version: account (or guest), document, version, time, **IP address** and app install id | `{userId, documentType, version}` unique; `{userId, acceptedAt: -1}` | **None:** kept as the audit trail. A guest's records move to the account it signs up as. |
+
+- `consents` stores IP addresses (personal data) for audit, as the spec asks. **Please decide how long to keep them**, and whether account deletion (a later PR) should remove or anonymise them.
+
+**No index changes on existing collections.**
+
+**Rollback:**
+- Stop the new code.
+- Drop `consents`.
+- The new `users` fields can stay, because nothing else reads them, or be removed with `$unset`.
+- Values written in v1 formats (`YYYY-MM-DD` dates, language tags, the two new gender values) stay. The old API reads `gender` and `dateOfBirth` as plain strings.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-03: Password reset, guests and phone verification (PR 4)
 
 **Existing data affected:**
