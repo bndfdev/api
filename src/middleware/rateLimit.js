@@ -70,8 +70,9 @@ const rateLimitHeader = ({ limit, remaining, reset }) => `limit=${limit}, remain
  * @param {number} options.durationSeconds window length
  * @param {(req: import('express').Request) => string | undefined} options.key what to count by (see `byIp`, `byInstallation`, `byUser`)
  * @param {typeof defaultStoreFactory} [options.storeFactory] builds the counter store; tests inject one
+ * @param {number} [options.timeoutMs] how long to wait for the store before allowing the request (tests raise it)
  */
-function rateLimit({ name, points, durationSeconds, key, storeFactory = defaultStoreFactory }) {
+function rateLimit({ name, points, durationSeconds, key, storeFactory = defaultStoreFactory, timeoutMs = STORE_TIMEOUT_MS }) {
   let limiter;
   const getLimiter = () => (limiter ??= storeFactory({ name, points, durationSeconds }));
 
@@ -80,7 +81,7 @@ function rateLimit({ name, points, durationSeconds, key, storeFactory = defaultS
     let outcome;
     let limited = false;
     try {
-      outcome = await withTimeout(getLimiter().consume(subject, 1), STORE_TIMEOUT_MS);
+      outcome = await withTimeout(getLimiter().consume(subject, 1), timeoutMs);
     } catch (rejection) {
       if (rejection instanceof RateLimiterRes) {
         outcome = rejection;

@@ -341,9 +341,10 @@ test('past graceUntil the record is not used even while it still exists, and the
   assert.equal(await RefreshGrace.countDocuments(), 0);
 });
 
-test('MongoDB removes a grace record once graceUntil has passed', { timeout: 30000 }, async () => {
-  // Real clock and a 1 s window; the test database runs its TTL monitor every second.
-  const fast = createSessionService({ config: loadConfig({ NODE_ENV: 'test', REFRESH_GRACE_SECONDS: '1' }) });
+test('MongoDB removes a grace record once graceUntil has passed', { timeout: 45000 }, async () => {
+  // Real clock and a 5 s window; the test database runs its TTL monitor every second. (With a 1 s window a
+  // busy machine sometimes deleted the record before the first count below.)
+  const fast = createSessionService({ config: loadConfig({ NODE_ENV: 'test', REFRESH_GRACE_SECONDS: '5' }) });
   const user = await makeUser();
   const installationId = crypto.randomUUID();
   const { tokens: pair } = await fast.createSession({
@@ -352,7 +353,7 @@ test('MongoDB removes a grace record once graceUntil has passed', { timeout: 300
   await fast.refresh({ refreshToken: pair.refreshToken, installationId });
   assert.equal(await RefreshGrace.countDocuments(), 1);
 
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + 30000;
   while ((await RefreshGrace.countDocuments()) > 0 && Date.now() < deadline) {
     await new Promise((resolve) => { setTimeout(resolve, 200); });
   }

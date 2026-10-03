@@ -14,10 +14,12 @@ let replSet;
 async function connect() {
   // Loaded here, not at the top: `node --test` also runs this file as if it were a test.
   const { MongoMemoryReplSet } = require('mongodb-memory-server');
-  // The TTL monitor runs every second (default 60) so tests can see expiry happen.
+  // The TTL monitor runs every second (default 60) so tests can see expiry happen. Test files run in
+  // parallel, each with its own database, so on a busy machine one can take longer than the default
+  // 10 seconds to start; that used to fail every test in the file at once.
   replSet = await MongoMemoryReplSet.create({
     replSet: { count: 1 },
-    instanceOpts: [{ args: ['--setParameter', 'ttlMonitorSleepSecs=1'] }],
+    instanceOpts: [{ args: ['--setParameter', 'ttlMonitorSleepSecs=1'], launchTimeout: 60000 }],
   });
   await mongoose.connect(replSet.getUri(), { dbName: 'bondfire_test' });
   await Promise.all(mongoose.modelNames().map((name) => mongoose.model(name).init()));

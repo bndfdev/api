@@ -171,8 +171,10 @@ test('the default store is in memory under test and MongoDB-backed when asked (w
 
 test('the MongoDB store works through the middleware (counters survive a new middleware instance)', async () => {
   const name = uniqueName('persist');
+  // A new MongoDB store builds its index first, which on a busy machine can take longer than the normal
+  // 2-second wait; past that the middleware lets the request through (by design), so wait longer here.
   const make = () => rateLimit({
-    name, points: 1, durationSeconds: 60, key: byHeader, storeFactory: (limit) => defaultStoreFactory(limit, true),
+    name, points: 1, durationSeconds: 60, key: byHeader, storeFactory: (limit) => defaultStoreFactory(limit, true), timeoutMs: 30000,
   });
   assert.equal((await request(appWith(make())).get('/test/limited').set('x-test-key', 'a')).status, 200);
   // A second instance (another server process) sees the same counter.
