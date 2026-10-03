@@ -2,6 +2,7 @@ const express = require('express');
 const { asyncHandler } = require('../../lib/asyncHandler');
 const { rateLimit, byIp, byInstallation } = require('../../middleware/rateLimit');
 const defaultAuth = require('../../middleware/requireAuth');
+const { accountOnly } = require('../../middleware/requireAuth');
 const defaultService = require('./service');
 
 // Only token refresh is rate limited. It is the one operation here whose spec lists a
@@ -54,9 +55,11 @@ function createSessionsRouter({ service = defaultService, auth = defaultAuth } =
   );
 
   // GET /me/sessions: the caller's devices, current first.
+  // The device list is account-only (guests get 403 GUEST_NOT_ALLOWED); logout and refresh work for guests.
   router.get(
     '/me/sessions',
     requireAuth,
+    accountOnly,
     asyncHandler(async (req, res) => {
       const list = await service.listSessions({ userId: req.auth.userId, currentSessionId: req.auth.sessionId });
       res.set('Cache-Control', 'no-store');
@@ -68,6 +71,7 @@ function createSessionsRouter({ service = defaultService, auth = defaultAuth } =
   router.delete(
     '/me/sessions',
     requireAuth,
+    accountOnly,
     asyncHandler(async (req, res) => {
       await service.revokeAllOtherSessions({ userId: req.auth.userId, keepSessionId: req.auth.sessionId });
       res.status(204).end();
@@ -78,6 +82,7 @@ function createSessionsRouter({ service = defaultService, auth = defaultAuth } =
   router.delete(
     '/me/sessions/:sessionId',
     requireAuth,
+    accountOnly,
     asyncHandler(async (req, res) => {
       await service.revokeSession({ userId: req.auth.userId, sessionId: req.params.sessionId });
       res.status(204).end();

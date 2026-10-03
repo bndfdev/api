@@ -41,15 +41,17 @@ function createTokens({ jwt = defaultConfig.jwt, now = Date.now } = {}) {
   }
 
   /**
-   * Sign an access token. Claims carry ids only, no personal data.
-   * @param {{userId: string, sessionId: string}} subject
+   * Sign an access token. Claims carry ids only, no personal data. A guest's token also carries
+   * `act: "guest"`; a full account's carries no `act` (so tokens issued before guests existed still read as accounts).
+   * @param {{userId: string, sessionId: string, accountType?: 'user' | 'guest'}} subject
    * @returns {Promise<{token: string, expiresAt: Date}>}
    */
-  async function signAccessToken({ userId, sessionId }) {
+  async function signAccessToken({ userId, sessionId, accountType = 'user' }) {
     const [jose, { privateKey }] = await Promise.all([loadJose(), getKeys()]);
     const iat = Math.floor(now() / 1000);
     const exp = iat + jwt.accessTtlSeconds;
-    const token = await new jose.SignJWT({ sid: String(sessionId) })
+    const claims = { sid: String(sessionId), ...(accountType === 'guest' ? { act: 'guest' } : {}) };
+    const token = await new jose.SignJWT(claims)
       .setProtectedHeader({ alg: ALGORITHM, kid: jwt.keyId, typ: TOKEN_TYPE })
       .setSubject(String(userId))
       .setIssuer(jwt.issuer)
@@ -65,7 +67,7 @@ function createTokens({ jwt = defaultConfig.jwt, now = Date.now } = {}) {
    * Verify an access token. Throws a 401 ApiError: TOKEN_EXPIRED when it has
    * expired, TOKEN_INVALID for anything else.
    * @param {string} token
-   * @returns {Promise<{userId: string, sessionId: string}>}
+   * @returns {Promise<{userId: string, sessionId: string, accountType: 'user' | 'guest'}>}
    */
   async function verifyAccessToken(token) {
     const jose = await loadJose();
@@ -93,7 +95,8 @@ function createTokens({ jwt = defaultConfig.jwt, now = Date.now } = {}) {
     if (typeof payload.sub !== 'string' || typeof payload.sid !== 'string' || !payload.sub || !payload.sid) {
       throw invalid();
     }
-    return { userId: payload.sub, sessionId: payload.sid };
+    if (payload.act !== undefined && payload.act !== 'guest') throw invalid();
+    return { userId: payload.sub, sessionId: payload.sid, accountType: payload.act === 'guest' ? 'guest' : 'user' };
   }
 
   return { signAccessToken, verifyAccessToken };

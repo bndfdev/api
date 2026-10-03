@@ -20,6 +20,7 @@ const LIMITS = Object.freeze({
   verifyPerIp: { name: 'challenge-verify:ip', points: 60, durationSeconds: HOUR, key: byIp },
   loginPerIp: { name: 'login:ip', points: 50, durationSeconds: HOUR, key: byIp },
   passwordResetPerIp: { name: 'password-reset:ip', points: 20, durationSeconds: HOUR, key: byIp },
+  guestPerIp: { name: 'guest:ip', points: 20, durationSeconds: HOUR, key: byIp },
 });
 
 /**
@@ -109,9 +110,11 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
     }),
   );
 
-  // POST /auth/signup/complete: creates the account; 201 with the session.
+  // POST /auth/signup/complete: creates the account; 201 with the session. With a guest's token the guest
+  // becomes the account.
   router.post(
     '/auth/signup/complete',
+    optionalAuth,
     idempotency,
     asyncHandler(async (req, res) => {
       const session = await svc().completeSignup({
@@ -120,6 +123,7 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
         device: req.body.device,
         preferredLanguage: req.body.preferredLanguage,
         installationId: installationId(req),
+        auth: req.auth,
       });
       noStore(res).status(201).json(session);
     }),
@@ -137,6 +141,21 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
         installationId: installationId(req),
       });
       noStore(res).json(session);
+    }),
+  );
+
+  // POST /auth/guest: 201 with a new guest's session, or 200 with this install's existing guest.
+  router.post(
+    '/auth/guest',
+    rateLimit(LIMITS.guestPerIp),
+    asyncHandler(async (req, res) => {
+      const { session, created } = await svc().startGuestSession({
+        device: req.body.device,
+        dateOfBirth: req.body.dateOfBirth,
+        preferredLanguage: req.body.preferredLanguage,
+        installationId: installationId(req),
+      });
+      noStore(res).status(created ? 201 : 200).json(session);
     }),
   );
 

@@ -22,11 +22,14 @@ async function assertRejects(promise, status, code) {
   });
 }
 
+// What verifying a token for SUBJECT gives back: a full account's token reads as accountType 'user'.
+const VERIFIED = Object.freeze({ ...SUBJECT, accountType: 'user' });
+
 const invalid = (token) => assertRejects(tokens.verifyAccessToken(token), 401, 'TOKEN_INVALID');
 
 test('sign and verify round trip', async () => {
   const { token, expiresAt } = await tokens.signAccessToken(SUBJECT);
-  assert.deepEqual(await tokens.verifyAccessToken(token), SUBJECT);
+  assert.deepEqual(await tokens.verifyAccessToken(token), VERIFIED);
   assert.equal(expiresAt.getTime(), clock.t + 900 * 1000);
 });
 
@@ -57,7 +60,7 @@ test('an expired token is TOKEN_EXPIRED with a WWW-Authenticate header', async (
     assert.equal(err.headers['WWW-Authenticate'], 'Bearer error="invalid_token"');
   });
   const almost = createTokens({ jwt: config.jwt, now: () => clock.t + 899 * 1000 });
-  assert.deepEqual(await almost.verifyAccessToken(token), SUBJECT);
+  assert.deepEqual(await almost.verifyAccessToken(token), VERIFIED);
 });
 
 test('a tampered payload or signature is TOKEN_INVALID', async () => {
@@ -136,8 +139,20 @@ test('a JWT of another type, or without a session id, is TOKEN_INVALID', async (
   await invalid(await build('JWT', { sid: SUBJECT.sessionId }));
   await invalid(await build('at+jwt', {}));
   await invalid(await build('at+jwt', { sid: '' }));
+  // Only "guest" is a known account type; anything else in `act` is refused.
+  await invalid(await build('at+jwt', { sid: SUBJECT.sessionId, act: 'admin' }));
+  await invalid(await build('at+jwt', { sid: SUBJECT.sessionId, act: 1 }));
   // The same builder with everything right is accepted, so the rejections above are for the stated reason.
-  assert.deepEqual(await tokens.verifyAccessToken(await build('at+jwt', { sid: SUBJECT.sessionId })), SUBJECT);
+  assert.deepEqual(await tokens.verifyAccessToken(await build('at+jwt', { sid: SUBJECT.sessionId })), VERIFIED);
+});
+
+test('a guest token carries act "guest" and reads back as a guest; an account token has no act', async () => {
+  const jose = await import('jose');
+  const guest = await tokens.signAccessToken({ ...SUBJECT, accountType: 'guest' });
+  assert.deepEqual(await tokens.verifyAccessToken(guest.token), { ...SUBJECT, accountType: 'guest' });
+  assert.equal(jose.decodeJwt(guest.token).act, 'guest');
+  const account = await tokens.signAccessToken(SUBJECT);
+  assert.equal(jose.decodeJwt(account.token).act, undefined);
 });
 
 test('malformed input is TOKEN_INVALID', async () => {

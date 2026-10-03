@@ -16,6 +16,13 @@ const unauthenticated = () => new ApiError({
   headers: { 'WWW-Authenticate': 'Bearer' },
 });
 
+const guestNotAllowed = () => new ApiError({
+  status: 403,
+  code: 'GUEST_NOT_ALLOWED',
+  title: 'Create an account to do this',
+  detail: 'Guests cannot use this. Sign up to continue.',
+});
+
 const tokenInvalid = () => new ApiError({
   status: 401,
   code: 'TOKEN_INVALID',
@@ -40,7 +47,8 @@ function readBearerToken(req) {
  * in the body or query are not accepted.
  *
  * `requireAuth` answers 401 for anything but a valid access token whose session
- * is still active, and sets `req.auth = { userId, sessionId }`:
+ * is still active, and sets `req.auth = { userId, sessionId, accountType }` (`accountType` is
+ * 'guest' for a guest, whose `userId` is then a guest_accounts id, else 'user'):
  * - UNAUTHENTICATED: no Authorization header, or not a Bearer one;
  * - TOKEN_EXPIRED / TOKEN_INVALID: from the token check (the client refreshes
  *   once on TOKEN_EXPIRED and signs the user out on anything else);
@@ -54,7 +62,7 @@ function readBearerToken(req) {
  * @param {{tokens?: object, sessions?: object}} [deps] `tokens.verifyAccessToken` and `sessions.assertSessionActive`
  */
 function createAuth({ tokens = defaultTokens, sessions = defaultSessions } = {}) {
-  /** @returns {Promise<{userId: string, sessionId: string}|null>} null when no Bearer header was sent */
+  /** @returns {Promise<{userId: string, sessionId: string, accountType: string}|null>} null when no Bearer header was sent */
   async function authenticate(req) {
     const token = readBearerToken(req);
     if (token === null) return null;
@@ -85,4 +93,13 @@ function createAuth({ tokens = defaultTokens, sessions = defaultSessions } = {})
   return { requireAuth, optionalAuth };
 }
 
-module.exports = { createAuth, ...createAuth() };
+/**
+ * After `requireAuth`: refuse guests with 403 GUEST_NOT_ALLOWED (the app then offers sign-up).
+ * For the operations the spec marks account-only.
+ */
+function accountOnly(req, res, next) {
+  if (req.auth && req.auth.accountType === 'guest') return next(guestNotAllowed());
+  return next();
+}
+
+module.exports = { createAuth, accountOnly, ...createAuth() };

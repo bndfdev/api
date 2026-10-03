@@ -84,8 +84,8 @@ function createSessionService({
   const graceWindow = config.refreshToken.graceSeconds * SECOND;
 
   /** Sign an access token and mint a refresh token; nothing is stored yet. */
-  async function mintPair({ userId, sessionId, at }) {
-    const access = await tokens.signAccessToken({ userId, sessionId });
+  async function mintPair({ userId, sessionId, at, accountType = 'user' }) {
+    const access = await tokens.signAccessToken({ userId, sessionId, accountType });
     const refreshToken = randomToken();
     const refreshExpiresAt = new Date(at + refreshTtl);
     const pair = {
@@ -99,14 +99,16 @@ function createSessionService({
   }
 
   /**
-   * Start a session for a user who has just proven who they are.
-   * @param {{userId: string, signInMethod: string, device: {platform?: string, model?: string, appVersion?: string}, installationId: string}} input
+   * Start a session for a user who has just proven who they are, or for a guest (`accountType: 'guest'`,
+   * `userId` is then the guest's id).
+   * @param {{userId: string, signInMethod: string, device: {platform?: string, model?: string, appVersion?: string},
+   *   installationId: string, accountType?: 'user' | 'guest'}} input
    * @returns {Promise<{tokens: object, session: object}>} `TokenPair` and `SessionInfo`
    */
-  async function createSession({ userId, signInMethod, device, installationId }) {
+  async function createSession({ userId, signInMethod, device, installationId, accountType = 'user' }) {
     const at = clock();
     const sessionId = repo.newId();
-    const minted = await mintPair({ userId, sessionId, at });
+    const minted = await mintPair({ userId, sessionId, at, accountType });
     // The token goes first: a stray token without a session can never be used.
     await repo.insertRefreshToken({
       tokenHash: minted.refreshHash,
@@ -120,6 +122,7 @@ function createSessionService({
       signInMethod,
       device,
       installationId,
+      ...(accountType === 'guest' ? { accountType } : {}),
       createdAt: new Date(at),
       lastActiveAt: new Date(at),
       expiresAt: minted.refreshExpiresAt,
@@ -127,7 +130,12 @@ function createSessionService({
     return { tokens: minted.pair, session: toSessionInfo(session, sessionId) };
   }
 
-  async function assertUserMayRefresh(userId, at) {
+  async function assertUserMayRefresh(userId, at, accountType) {
+    // A guest may refresh while its guest account exists; refreshing keeps it from being deleted.
+    if (accountType === 'guest') {
+      if (!await repo.touchGuest(userId, at)) throw refreshTokenInvalid();
+      return;
+    }
     const user = await repo.findUserBlockStatus(userId);
     if (!user) throw refreshTokenInvalid();
     const blocked = user.isBlocked && (!user.blockedUntil || user.blockedUntil.getTime() > at);
@@ -174,7 +182,8 @@ function createSessionService({
     const session = await repo.findSession(stored.sessionId);
     if (!session) throw refreshTokenInvalid();
     if (session.revokedAt) throw sessionRevoked();
-    await assertUserMayRefresh(stored.userId, at);
+    const accountType = session.accountType === 'guest' ? 'guest' : 'user';
+    await assertUserMayRefresh(stored.userId, at, accountType);
 
     if (stored.usedAt) return replayOrRevoke({ stored, session, installationId, at });
     // An unused token from another install is refused but not treated as theft:
@@ -184,7 +193,7 @@ function createSessionService({
       throw refreshTokenInvalid();
     }
 
-    const minted = await mintPair({ userId: String(stored.userId), sessionId: String(stored.sessionId), at });
+    const minted = await mintPair({ userId: String(stored.userId), sessionId: String(stored.sessionId), at, accountType });
     await repo.insertRefreshToken({
       tokenHash: minted.refreshHash,
       sessionId: stored.sessionId,

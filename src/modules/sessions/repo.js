@@ -8,6 +8,7 @@ const Session = require('../../../models/Session');
 const RefreshToken = require('../../../models/RefreshToken');
 const RefreshGrace = require('../../../models/RefreshGrace');
 const User = require('../../../models/User');
+const guests = require('../guests/repo');
 
 const MAX_LISTED_SESSIONS = 100;
 const DUPLICATE_KEY = 11000;
@@ -43,6 +44,14 @@ function findUserSession(userId, sessionId) {
  */
 function findSessionState(userId, sessionId) {
   return Session.findOne({ _id: sessionId, userId }).select('revokedAt expiresAt').lean();
+}
+
+/**
+ * Mark a guest active (which also pushes its deletion 180 days away).
+ * @returns {Promise<object | null>} null when the guest no longer exists
+ */
+function touchGuest(guestId, at) {
+  return guests.touch(guestId, at);
 }
 
 /** `{isBlocked, blockedUntil}` for the user, or null when there is no such user. */
@@ -159,6 +168,7 @@ module.exports = {
   findUserSession,
   findSessionState,
   findUserBlockStatus,
+  touchGuest,
   insertGrace,
   findGrace,
   deleteGrace,

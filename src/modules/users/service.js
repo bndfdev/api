@@ -87,9 +87,43 @@ function toUserResponse(user) {
   };
 }
 
+/**
+ * The spec's `User` for a guest: a limited account with a date of birth and maybe a language,
+ * nothing else. Its onboarding is the one step a guest has (the birthday), already done.
+ * @param {object} guest a lean `guest_accounts` document
+ * @returns {object} `User`
+ */
+function toGuestResponse(guest) {
+  const createdAt = guest.createdAt || new Date(0);
+  return {
+    id: String(guest._id),
+    accountType: 'guest',
+    status: 'active',
+    email: null,
+    emailVerified: false,
+    phoneNumber: null,
+    phoneVerified: false,
+    name: null,
+    dateOfBirth: orNull(guest.dateOfBirth, DATE_ONLY),
+    gender: null,
+    preferredLanguage: orNull(guest.preferredLanguage, LANGUAGE_TAG),
+    avatar: null,
+    banner: null,
+    loginMethods: [],
+    onboarding: {
+      status: 'completed',
+      nextStep: null,
+      steps: [{ step: 'date_of_birth', status: 'completed', skippable: false, updatedAt: iso(createdAt) }],
+    },
+    consents: { termsAcceptedVersion: null, termsUpToDate: false, privacyAcceptedVersion: null, privacyUpToDate: false },
+    createdAt: iso(createdAt),
+    updatedAt: iso(guest.lastActiveAt || createdAt),
+  };
+}
+
 /** True while an admin has blocked the account (`isBlocked` with no end date, or one in the future). */
 function isSuspended(user, at) {
   return user.isBlocked === true && (!user.blockedUntil || new Date(user.blockedUntil).getTime() > at);
 }
 
-module.exports = { toUserResponse, buildOnboarding, isSuspended };
+module.exports = { toUserResponse, toGuestResponse, buildOnboarding, isSuspended };

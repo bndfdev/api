@@ -17,7 +17,11 @@
  *   2. verifyChallenge        checks the code and hands back a one-time `resetToken`;
  *   3. completePasswordReset  sets the new password, signs out every device and signs in this one.
  *
- * Guest sessions, phone verification and social login are not here yet.
+ * Guests (startGuestSession): one limited account per app install, with a date of birth. Completing
+ * sign-up with a guest's access token moves its date of birth and language to the new account, ends the
+ * guest's sessions and deletes the guest.
+ *
+ * Phone verification and social login are not here yet.
  *
  * Numbers come from docs/api (the spec): the login lockout from `login` ("5 failures in 15 minutes
  * lock password login for 15 minutes"), the password policy from `Password`.
@@ -35,7 +39,9 @@ const { createResetTokenService } = require('../resetTokens/service');
 const { createEmailProvider } = require('../../providers/email');
 const defaultSessions = require('../sessions/service');
 const defaultUsers = require('../users/repo');
-const { toUserResponse, isSuspended } = require('../users/service');
+const { toUserResponse, toGuestResponse, isSuspended } = require('../users/service');
+const defaultGuests = require('../guests/repo');
+const { checkDateOfBirth } = require('../../lib/dateOfBirth');
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -99,14 +105,15 @@ function assertSameInstall(device, installationId) {
 }
 
 /**
- * @param {{now?: () => number, users?: object, challenges?: object, signupTokens?: object, resetTokens?: object,
- *   sessions?: object, passwords?: object, emailProvider?: object, logger?: object}} [deps]
+ * @param {{now?: () => number, users?: object, guests?: object, challenges?: object, signupTokens?: object,
+ *   resetTokens?: object, sessions?: object, passwords?: object, emailProvider?: object, logger?: object}} [deps]
  *   `now` returns epoch ms and is shared with the challenge and sign-up token services unless those are given.
  *   `users` is the users repo; `sessions` needs `createSession`; `passwords` is lib/passwords.js.
  */
 function createAuthService({
   now = Date.now,
   users = defaultUsers,
+  guests = defaultGuests,
   challenges = createChallengeService({ now }),
   signupTokens = createSignupTokenService({ now }),
   resetTokens = createResetTokenService({ now }),
@@ -217,17 +224,23 @@ function createAuthService({
   /**
    * Create the account for a verified email and sign in. The password is checked first, so a weak one
    * can be fixed and sent again with the same token. The token works once.
-   * TODO(guest PR): a guest access token in Authorization moves the guest's data to the new account.
+   * With a guest's access token (`auth.accountType === 'guest'`) the guest becomes the account: its date of
+   * birth and language move over (a language in the request wins), then its sessions end and the guest is deleted.
+   * TODO(profile and onboarding PR): interests and consents move over too, once they are stored.
    * TODO(config PR): LANGUAGE_UNSUPPORTED once GET /config serves the supported languages (the tag's format is already checked).
-   * @param {{signupToken: string, password: string, device: object, preferredLanguage?: string, installationId: string}} input
+   * @param {{signupToken: string, password: string, device: object, preferredLanguage?: string, installationId: string,
+   *   auth?: {userId: string, accountType: string}}} input `auth` is the caller's verified access token, if any
    * @returns {Promise<object>} `Session`, with `isNewUser: true`
    */
-  async function completeSignup({ signupToken, password, device, preferredLanguage, installationId }) {
+  async function completeSignup({ signupToken, password, device, preferredLanguage, installationId, auth }) {
     assertSameInstall(device, installationId);
     const unmet = passwords.unmetRules(password);
     if (unmet.length > 0) throw passwords.policyViolation(unmet);
 
     const { email, tokenHash } = await signupTokens.consume({ signupToken, installationId });
+    // A guest whose account has since been deleted simply signs up from scratch.
+    const guest = auth && auth.accountType === 'guest' ? await guests.findById(auth.userId) : null;
+    const language = preferredLanguage || (guest && guest.preferredLanguage);
     let user;
     try {
       // Someone may have signed up with this address since the code was sent.
@@ -238,7 +251,8 @@ function createAuthService({
         emailVerified: true,
         password: await passwords.hash(password),
         passwordAlgo: 'argon2id',
-        ...(preferredLanguage ? { preferredLanguage } : {}),
+        ...(language ? { preferredLanguage: language } : {}),
+        ...(guest ? { dateOfBirth: guest.dateOfBirth } : {}),
         createdAt: new Date(at),
         updatedAt: new Date(at),
       });
@@ -251,7 +265,55 @@ function createAuthService({
       }
       throw err;
     }
+    if (guest) {
+      // The guest is now this account. A failure here leaves a guest behind, which expires on its own.
+      try {
+        await sessions.revokeAllSessions({ userId: String(guest._id), reason: 'guest_upgraded' });
+        await guests.remove(guest._id);
+      } catch (err) {
+        logger.warn({ err: err && err.name }, 'could not retire the upgraded guest');
+      }
+    }
     return signIn({ user, device, installationId, isNewUser: true });
+  }
+
+  // -------------------------------------------------------------------------
+  // Guests
+  // -------------------------------------------------------------------------
+
+  /**
+   * Continue as a guest. The same install always gets the same guest back (`created: false`, answered 200)
+   * instead of a new one (201). The date of birth is required (Figma) and checked against the minimum age on
+   * the person's local date (`device.timeZone`).
+   * TODO(config PR): FORBIDDEN when guest mode is switched off in GET /config, and LANGUAGE_UNSUPPORTED.
+   * @param {{device: object, dateOfBirth: string, preferredLanguage?: string, installationId: string}} input
+   * @returns {Promise<{session: object, created: boolean}>} `session` is the spec's `Session`
+   */
+  async function startGuestSession({ device, dateOfBirth, preferredLanguage, installationId }) {
+    assertSameInstall(device, installationId);
+    const at = now();
+    const checked = checkDateOfBirth(dateOfBirth, { at, timeZone: device.timeZone });
+
+    let guest = await guests.findByInstallation(installationId);
+    let created = false;
+    if (!guest) {
+      guest = await guests.create({ installationId, dateOfBirth: checked, preferredLanguage, at });
+      created = guest !== null;
+      // Two first requests at once: the other one created it.
+      if (!guest) guest = await guests.findByInstallation(installationId);
+      if (!guest) throw new Error('Could not create or find the guest for this install');
+    } else {
+      guest = (await guests.touch(guest._id, at)) || guest;
+    }
+
+    const { tokens, session } = await sessions.createSession({
+      userId: String(guest._id),
+      signInMethod: 'guest',
+      device: sessionDevice(device),
+      installationId,
+      accountType: 'guest',
+    });
+    return { session: { tokens, session, user: toGuestResponse(guest), isNewUser: created }, created };
   }
 
   // -------------------------------------------------------------------------
@@ -391,6 +453,7 @@ function createAuthService({
     login,
     startPasswordReset,
     completePasswordReset,
+    startGuestSession,
   };
 }
 

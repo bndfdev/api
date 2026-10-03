@@ -96,7 +96,7 @@ test('createSession returns a TokenPair and SessionInfo that match the spec', as
 test('the access token identifies the user and the session', async () => {
   const user = await makeUser();
   const { pair, session } = await signIn(user);
-  assert.deepEqual(await tokens.verifyAccessToken(pair.accessToken), { userId: String(user._id), sessionId: session.id });
+  assert.deepEqual(await tokens.verifyAccessToken(pair.accessToken), { userId: String(user._id), sessionId: session.id, accountType: 'user' });
 });
 
 test('createSession stores the session and only the hash of the refresh token', async () => {
@@ -146,7 +146,7 @@ test('refresh rotates: a new pair, the old token retired, the session touched', 
   assert.equal(matchesSpec('TokenPair', next), true, JSON.stringify(ajv.errors));
   assert.notEqual(next.refreshToken, pair.refreshToken);
   assert.notEqual(next.accessToken, pair.accessToken);
-  assert.deepEqual(await tokens.verifyAccessToken(next.accessToken), { userId: String(user._id), sessionId: session.id });
+  assert.deepEqual(await tokens.verifyAccessToken(next.accessToken), { userId: String(user._id), sessionId: session.id, accountType: 'user' });
 
   const now = Math.floor(clock.t / SECOND) * SECOND;
   assert.equal(Date.parse(next.accessTokenExpiresAt), now + 900 * SECOND);
