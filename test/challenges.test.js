@@ -644,10 +644,14 @@ test('the right code sent in parallel works exactly once', async () => {
   const refused = results.filter((r) => r.status === 'rejected');
   assert.equal(ok.length, 1, JSON.stringify(results.map((r) => r.reason && r.reason.code)));
   assert.equal(refused.length, 7);
+  // Each refusal is "already used", or, when it was counted after the first five had taken every attempt
+  // and before the winner marked the challenge used, "locked". Both refuse; neither gives another guess.
   for (const r of refused) {
     assert.ok(r.reason instanceof ApiError);
-    assert.equal(r.reason.code, 'CHALLENGE_ALREADY_USED');
+    assert.ok(['CHALLENGE_ALREADY_USED', 'CHALLENGE_LOCKED'].includes(r.reason.code), r.reason.code);
   }
+  assert.ok(refused.some((r) => r.reason.code === 'CHALLENGE_ALREADY_USED'));
+  assert.equal((await rawDocs('challenges'))[0].attempts <= 5, true, 'never more than 5 counted');
 });
 
 test('wrong codes sent in parallel never get more than 5 guesses', async () => {
