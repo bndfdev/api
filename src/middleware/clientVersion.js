@@ -38,7 +38,9 @@ const upgradeRequired = (minimumVersion) => new ApiError({
 /** @param {{config?: object}} [deps] */
 function createClientVersionGate({ config = defaultConfig } = {}) {
   return function clientVersionGate(req, res, next) {
-    const minimum = config.app.minimumVersions[req.get('x-client-platform')];
+    const platform = String(req.get('x-client-platform'));
+    // Own keys only: "constructor" or "__proto__" is not a platform (the validator refuses it with 400).
+    const minimum = Object.hasOwn(config.app.minimumVersions, platform) ? config.app.minimumVersions[platform] : undefined;
     const given = parseVersion(req.get('x-client-version'));
     if (!minimum || !given) return next();
     if (compareVersions(given, parseVersion(minimum)) < 0) return next(upgradeRequired(minimum));

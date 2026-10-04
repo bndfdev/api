@@ -23,6 +23,7 @@ const ONBOARDING_STEPS = Object.freeze([
 const E164 = /^\+[1-9][0-9]{6,14}$/;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const LANGUAGE_TAG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+/** The longest name, in characters (code points): PATCH /me, the `User` view and GET /config's limits. */
 const NAME_MAX_LENGTH = 50;
 // The old API stored 'other'; the spec offers non_binary and prefer_not_to_say instead.
 const GENDERS = Object.freeze({ female: 'female', male: 'male', non_binary: 'non_binary', prefer_not_to_say: 'prefer_not_to_say', other: 'prefer_not_to_say' });
@@ -78,6 +79,8 @@ function buildOnboarding(user, { termsUpToDate = false, phoneVerificationRequire
     if (mark) return { step, status: mark.status, skippable, updatedAt: timeOrNull(mark.updatedAt) };
     return { step, status: 'pending', skippable, updatedAt: null };
   });
+  // Once finished, onboarding stays finished: a field cleared later shows as pending, but the app does not go back.
+  if (user.onboardingCompletedAt instanceof Date) return { status: 'completed', nextStep: null, steps };
   const next = steps.find((s) => s.status === 'pending');
   return { status: next ? 'in_progress' : 'completed', nextStep: next ? next.step : null, steps };
 }
@@ -155,4 +158,4 @@ function isSuspended(user, at) {
   return user.isBlocked === true && (!user.blockedUntil || new Date(user.blockedUntil).getTime() > at);
 }
 
-module.exports = { toUserResponse, toGuestResponse, buildOnboarding, isSuspended, ONBOARDING_STEPS, GENDERS, NO_CONSENTS };
+module.exports = { toUserResponse, toGuestResponse, buildOnboarding, isSuspended, ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH };

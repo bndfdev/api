@@ -205,19 +205,25 @@ async function removePhone(userId, at) {
 }
 
 /**
- * Save profile fields (PATCH /me). `guard` adds conditions the document must still meet (for example the date
- * of birth and change count that the decision was based on), so two requests at once cannot both use the one
- * allowed date-of-birth change.
+ * Save profile fields (PATCH /me), but only if the profile is still at `revision`: the `profileRevision` the
+ * change was worked out from (null for an account never edited through v1). The revision moves on, so of two
+ * changes worked out from the same state only one is saved; the other is worked out again.
  * @param {string} userId
- * @param {{set?: object, unset?: string[], guard?: object}} change
- * @returns {Promise<boolean>} false when the user is gone or the guard no longer holds
+ * @param {{set?: object, unset?: string[], revision?: number | null}} change
+ * @returns {Promise<'saved' | 'stale' | 'missing'>} 'stale' when another change was saved since
  */
-async function updateProfile(userId, { set = {}, unset = [], guard = {} }) {
-  const update = {};
+async function updateProfile(userId, { set = {}, unset = [], revision = null }) {
+  const update = { $inc: { profileRevision: 1 } };
   if (Object.keys(set).length > 0) update.$set = set;
   if (unset.length > 0) update.$unset = Object.fromEntries(unset.map((field) => [field, '']));
-  const result = await User.updateOne({ _id: userId, ...guard }, update);
-  return result.matchedCount === 1;
+  const result = await User.updateOne({ _id: userId, profileRevision: revision }, update);
+  if (result.matchedCount === 1) return 'saved';
+  return (await User.exists({ _id: userId })) ? 'stale' : 'missing';
+}
+
+/** Remember that onboarding was finished (only the first time; see buildOnboarding). Not a profile change. */
+async function markOnboardingCompleted(userId, at) {
+  await User.updateOne({ _id: userId, onboardingCompletedAt: null }, { $set: { onboardingCompletedAt: new Date(at) } });
 }
 
 /** Record that a date of birth under the minimum age was entered (the date itself is not stored). */
@@ -233,4 +239,4 @@ async function markOnboardingStep(userId, step, status, at) {
   );
 }
 
-module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, setPassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

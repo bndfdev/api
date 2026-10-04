@@ -344,9 +344,15 @@ test('app config: versions default to 1.0.0, switches default on, countries defa
   assert.deepEqual(set.app.latestVersions, { android: '2.0.1' });
   assert.deepEqual(set.features, { guestMode: false, phoneVerificationRequired: false });
   assert.deepEqual(set.countries, { contentRegions: ['US'], defaultCountry: 'IN' });
-  for (const [name, value] of [['APP_MIN_VERSION_WEB', '1.2'], ['GUEST_MODE', 'off'], ['CONTENT_REGIONS', 'USA'], ['DEFAULT_COUNTRY_CODE', 'India']]) {
-    assert.throws(() => loadConfig({ NODE_ENV: 'test', [name]: value }), new RegExp(name));
+  const wrong = [
+    ['APP_MIN_VERSION_WEB', '1.2'], ['GUEST_MODE', 'off'], ['CONTENT_REGIONS', 'USA'], ['DEFAULT_COUNTRY_CODE', 'India'],
+    ['DEFAULT_COUNTRY_CODE', 'UK'], ['CONTENT_REGIONS', 'US,UK'], ['PHONE_REGIONS', 'UK'],
+  ];
+  for (const [name, value] of wrong) {
+    assert.throws(() => loadConfig({ NODE_ENV: 'test', [name]: value }), new RegExp(name), `${name}=${value}`);
   }
+  assert.throws(() => loadConfig({ NODE_ENV: 'test', APP_MIN_VERSION_IOS: '2.0.0', APP_LATEST_VERSION_IOS: '1.10.0' }), /APP_LATEST_VERSION_IOS/);
+  assert.equal(loadConfig({ NODE_ENV: 'test', APP_MIN_VERSION_IOS: '1.9.0', APP_LATEST_VERSION_IOS: '1.10.0' }).app.latestVersions.ios, '1.10.0');
 });
 
 test('LOG_CODES_IN_DEV only takes effect in development', () => {

@@ -111,7 +111,10 @@ test('GET /countries lists every country with dial code, flag and example, sorte
   assert.deepEqual(names, [...names].sort((a, b) => a.localeCompare(b, 'en')));
   assert.ok(['US', 'CA'].every((code) => res.body.data.some((c) => c.code === code && c.dialCode === '+1')), '+1 countries are separate');
   assert.equal(res.body.defaultCountryCode, 'US');
-  assert.equal(res.headers.vary, 'Accept-Language');
+  // Added to whatever else varies the response (CORS's Origin), and the country headers too.
+  const vary = (r) => (r.headers.vary || '').split(',').map((f) => f.trim().toLowerCase()).filter(Boolean);
+  const expected = [...vary(await request(app).get('/v1/config').set(CLIENT)), 'accept-language', 'cloudfront-viewer-country', 'cf-ipcountry'];
+  for (const field of expected) assert.ok(vary(res).includes(field), `Vary has ${field}: ${res.headers.vary}`);
   assert.equal(res.headers['cache-control'], 'public, max-age=86400');
   assert.equal((await request(app).get('/v1/countries').set({ ...CLIENT, 'If-None-Match': res.headers.etag })).status, 304);
 });
@@ -131,7 +134,11 @@ test('countries: names follow Accept-Language; the CDN country preselects; regio
   assert.deepEqual([by('US').contentAvailable, by('IN').contentAvailable], [true, false]);
   assert.equal(body.defaultCountryCode, 'IN');
 
-  assert.equal(localeFrom('fr-CA,fr;q=0.8'), 'fr-CA');
+  const german = await request(app).get('/v1/countries').set({ ...CLIENT, 'Accept-Language': 'fr;q=0.1, de;q=0.9' });
+  assert.equal(german.body.data.find((c) => c.code === 'IN').name, 'Indien', 'the q-values decide');
+  assert.equal(localeFrom('fr-CA,fr;q=0.8'), 'fr');
+  assert.equal(localeFrom('ja, en-GB;q=0.5'), 'en');
+  assert.equal(localeFrom('ja'), 'en', 'not an app language');
   assert.equal(localeFrom('***'), 'en');
   assert.equal(flagOf('US'), '🇺🇸');
 });
@@ -139,6 +146,13 @@ test('countries: names follow Accept-Language; the CDN country preselects; regio
 // ---------------------------------------------------------------------------
 // Switches enforced elsewhere
 // ---------------------------------------------------------------------------
+
+test('the version gate only knows its own platforms: "constructor" or "__proto__" is a 400, not a 500', async () => {
+  for (const platform of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    const res = await request(app).get('/v1/config').set({ ...CLIENT, 'X-Client-Platform': platform });
+    assert.equal(res.status, 400, `${platform}: ${res.text}`);
+  }
+});
 
 test('guest mode off: POST /auth/guest is 403 FORBIDDEN; languages outside the list are refused', async () => {
   const off = appWith({ features: { guestMode: false, phoneVerificationRequired: true } });

@@ -17,9 +17,11 @@ function createMetaRouter({ meta = defaultMeta, legal = defaultLegal } = {}) {
     sendCacheable(req, res, meta.appConfig(), { cacheControl: 'public, max-age=300' });
   });
 
-  // GET /countries: the phone picker. Localised, so caches must keep one copy per language.
+  // GET /countries: the phone picker. Localised, and the preselected country depends on where the request comes
+  // from, so caches keep one copy per language and per country header. A client can send a country header
+  // itself; that only changes its own preselected country.
   router.get('/countries', (req, res) => {
-    res.set('Vary', 'Accept-Language');
+    res.vary('Accept-Language').vary('CloudFront-Viewer-Country').vary('CF-IPCountry');
     const body = meta.countries({
       acceptLanguage: req.get('accept-language'),
       // Set by CloudFront or Cloudflare when the API sits behind one; only used to preselect a country.

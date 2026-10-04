@@ -12,6 +12,7 @@ const { config } = require('../src/config');
 const { createMeService, cleanName } = require('../src/modules/me/service');
 const { createMeRouter } = require('../src/modules/me/routes');
 const User = require('../models/User');
+const TERMS = require('../content/legal').terms.version;
 const db = require('./support/db');
 const { assertProblem, makeUser, signIn, CLIENT } = require('./support/api');
 
@@ -113,7 +114,7 @@ test('names are tidied; invisible and control characters are refused; emoji are 
   assert.equal(res.body.name, 'Amelia Jane');
   assert.ok(res.headers.etag);
 
-  for (const bad of ['Ame​lia', 'Amelia\u0007', '‮ailemA']) {
+  for (const bad of ['Ame\u200Blia', 'Amelia\u0007', '\u202EailemA']) {
     assertProblem(await patchMe(me, { name: bad }), 422, 'NAME_INVALID');
   }
   assert.equal((await patchMe(me, { name: 'Ana 👩‍👩‍👧' })).body.name, 'Ana 👩‍👩‍👧');
@@ -190,6 +191,69 @@ test('If-Match: a stale ETag is 412, the current one goes through', async () => 
   const res = await patchMe(me, { name: 'Mine' }, { 'If-Match': fresh.headers.etag });
   assert.equal(res.status, 200, res.text);
   assert.notEqual(res.headers.etag, fresh.headers.etag);
+});
+
+test('If-Match: three edits at once from the same copy: one is saved, the others are 412', async () => {
+  const me = await account();
+  const { headers } = await getMe(me);
+  const results = await Promise.all(['One', 'Two', 'Three'].map((name) => patchMe(me, { name }, { 'If-Match': headers.etag })));
+  assert.deepEqual(results.map((r) => r.status).sort(), [200, 412, 412]);
+});
+
+test('If-Match: accepting the terms or skipping a step does not make the profile stale; weak tags never match', async () => {
+  const me = await account();
+  const first = await getMe(me);
+  assert.equal((await request(app).post('/v1/me/consents').set(me.headers).send({ documentType: 'terms', version: TERMS, accepted: true })).status, 201);
+  assert.equal((await putStep(me, 'interests', 'skipped')).status, 200);
+  const res = await patchMe(me, { gender: 'female' }, { 'If-Match': first.headers.etag });
+  assert.equal(res.status, 200, res.text);
+  assertProblem(await patchMe(me, { gender: 'male' }, { 'If-Match': `W/${res.headers.etag}` }), 412, 'PRECONDITION_FAILED');
+  assert.equal((await patchMe(me, { gender: 'male' }, { 'If-Match': '*' })).status, 200);
+  // A cached GET still gets 304 only when nothing in the body changed.
+  assert.equal((await getMe(me, { 'If-None-Match': first.headers.etag })).status, 200);
+});
+
+test('a date of birth the old API stored as a date or a number can be replaced', async () => {
+  for (const old of [new Date('2000-01-12T00:00:00Z'), 947635200000]) {
+    const me = await account();
+    await User.collection.updateOne({ _id: me.user._id }, { $set: { dateOfBirth: old } });
+    const res = await patchMe(me, { dateOfBirth: '2000-01-12' });
+    assert.equal(res.status, 200, res.text);
+    assert.equal((await User.findById(me.user._id).lean()).dateOfBirth, '2000-01-12');
+  }
+});
+
+test('date of birth: the same first date twice at once is saved once, and both answers are 200', async () => {
+  const me = await account();
+  const results = await Promise.all([1, 2].map(() => patchMe(me, { dateOfBirth: '2000-01-12' })));
+  assert.deepEqual(results.map((r) => r.status), [200, 200]);
+  assert.equal((await User.findById(me.user._id).lean()).dateOfBirthChanges, 0);
+});
+
+test('once onboarding is finished, clearing a field does not send the person back into it', async () => {
+  const me = await account({
+    phone: '+14155550123', phoneVerifiedAt: new Date(), dateOfBirth: '2000-01-12', dateOfBirthSetAt: new Date(), gender: 'female', name: 'Amelia',
+  });
+  await request(app).post('/v1/me/consents').set(me.headers).send({ documentType: 'terms', version: TERMS, accepted: true });
+  assert.equal((await putStep(me, 'interests', 'skipped')).body.status, 'completed');
+  for (const patch of [{ name: null }, { gender: null }]) {
+    const res = await patchMe(me, patch);
+    assert.equal(res.status, 200, res.text);
+    assert.deepEqual([res.body.onboarding.status, res.body.onboarding.nextStep], ['completed', null]);
+  }
+  assert.equal((await getMe(me)).body.onboarding.steps.find((s) => s.step === 'gender').status, 'pending', 'the step itself is honest');
+});
+
+test('names: invisible or blank-looking characters are refused and a name needs something visible; flags and joined emoji are fine', () => {
+  const refused = [
+    '\u200D', '\u3164', '\uFFA0', '\u2800', '\u034F', '\uFE0F', '\u0301',
+    'Ana\u200E', 'Ana\u200F', 'Ana\u061C', 'Ana\u00AD', 'Ana\u2061', 'Ana\u180E', 'Ana\u{E0041}', 'Ana\uD800', 'Ana\u0085',
+  ];
+  for (const name of refused) assert.throws(() => cleanName(name), { code: 'NAME_INVALID' }, JSON.stringify(name));
+  const england = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}';
+  for (const name of [`Ana ${england}`, 'Ana \u{1F469}\u200D\u{1F469}\u200D\u{1F467}', 'Jos\u00E9', '\u674E\u5C0F\u9F8D', 'Ana \u2764\uFE0F', '<3']) {
+    assert.equal(cleanName(name), name, JSON.stringify(name));
+  }
 });
 
 test('a guest can change its language only', async () => {

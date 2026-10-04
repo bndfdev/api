@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const { isSupportedCountry } = require('libphonenumber-js');
 const { normalizeDestination } = require('./lib/destination');
 require('dotenv').config();
 
@@ -98,7 +99,6 @@ function readBoundedInt(env, name, fallback, max, invalid) {
   return fallback;
 }
 
-/** true / false from env; unset or empty is false. Anything else is reported as invalid. */
 /** Like readBool, but unset or empty gives `fallback` (for switches that are on by default). */
 function readFlag(env, name, fallback, invalid) {
   const raw = env[name];
@@ -115,6 +115,17 @@ function readVersion(env, name, fallback, invalid) {
   return fallback;
 }
 
+/** Whether `a` ("major.minor.patch", as readVersion returns) is older than `b`. */
+function versionOlder(a, b) {
+  const [x, y] = [a, b].map((v) => v.split('.').map(Number));
+  const i = x.findIndex((part, n) => part !== y[n]);
+  return i !== -1 && x[i] < y[i];
+}
+
+/** A two-letter code that is a real country (or territory) code: "GB", not "UK". */
+const isCountryCode = (code) => /^[A-Z]{2}$/.test(code) && isSupportedCountry(code);
+
+/** true / false from env; unset or empty is false. Anything else is reported as invalid. */
 function readBool(env, name, invalid) {
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return false;
@@ -317,7 +328,7 @@ function loadConfig(env = process.env, { validate = true } = {}) {
   // Which countries' numbers may be verified (ISO 3166 codes), until GET /countries says so per country.
   // Empty means every country.
   const phoneRegions = (env.PHONE_REGIONS || '').split(',').map((r) => r.trim().toUpperCase()).filter(Boolean);
-  if (phoneRegions.some((r) => !/^[A-Z]{2}$/.test(r))) invalid.push('PHONE_REGIONS (comma-separated two-letter country codes, like US,IN)');
+  if (phoneRegions.some((r) => !isCountryCode(r))) invalid.push('PHONE_REGIONS (comma-separated two-letter country codes, like US,IN)');
   const phoneRefuseVoip = readBool(env, 'PHONE_REFUSE_VOIP', invalid);
 
   // --- What GET /config tells the app ---
@@ -330,16 +341,19 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     minimumVersions[platform] = readVersion(env, `APP_MIN_VERSION_${key}`, '1.0.0', invalid);
     const latest = readVersion(env, `APP_LATEST_VERSION_${key}`, undefined, invalid);
     if (latest) latestVersions[platform] = latest;
+    if (latest && versionOlder(latest, minimumVersions[platform])) {
+      invalid.push(`APP_LATEST_VERSION_${key} (must not be older than APP_MIN_VERSION_${key})`);
+    }
   }
   // Remote switches (on unless set to false).
   const guestMode = readFlag(env, 'GUEST_MODE', true, invalid);
   const phoneVerificationRequired = readFlag(env, 'PHONE_VERIFICATION_REQUIRED', true, invalid);
   // Countries where Bondfire content is available (GET /countries → contentAvailable). Empty: not reported.
   const contentRegions = (env.CONTENT_REGIONS || '').split(',').map((r) => r.trim().toUpperCase()).filter(Boolean);
-  if (contentRegions.some((r) => !/^[A-Z]{2}$/.test(r))) invalid.push('CONTENT_REGIONS (comma-separated two-letter country codes, like US)');
+  if (contentRegions.some((r) => !isCountryCode(r))) invalid.push('CONTENT_REGIONS (comma-separated two-letter country codes, like US)');
   // The phone picker's preselected country when the request does not say where it comes from.
   const defaultCountry = (env.DEFAULT_COUNTRY_CODE || 'US').trim().toUpperCase();
-  if (!/^[A-Z]{2}$/.test(defaultCountry)) invalid.push('DEFAULT_COUNTRY_CODE (a two-letter country code, like US)');
+  if (!isCountryCode(defaultCountry)) invalid.push('DEFAULT_COUNTRY_CODE (a two-letter country code, like US)');
 
   if (validate) {
     if (signing.privateKey && signing.publicKey && !ephemeral) {

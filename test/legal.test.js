@@ -20,6 +20,7 @@ const live = require('../content/legal');
 const { createMemoryEmailProvider } = require('../src/providers/email/memory');
 const { createMemorySmsProvider } = require('../src/providers/sms/memory');
 const Consent = require('../models/Consent');
+const GuestAccount = require('../models/GuestAccount');
 const db = require('./support/db');
 const { assertProblem, makeUser, signIn, CLIENT } = require('./support/api');
 
@@ -125,6 +126,32 @@ test('publishing new terms asks everyone again', async () => {
   ({ body } = await request(later).get('/v1/me').set(me.headers));
   assert.equal(body.consents.termsUpToDate, true);
   assert.equal(body.consents.termsAcceptedVersion, '2027-01-01');
+});
+
+test('if moving a guest\'s terms fails, the guest is still signed out and deleted, and the sign-up goes through', async () => {
+  const legal = createLegalService({ documents: live });
+  const broken = { ...legal, moveToAccount: async () => { throw new Error('database unavailable'); } };
+  const me = createMeService({ legal });
+  const challenges = createChallengeService({ emailProvider: mail, smsProvider: createMemorySmsProvider(), logger: silent });
+  const auth = createAuthService({ challenges, profiles: me, legal: broken, emailProvider: mail, logger: silent });
+  const target = createApp({ trustProxy: 1, meRouter: createMeRouter({ me, legal }), authRouter: createAuthRouter({ service: auth }) });
+
+  const installationId = crypto.randomUUID();
+  const headers = { ...CLIENT, 'X-Installation-Id': installationId, 'X-Forwarded-For': '10.7.0.9' };
+  const device = { installationId, platform: 'ios', appVersion: '1.4.0' };
+  const g = await request(target).post('/v1/auth/guest').set(headers).send({ device, dateOfBirth: '2000-01-01' });
+  const guestHeaders = { ...headers, Authorization: `Bearer ${g.body.tokens.accessToken}` };
+  assert.equal((await accept({ headers: guestHeaders }, live.terms.version, 'terms', target)).status, 201);
+
+  const email = 'unmoved@example.com';
+  const start = await request(target).post('/v1/auth/signup/email').set(headers).send({ email });
+  const verify = await request(target).post(`/v1/auth/challenges/${start.body.id}/verify`).set(headers).send({ code: mail.lastCodeFor(email) });
+  const done = await request(target).post('/v1/auth/signup/complete').set(guestHeaders)
+    .send({ signupToken: verify.body.signupToken, password: 'Correct-Horse-9', device });
+  assert.equal(done.status, 201, done.text);
+  assert.equal(done.body.user.consents.termsUpToDate, false, 'the terms are asked for again');
+  assert.equal(await GuestAccount.countDocuments({ _id: g.body.user.id }), 0, 'the guest is deleted');
+  assertProblem(await request(target).post('/v1/auth/token/refresh').set(headers).send({ refreshToken: g.body.tokens.refreshToken }), 401, 'SESSION_REVOKED');
 });
 
 test('a guest\'s accepted terms move to the account it signs up as; login shows them', async () => {

@@ -48,6 +48,11 @@ const userSchema = new mongoose.Schema({
     interests: { status: { type: String, enum: ['completed', 'skipped'] }, updatedAt: { type: Date } },
     profile: { status: { type: String, enum: ['completed', 'skipped'] }, updatedAt: { type: Date } },
   },
+  // When onboarding was first finished. It then stays finished, even if a field is cleared later.
+  onboardingCompletedAt: { type: Date },
+  // Moves on with every profile change through v1 (PATCH /me), so two changes worked out from the same state
+  // cannot both be saved.
+  profileRevision: { type: Number },
 });
 
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:

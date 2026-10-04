@@ -289,13 +289,19 @@ function createAuthService({
       throw err;
     }
     if (guest) {
-      // The guest is now this account. A failure here leaves a guest behind, which expires on its own.
-      try {
-        await legal.moveToAccount(guest._id, user._id);
-        await sessions.revokeAllSessions({ userId: String(guest._id), reason: 'guest_upgraded' });
-        await guests.remove(guest._id);
-      } catch (err) {
-        logger.warn({ err: err && err.name }, 'could not retire the upgraded guest');
+      // The guest is now this account. Each step runs even if one before it failed, sessions first: a guest left
+      // behind expires on its own, and terms that did not move are simply asked for again.
+      const steps = [
+        ['end the guest sessions', () => sessions.revokeAllSessions({ userId: String(guest._id), reason: 'guest_upgraded' })],
+        ['move the guest consents', () => legal.moveToAccount(guest._id, user._id)],
+        ['delete the guest', () => guests.remove(guest._id)],
+      ];
+      for (const [what, step] of steps) {
+        try {
+          await step();
+        } catch (err) {
+          logger.warn({ err: err && err.name }, `could not ${what} after sign-up`);
+        }
       }
     }
     return signIn({ user, device, installationId, isNewUser: true });

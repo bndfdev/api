@@ -3,9 +3,9 @@
  * No database: everything comes from config, the rule modules and libphonenumber-js.
  *
  * - GET /config is built from the same constants the server enforces (password policy, code timings,
- *   minimum age, languages, legal versions), so the app and the server can never disagree.
+ *   minimum age, languages, legal versions, name length), so the app and the server can never disagree.
  * - GET /countries lists every region libphonenumber-js knows, with its dial code, flag, an example mobile
- *   number and localised name (Accept-Language), sorted by that name. `phoneSignupSupported` follows
+ *   number and name in the app language Accept-Language prefers, sorted by that name. `phoneSignupSupported` follows
  *   PHONE_REGIONS; `contentAvailable` follows CONTENT_REGIONS (left out when that is not set).
  */
 const { getCountries, getCountryCallingCode, getExampleNumber } = require('libphonenumber-js/max');
@@ -14,26 +14,35 @@ const { config: defaultConfig } = require('../../config');
 const { PASSWORD_POLICY } = require('../../lib/passwords');
 const { MINIMUM_AGE } = require('../../lib/dateOfBirth');
 const { SUPPORTED_LANGUAGES } = require('../../lib/languages');
+const { NAME_MAX_LENGTH } = require('../users/service');
 const { RULES: CODE_RULES } = require('../challenges/service');
 const defaultLegal = require('../legal/service');
 
-/** Limits the app shows before the server would refuse (photo uploads and interests use them in later PRs). */
-const LIMITS = Object.freeze({ maxInterests: 100, avatarMaxBytes: 10 * 1024 * 1024, bannerMaxBytes: 10 * 1024 * 1024, nameMaxLength: 50 });
+/**
+ * Limits the app shows before the server would refuse. The name limit is enforced now; the interest and photo
+ * limits are enforced by the interests and photo-upload PRs.
+ */
+const LIMITS = Object.freeze({ maxInterests: 100, avatarMaxBytes: 10 * 1024 * 1024, bannerMaxBytes: 10 * 1024 * 1024, nameMaxLength: NAME_MAX_LENGTH });
 const REGION = /^[A-Z]{2}$/;
-const MAX_CACHED_LOCALES = 50;
+const LANGUAGE_TAGS = SUPPORTED_LANGUAGES.map((l) => l.tag);
 
 /** "🇮🇳" for "IN": the two regional-indicator letters. */
 const flagOf = (code) => String.fromCodePoint(...[...code].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
 
-/** The first language of an Accept-Language header that Intl knows, or 'en'. */
+/**
+ * The app language (GET /config's `supportedLanguages`) that an Accept-Language header prefers most, by q-value,
+ * a regional tag matching its language ("fr-CA" gives "fr"); 'en' when none fits. Only these few lists are ever
+ * built, so unusual headers cannot fill the cache.
+ */
 function localeFrom(header) {
-  const first = typeof header === 'string' ? header.split(',')[0].split(';')[0].trim() : '';
-  if (first && first !== '*') {
-    try {
-      return Intl.getCanonicalLocales(first)[0];
-    } catch {
-      // Not a language tag: fall back.
-    }
+  const ranges = (typeof header === 'string' ? header.split(',') : []).map((part, index) => {
+    const [tag, ...params] = part.split(';');
+    const q = params.map((p) => /^\s*q=([01](?:\.\d{0,3})?)\s*$/i.exec(p)).find(Boolean);
+    return { tag: tag.trim().toLowerCase(), q: q ? Number(q[1]) : 1, index };
+  }).filter((r) => r.tag !== '' && r.q > 0).sort((a, b) => b.q - a.q || a.index - b.index);
+  for (const { tag } of ranges) {
+    const match = LANGUAGE_TAGS.find((code) => tag === code || tag.startsWith(`${code}-`));
+    if (match) return match;
   }
   return 'en';
 }
@@ -68,7 +77,7 @@ function createMetaService({ config = defaultConfig, legal = defaultLegal } = {}
     return body;
   }
 
-  // The list for one locale never changes while the server runs, so it is built once per locale.
+  // The list for one language never changes while the server runs, so it is built once per language.
   const listsByLocale = new Map();
 
   function countriesFor(locale) {
@@ -91,7 +100,6 @@ function createMetaService({ config = defaultConfig, legal = defaultLegal } = {}
       if (content.length > 0) country.contentAvailable = content.includes(code);
       return country;
     }).sort((a, b) => collator.compare(a.name, b.name));
-    if (listsByLocale.size >= MAX_CACHED_LOCALES) listsByLocale.clear();
     listsByLocale.set(locale, list);
     return list;
   }

@@ -1,6 +1,6 @@
 const express = require('express');
 const { asyncHandler } = require('../../lib/asyncHandler');
-const { etagOf, sendCacheable } = require('../../lib/etag');
+const { userEtagOf, sendCacheable } = require('../../lib/etag');
 const defaultAuth = require('../../middleware/requireAuth');
 const defaultMe = require('./service');
 const defaultLegal = require('../legal/service');
@@ -18,13 +18,14 @@ function createMeRouter({ me = defaultMe, legal = defaultLegal, auth = defaultAu
 
   // GET /me: on launch, after the tokens are restored. ETag + If-None-Match.
   router.get('/me', requireAuth, asyncHandler(async (req, res) => {
-    sendCacheable(req, res, await me.getMe(req.auth), { cacheControl: privateCache });
+    const user = await me.getMe(req.auth);
+    sendCacheable(req, res, user, { cacheControl: privateCache, etag: userEtagOf(user) });
   }));
 
   // PATCH /me: name, date of birth, gender, language. If-Match guards against changes from another device.
   router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
     const user = await me.updateMe({ auth: req.auth, patch: req.body, ifMatch: req.get('if-match') });
-    res.set('ETag', etagOf(user)).set('Cache-Control', privateCache).json(user);
+    res.set('ETag', userEtagOf(user)).set('Cache-Control', privateCache).json(user);
   }));
 
   // GET /me/onboarding
