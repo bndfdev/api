@@ -10,10 +10,10 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ## 2026-10-03: Profile, onboarding progress and terms (PR 5)
 
-**Existing data affected:** none until a user edits their profile. Then the new code writes these existing `users` fields, in v1 formats:
+**Existing data affected:** `onboardingCompletedAt` (below) is set once on an account the first time it is read with every onboarding step done or skipped. Otherwise nothing until a user edits their profile. Then the new code writes these existing `users` fields, in v1 formats:
 - `name`;
 - `gender`: may now hold `non_binary` or `prefer_not_to_say` as well as the old values. The model's allowed list is widened (schema only; no stored document changes). The admin panel's own model reads `gender` as free text.
-- `dateOfBirth`: always `YYYY-MM-DD`. Older documents may hold other formats; v1 reads those as "not set".
+- `dateOfBirth`: always `YYYY-MM-DD`. Older documents may hold other formats (another kind of string, a date or a number); v1 reads those as "not set" and replaces them when the user saves a date.
 - `preferredLanguage`: a language tag (`en`, `es`, `fr`, `de`, `hi`) where the old API stored names like `English`.
 
 **`users`: new optional fields** (absent until used)
@@ -21,8 +21,10 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 | Field | Purpose |
 | --- | --- |
 | `dateOfBirthSetAt`, `dateOfBirthChanges` | When the date of birth was first set, and how often it changed since (one typo fix within 30 days) |
-| `ageCheckFailedAt` | When a date of birth under the minimum age (13) was entered. The date itself is not stored. |
+| `ageCheckFailedAt` | When a date of birth under the minimum age (13) was entered. The date itself is not stored. Recorded for support; nothing acts on it yet. |
 | `onboardingSteps.interests`, `onboardingSteps.profile` | `{status, updatedAt}` when the user marked an optional step done or skipped ("Later") |
+| `onboardingCompletedAt` | When onboarding was first finished. It then stays finished, even if the user clears a field later. |
+| `profileRevision` | A counter that moves on with every profile change through v1, so two changes made at once from the same state cannot both be saved |
 
 **New collection**
 
@@ -31,6 +33,7 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 | `consents` | One record per accepted legal document version: account (or guest), document, version, time, **IP address** and app install id | `{userId, documentType, version}` unique; `{userId, acceptedAt: -1}` | **None:** kept as the audit trail. A guest's records move to the account it signs up as. |
 
 - `consents` stores IP addresses (personal data) for audit, as the spec asks. **Please decide how long to keep them**, and whether account deletion (a later PR) should remove or anonymise them.
+- A guest's records are not cleaned up when the guest itself is deleted (180 days after it was last used); only a sign-up moves them. **Please decide whether they should go with the guest.**
 
 **No index changes on existing collections.**
 
