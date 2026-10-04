@@ -913,10 +913,22 @@ test('an account with no password hash this API can read is checked against the 
 });
 
 test('verify: an argon2id hash that is damaged is refused after the work of a real check, so it is not faster either', async () => {
-  const started = process.hrtime.bigint();
-  assert.equal(await defaultPasswords.verify('$argon2id$v=19$m=19456,t=2,p=1$damaged$damaged', PASSWORD), false);
-  const ms = Number(process.hrtime.bigint() - started) / 1e6;
-  assert.ok(ms >= 10, `a damaged hash took only ${ms.toFixed(1)} ms`);
+  // Compared with a real check on the same machine (CI runners are much faster than laptops), best of 3 each.
+  const fastest = async (check) => {
+    let best = Infinity;
+    for (let i = 0; i < 3; i += 1) {
+      const started = process.hrtime.bigint();
+      await check();
+      best = Math.min(best, Number(process.hrtime.bigint() - started) / 1e6);
+    }
+    return best;
+  };
+  const real = await defaultPasswords.hash(PASSWORD);
+  const realMs = await fastest(async () => assert.equal(await defaultPasswords.verify(real, wrongPassword), false));
+  const damagedMs = await fastest(async () => {
+    assert.equal(await defaultPasswords.verify('$argon2id$v=19$m=19456,t=2,p=1$damaged$damaged', PASSWORD), false);
+  });
+  assert.ok(damagedMs >= realMs / 2, `a damaged hash took ${damagedMs.toFixed(1)} ms, a real check ${realMs.toFixed(1)} ms`);
 });
 
 // ---------------------------------------------------------------------------
