@@ -30,6 +30,7 @@ test('an allowed origin gets CORS headers and exposed headers', async () => {
   assert.equal(res.headers['access-control-allow-credentials'], 'true');
   assert.match(res.headers['access-control-expose-headers'], /X-Request-Id/);
   assert.match(res.headers['access-control-expose-headers'], /Retry-After/);
+  assert.match(res.headers['access-control-expose-headers'], /Idempotent-Replayed/);
 });
 
 test('a disallowed origin gets no CORS headers and no error', async () => {

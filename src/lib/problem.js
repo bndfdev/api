@@ -6,9 +6,10 @@ const TYPE_BASE = 'https://api.bondfire.app/errors/';
 class ApiError extends Error {
   /**
    * @param {{status: number, code: string, title?: string, detail?: string,
-   *   errors?: Array<object>, retryAfterSeconds?: number, headers?: object}} opts
+   *   errors?: Array<object>, retryAfterSeconds?: number, headers?: object, meta?: object}} opts
+   *   `meta` is extra machine-readable data for specific codes (for example `{attemptsRemaining}`).
    */
-  constructor({ status, code, title, detail, errors, retryAfterSeconds, headers }) {
+  constructor({ status, code, title, detail, errors, retryAfterSeconds, headers, meta }) {
     super(detail || title || code);
     this.name = 'ApiError';
     this.status = status;
@@ -18,6 +19,7 @@ class ApiError extends Error {
     this.errors = errors;
     this.retryAfterSeconds = retryAfterSeconds;
     this.headers = headers;
+    this.meta = meta;
   }
 }
 
@@ -42,6 +44,7 @@ function sendProblem(req, res, err) {
   };
   if (err.detail) body.detail = err.detail;
   if (err.errors) body.errors = err.errors;
+  if (err.meta) body.meta = err.meta;
   if (err.retryAfterSeconds !== undefined) {
     body.retryAfterSeconds = err.retryAfterSeconds;
     res.setHeader('Retry-After', String(err.retryAfterSeconds));

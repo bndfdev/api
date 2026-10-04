@@ -21,7 +21,8 @@ const ALLOWED_HEADERS = [
 ];
 
 // Response headers scripts may read (docs/api/components/headers.yaml).
-const EXPOSED_HEADERS = ['X-Request-Id', 'Retry-After', 'RateLimit', 'ETag'];
+// Idempotent-Replayed marks a response replayed for an Idempotency-Key (see middleware/idempotency.js).
+const EXPOSED_HEADERS = ['X-Request-Id', 'Retry-After', 'RateLimit', 'ETag', 'Idempotent-Replayed'];
 
 /**
  * CORS middleware with an origin allowlist. A disallowed origin is not an
