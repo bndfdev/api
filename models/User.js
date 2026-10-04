@@ -6,7 +6,8 @@ const userSchema = new mongoose.Schema({
   name: { type: String },
   phone: { type: String, unique: true, sparse: true },
   dateOfBirth: { type: String },
-  gender: { type: String, enum: ['male', 'female', 'other'], default: null },
+  // 'other' is the old API's; the v1 values are female, male, non_binary and prefer_not_to_say (the spec's Gender).
+  gender: { type: String, enum: ['male', 'female', 'other', 'non_binary', 'prefer_not_to_say'], default: null },
   profileImage: { type: String, default: null },
   profileBanner: { type: String, default: null },
   mobileNumberVerified: { type: Boolean, default: false },
@@ -36,6 +37,22 @@ const userSchema = new mongoose.Schema({
   // When the number in `phone` was verified with a code (v1). `mobileNumberVerified` above stays the flag the
   // admin panel and the old API read; v1 sets both.
   phoneVerifiedAt: { type: Date },
+  // Date of birth (v1, `YYYY-MM-DD` in `dateOfBirth` above): when it was first set, and how many times it was
+  // changed since. One change (a typo fix) is allowed within 30 days; after that only support can change it.
+  dateOfBirthSetAt: { type: Date },
+  dateOfBirthChanges: { type: Number },
+  // When a date of birth under the minimum age was entered (the date itself is not stored).
+  ageCheckFailedAt: { type: Date },
+  // Onboarding steps the user marked themselves: "Later" (skipped) or done, for the two optional steps.
+  onboardingSteps: {
+    interests: { status: { type: String, enum: ['completed', 'skipped'] }, updatedAt: { type: Date } },
+    profile: { status: { type: String, enum: ['completed', 'skipped'] }, updatedAt: { type: Date } },
+  },
+  // When onboarding was first finished. It then stays finished, even if a field is cleared later.
+  onboardingCompletedAt: { type: Date },
+  // Moves on with every profile change through v1 (PATCH /me), so two changes worked out from the same state
+  // cannot both be saved.
+  profileRevision: { type: Number },
 });
 
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:

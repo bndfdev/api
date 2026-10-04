@@ -42,7 +42,11 @@ const { createResetTokenService } = require('../resetTokens/service');
 const { createEmailProvider } = require('../../providers/email');
 const defaultSessions = require('../sessions/service');
 const defaultUsers = require('../users/repo');
-const { toUserResponse, toGuestResponse, isSuspended } = require('../users/service');
+const { isSuspended } = require('../users/service');
+const { config: defaultConfig } = require('../../config');
+const { assertSupportedLanguage } = require('../../lib/languages');
+const defaultProfiles = require('../me/service');
+const defaultLegal = require('../legal/service');
 const defaultGuests = require('../guests/repo');
 const { checkDateOfBirth } = require('../../lib/dateOfBirth');
 const { createPhoneService } = require('../phone/service');
@@ -89,6 +93,9 @@ const passwordReused = () => new ApiError({
   status: 422, code: 'VALIDATION_FAILED', title: 'Some details need fixing',
   errors: [{ field: '/newPassword', code: 'PASSWORD_REUSED', message: 'Choose a password you have not used for this account.' }],
 });
+const guestModeOff = () => new ApiError({
+  status: 403, code: 'FORBIDDEN', title: 'Guest mode is off', detail: 'Create an account or sign in to continue.',
+});
 const deviceMismatch = () => new ApiError({
   status: 422, code: 'VALIDATION_FAILED', title: 'Some details need fixing',
   errors: [{ field: '/device/installationId', code: 'VALIDATION_FAILED', message: 'This must be the same as the X-Installation-Id header.' }],
@@ -110,9 +117,11 @@ function assertSameInstall(device, installationId) {
 
 /**
  * @param {{now?: () => number, users?: object, guests?: object, challenges?: object, phone?: object, signupTokens?: object,
- *   resetTokens?: object, sessions?: object, passwords?: object, emailProvider?: object, logger?: object}} [deps]
+ *   resetTokens?: object, sessions?: object, passwords?: object, emailProvider?: object, profiles?: object,
+ *   legal?: object, config?: object, logger?: object}} [deps]
  *   `now` returns epoch ms and is shared with the challenge and sign-up token services unless those are given.
- *   `users` is the users repo; `sessions` needs `createSession`; `passwords` is lib/passwords.js.
+ *   `users` is the users repo; `sessions` needs `createSession`; `passwords` is lib/passwords.js; `profiles` builds the
+ *   `User` in every `Session` (the me service); `legal` moves a guest's consents.
  */
 function createAuthService({
   now = Date.now,
@@ -125,6 +134,9 @@ function createAuthService({
   sessions = defaultSessions,
   passwords = defaultPasswords,
   emailProvider,
+  profiles = defaultProfiles,
+  legal = defaultLegal,
+  config = defaultConfig,
   logger = defaultLogger,
 } = {}) {
   // Account notices (no code) go through the email provider; built on first use, like the challenge service's.
@@ -139,7 +151,7 @@ function createAuthService({
       device: sessionDevice(device),
       installationId,
     });
-    return { tokens, session, user: toUserResponse(user), isNewUser };
+    return { tokens, session, user: await profiles.userView(user), isNewUser };
   }
 
   // -------------------------------------------------------------------------
@@ -233,15 +245,16 @@ function createAuthService({
    * Create the account for a verified email and sign in. The password is checked first, so a weak one
    * can be fixed and sent again with the same token. The token works once.
    * With a guest's access token (`auth.accountType === 'guest'`) the guest becomes the account: its date of
-   * birth and language move over (a language in the request wins), then its sessions end and the guest is deleted.
-   * TODO(profile and onboarding PR): interests and consents move over too, once they are stored.
-   * TODO(config PR): LANGUAGE_UNSUPPORTED once GET /config serves the supported languages (the tag's format is already checked).
+   * birth, language and accepted legal documents move over (a language in the request wins), then its sessions
+   * end and the guest is deleted.
+   * TODO(interests PR): the guest's interests move over too.
    * @param {{signupToken: string, password: string, device: object, preferredLanguage?: string, installationId: string,
    *   auth?: {userId: string, accountType: string}}} input `auth` is the caller's verified access token, if any
    * @returns {Promise<object>} `Session`, with `isNewUser: true`
    */
   async function completeSignup({ signupToken, password, device, preferredLanguage, installationId, auth }) {
     assertSameInstall(device, installationId);
+    assertSupportedLanguage(preferredLanguage);
     const unmet = passwords.unmetRules(password);
     if (unmet.length > 0) throw passwords.policyViolation(unmet);
 
@@ -262,7 +275,7 @@ function createAuthService({
         password: await passwords.hash(password),
         passwordAlgo: 'argon2id',
         ...(language ? { preferredLanguage: language } : {}),
-        ...(guest ? { dateOfBirth: guest.dateOfBirth } : {}),
+        ...(guest ? { dateOfBirth: guest.dateOfBirth, dateOfBirthSetAt: new Date(at), dateOfBirthChanges: 0 } : {}),
         createdAt: new Date(at),
         updatedAt: new Date(at),
       });
@@ -276,12 +289,19 @@ function createAuthService({
       throw err;
     }
     if (guest) {
-      // The guest is now this account. A failure here leaves a guest behind, which expires on its own.
-      try {
-        await sessions.revokeAllSessions({ userId: String(guest._id), reason: 'guest_upgraded' });
-        await guests.remove(guest._id);
-      } catch (err) {
-        logger.warn({ err: err && err.name }, 'could not retire the upgraded guest');
+      // The guest is now this account. Each step runs even if one before it failed, sessions first: a guest left
+      // behind expires on its own, and terms that did not move are simply asked for again.
+      const steps = [
+        ['end the guest sessions', () => sessions.revokeAllSessions({ userId: String(guest._id), reason: 'guest_upgraded' })],
+        ['move the guest consents', () => legal.moveToAccount(guest._id, user._id)],
+        ['delete the guest', () => guests.remove(guest._id)],
+      ];
+      for (const [what, step] of steps) {
+        try {
+          await step();
+        } catch (err) {
+          logger.warn({ err: err && err.name }, `could not ${what} after sign-up`);
+        }
       }
     }
     return signIn({ user, device, installationId, isNewUser: true });
@@ -295,12 +315,14 @@ function createAuthService({
    * Continue as a guest. The same install always gets the same guest back (`created: false`, answered 200)
    * instead of a new one (201). The date of birth is required (Figma) and checked against the minimum age on
    * the person's local date (`device.timeZone`).
-   * TODO(config PR): FORBIDDEN when guest mode is switched off in GET /config, and LANGUAGE_UNSUPPORTED.
+   * When guest mode is switched off (GUEST_MODE=false, served as `features.guestMode`) this is 403 FORBIDDEN.
    * @param {{device: object, dateOfBirth: string, preferredLanguage?: string, installationId: string}} input
    * @returns {Promise<{session: object, created: boolean}>} `session` is the spec's `Session`
    */
   async function startGuestSession({ device, dateOfBirth, preferredLanguage, installationId }) {
+    if (!config.features.guestMode) throw guestModeOff();
     assertSameInstall(device, installationId);
+    assertSupportedLanguage(preferredLanguage);
     const at = now();
     const checked = checkDateOfBirth(dateOfBirth, { at, timeZone: device.timeZone });
 
@@ -323,7 +345,7 @@ function createAuthService({
       installationId,
       accountType: 'guest',
     });
-    return { session: { tokens, session, user: toGuestResponse(guest), isNewUser: created }, created };
+    return { session: { tokens, session, user: await profiles.guestView(guest), isNewUser: created }, created };
   }
 
   // -------------------------------------------------------------------------

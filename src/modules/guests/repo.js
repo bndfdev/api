@@ -53,9 +53,14 @@ function touch(guestId, at) {
   ).lean();
 }
 
+/** Change the guest's language (the only field a guest can edit). */
+async function setLanguage(guestId, preferredLanguage) {
+  await GuestAccount.updateOne({ _id: guestId }, { $set: { preferredLanguage } });
+}
+
 /** Delete the guest (after it became a real account). */
 async function remove(guestId) {
   await GuestAccount.deleteOne({ _id: guestId });
 }
 
-module.exports = { findByInstallation, findById, create, touch, remove, GUEST_RETENTION_MS };
+module.exports = { findByInstallation, findById, create, touch, setLanguage, remove, GUEST_RETENTION_MS };
