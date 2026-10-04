@@ -4,9 +4,6 @@ module.exports = async function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
-  console.log('[auth] Authorization header:', authHeader);
-  console.log('[auth] Token extracted:', token);
-
   if (!token) {
     console.error('[auth] No token provided');
     return res.status(401).json({ error: 'No token provided' });
@@ -19,7 +16,7 @@ module.exports = async function authenticateToken(req, res, next) {
     
     console.log('[auth] Verification record found:', !!verificationRecord);
     if (!verificationRecord) {
-      console.error('[auth] Invalid or expired token:', token);
+      console.error('[auth] Invalid or expired token');
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
 
@@ -30,12 +27,12 @@ module.exports = async function authenticateToken(req, res, next) {
     }
 
     // Token is valid, attach user email to request
-    console.log('[auth] Token valid for email:', verificationRecord.email);
+    console.log('[auth] Authentication successful');
     req.user = { email: verificationRecord.email };
     req.userToken = verificationRecord;
     next();
-  } catch (err) {
-    console.error('[authenticateToken] Error:', err.message);
+  } catch {
+    console.error('[authenticateToken] Token validation failed');
     return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
