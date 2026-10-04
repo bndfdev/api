@@ -164,17 +164,18 @@ async function setPassword(userId, { hash, algo, at }) {
 
 /** The account that has this E.164 number in `phone` (verified or not), or null. */
 function findByPhone(e164) {
-  return User.findOne({ phone: e164 }).select('_id phone mobileNumberVerified').lean();
+  return User.findOne({ phone: e164 }).select('_id phone phoneVerifiedAt').lean();
 }
 
 /**
- * Take this number away from every other account that has it but never verified it (the old API stored
- * numbers before checking them). Verified holders are left alone; the caller checks for those first.
+ * Take this number away from every other account that has it without a code accepted here (`phoneVerifiedAt`):
+ * numbers from the old API, which marked them verified after a fixed code. Their `mobileNumberVerified` becomes
+ * false. Holders verified here are left alone; the caller checks for those first.
  */
 async function releaseUnverifiedPhone(e164, exceptUserId, at) {
   await User.updateMany(
-    { phone: e164, mobileNumberVerified: { $ne: true }, _id: { $ne: exceptUserId } },
-    { $unset: { phone: '', phoneVerifiedAt: '' }, $set: { updatedAt: new Date(at) } },
+    { phone: e164, phoneVerifiedAt: null, _id: { $ne: exceptUserId } },
+    { $unset: { phone: '' }, $set: { mobileNumberVerified: false, updatedAt: new Date(at) } },
   );
 }
 
@@ -195,10 +196,10 @@ async function setVerifiedPhone(userId, e164, at) {
   }
 }
 
-/** Remove the user's number (idempotent). */
+/** Remove the user's number (idempotent: an account without one is not written to). */
 async function removePhone(userId, at) {
   await User.updateOne(
-    { _id: userId },
+    { _id: userId, $or: [{ phone: { $exists: true } }, { phoneVerifiedAt: { $exists: true } }, { mobileNumberVerified: true }] },
     { $unset: { phone: '', phoneVerifiedAt: '' }, $set: { mobileNumberVerified: false, updatedAt: new Date(at) } },
   );
 }

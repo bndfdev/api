@@ -78,11 +78,11 @@ function createSessionsRouter({ service = defaultService, auth = defaultAuth } =
     }),
   );
 
-  // DELETE /me/sessions/{sessionId}: sign out one device; 404 when it is not the caller's.
+  // DELETE /me/sessions/{sessionId}: sign out one device; 404 when it is not the caller's. Guests may use it
+  // too (the spec lists no 403 here): a guest only has its own session, so for a guest it is a logout.
   router.delete(
     '/me/sessions/:sessionId',
     requireAuth,
-    accountOnly,
     asyncHandler(async (req, res) => {
       await service.revokeSession({ userId: req.auth.userId, sessionId: req.params.sessionId });
       res.status(204).end();

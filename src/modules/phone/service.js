@@ -9,9 +9,11 @@
  *   text: no premium-rate, shared-cost, pager, voicemail or landline numbers,
  *   and no VoIP when PHONE_REFUSE_VOIP is on.
  * - The verified number replaces the old one only once the code is accepted.
- * - A number another account has verified is PHONE_TAKEN. A number another
- *   account only typed in (the old API stored numbers before checking them) is
- *   taken from that account when this one verifies it: proof of ownership wins.
+ * - Only a code accepted here proves a number (`phoneVerifiedAt`). The old API
+ *   marked every number it saved as verified (`mobileNumberVerified`) after a
+ *   fixed code, which proves nothing. So a number another account verified here
+ *   is PHONE_TAKEN; one another account only has from the old API is taken from
+ *   that account when this one verifies it: proof of ownership wins.
  */
 const { config: defaultConfig } = require('../../config');
 const { ApiError } = require('../../lib/problem');
@@ -44,7 +46,7 @@ const alreadyVerified = () => new ApiError({
 
 /**
  * @param {{config?: object, users?: object, challenges: object, now?: () => number}} deps
- *   `challenges` is the challenge service (the auth module's, so codes and limits are shared).
+ *   `challenges` is a challenge service (codes and limits live in the database, so every instance shares them).
  */
 function createPhoneService({ config = defaultConfig, users = defaultUsers, challenges, now = Date.now }) {
   /** The number, parsed and checked, or a 422. */
@@ -57,10 +59,10 @@ function createPhoneService({ config = defaultConfig, users = defaultUsers, chal
     return parsed;
   }
 
-  /** PHONE_TAKEN when an account other than `userId` has verified this number. */
+  /** PHONE_TAKEN when an account other than `userId` has verified this number here. */
   async function assertNotTakenByOthers(e164, userId) {
     const holder = await users.findByPhone(e164);
-    if (holder && String(holder._id) !== String(userId) && holder.mobileNumberVerified === true) throw phoneTaken();
+    if (holder && String(holder._id) !== String(userId) && holder.phoneVerifiedAt) throw phoneTaken();
   }
 
   /**
@@ -72,7 +74,7 @@ function createPhoneService({ config = defaultConfig, users = defaultUsers, chal
     const { e164 } = checkNumber(phoneNumber);
     const user = await users.findById(userId);
     if (!user) throw phoneInvalid(); // the session outlived its account: nothing sensible to verify
-    if (user.phone === e164 && user.mobileNumberVerified === true) throw alreadyVerified();
+    if (user.phone === e164 && user.phoneVerifiedAt) throw alreadyVerified();
     await assertNotTakenByOthers(e164, userId);
     return challenges.start({ purpose: 'phone_verification', channel: 'sms', destination: e164, installationId, userId: String(userId) });
   }

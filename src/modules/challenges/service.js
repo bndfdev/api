@@ -288,7 +288,10 @@ function createChallengeService({
    * a real one, but nothing is sent and no code can ever match. It is how a
    * reset request for an address with no account looks exactly like one for an
    * account. (Timing is matched on average, not exactly; a queue that sends
-   * after responding would match it fully.)
+   * after responding would match it fully.) A decoy is handed out again like
+   * any other usable challenge, even if the account could now get a real code
+   * (created or unblocked since): replacing it would tell the asker that the
+   * account could not before. A new request works once it expires (10 minutes).
    * @param {{purpose: string, channel: 'email' | 'sms', destination: string, installationId: string,
    *   userId?: string, deliver?: boolean}} input
    *   `userId` is required for `phone_verification` and not allowed for the other purposes.

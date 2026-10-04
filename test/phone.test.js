@@ -201,14 +201,24 @@ test('if someone else verifies the number first, the later code is PHONE_TAKEN',
   assert.equal((await User.findById(a.user._id).lean()).phone, undefined);
 });
 
-test('a number an old account only typed in (never verified) goes to whoever verifies it', async () => {
-  const legacy = await makeUser({ phone: US, mobileNumberVerified: false });
+test('a number another account has from the old API (fixed code, no proof) goes to whoever verifies it', async () => {
+  // What the old /user/verify-mobile-otp stores: the number, marked verified after the fixed code 123456.
+  const legacy = await makeUser({ phone: US, mobileNumberVerified: true });
   const me = await account();
   await addPhone(me, US);
   assert.equal((await User.findById(me.user._id).lean()).phone, US);
   const old = await User.findById(legacy._id).lean();
   assert.equal(old.phone, undefined);
   assert.equal(old.mobileNumberVerified, false);
+});
+
+test('an account can verify the number it has from the old API', async () => {
+  const me = await account();
+  await User.updateOne({ _id: me.user._id }, { $set: { phone: US, mobileNumberVerified: true } });
+  await addPhone(me, US);
+  const stored = await User.findById(me.user._id).lean();
+  assert.equal(stored.phone, US);
+  assert.ok(stored.phoneVerifiedAt instanceof Date);
 });
 
 // ---------------------------------------------------------------------------
@@ -226,6 +236,13 @@ test('DELETE /me/phone removes the number (idempotent) and the step returns to p
   assert.equal(stored.phone, undefined);
   assert.equal(stored.mobileNumberVerified, false);
   assert.equal(buildOnboarding(stored).steps.find((s) => s.step === 'phone_verified').status, 'pending');
+});
+
+test('DELETE /me/phone on an account without a number writes nothing', async () => {
+  const me = await account();
+  const before = await User.findById(me.user._id).lean();
+  assert.equal((await request(app).delete('/v1/me/phone').set(me.headers)).status, 204);
+  assert.deepEqual(await User.findById(me.user._id).lean(), before);
 });
 
 test('signed out is 401; a guest is 403 GUEST_NOT_ALLOWED', async () => {

@@ -246,8 +246,10 @@ function createAuthService({
     if (unmet.length > 0) throw passwords.policyViolation(unmet);
 
     const { email, tokenHash } = await signupTokens.consume({ signupToken, installationId });
-    // A guest whose account has since been deleted simply signs up from scratch.
-    const guest = auth && auth.accountType === 'guest' ? await guests.findById(auth.userId) : null;
+    // A guest whose account has since been deleted simply signs up from scratch. A guest of another install
+    // is not this install's guest, and is left alone.
+    const found = auth && auth.accountType === 'guest' ? await guests.findById(auth.userId) : null;
+    const guest = found && found.installationId === installationId ? found : null;
     const language = preferredLanguage || (guest && guest.preferredLanguage);
     let user;
     try {
@@ -346,10 +348,13 @@ function createAuthService({
   }
 
   /**
-   * Set a new password with the reset token, then sign out every device (whoever knew the old password)
+   * Set a new password with the reset token, sign out every device (whoever knew the old password)
    * and sign in this one. Clears the password-login lock. The new password must meet the policy and
    * differ from the current one; either problem leaves the token usable, so the user can try again.
-   * The account owner gets a "your password was changed" email (best effort).
+   * The devices are signed out before the password changes, so a failure in between leaves the token
+   * usable and never a changed password with the old devices still signed in. They are signed out once
+   * more afterwards, for a login with the old password that finished while the new one was being saved.
+   * The account owner gets a "your password was changed" email (best effort, not awaited).
    * @param {{resetToken: string, newPassword: string, device: object, installationId: string}} input
    * @returns {Promise<object>} `Session`, with `isNewUser: false`
    */
@@ -366,9 +371,9 @@ function createAuthService({
       // Gone, or blocked since the code was sent: the token no longer leads anywhere.
       if (!user || isSuspended(user, at)) throw resetTokens.tokenInvalid();
       if (passwords.identify(user.password) !== null && await passwords.verify(user.password, newPassword)) throw passwordReused();
-      if (!await users.setPassword(userId, { hash: await passwords.hash(newPassword), algo: 'argon2id', at })) {
-        throw resetTokens.tokenInvalid();
-      }
+      const hash = await passwords.hash(newPassword);
+      await sessions.revokeAllSessions({ userId, reason: 'password_reset' });
+      if (!await users.setPassword(userId, { hash, algo: 'argon2id', at })) throw resetTokens.tokenInvalid();
     } catch (err) {
       // The same password again, or a failure that is not the client's fault: the token keeps working.
       const retryable = !(err instanceof ApiError) || err.errors?.[0]?.code === 'PASSWORD_REUSED';
@@ -378,10 +383,13 @@ function createAuthService({
       throw err;
     }
 
-    await sessions.revokeAllSessions({ userId, reason: 'password_reset' });
+    await sessions.revokeAllSessions({ userId, reason: 'password_reset' })
+      .catch((err) => logger.warn({ err: err && err.name }, 'could not repeat the sign-out after a password reset'));
     const session = await signIn({ user, device, installationId, isNewUser: false, signInMethod: 'password_reset' });
     if (typeof user.email === 'string' && user.email !== '') {
-      await notices().sendNotice({ to: normalizeEmail(user.email), notice: 'password_changed' })
+      // Not awaited: a slow mail server must not hold up the sign-in.
+      Promise.resolve()
+        .then(() => notices().sendNotice({ to: normalizeEmail(user.email), notice: 'password_changed' }))
         .catch((err) => logger.warn({ err: err && (err.code || err.name) }, 'password-changed email failed'));
     }
     return session;

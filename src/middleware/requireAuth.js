@@ -59,6 +59,13 @@ function readBearerToken(req) {
  * valid credentials and otherwise carries on without it. It is for operations
  * that work with or without a session, such as logout.
  *
+ * `authIfSent` is for operations that work without a session but whose result
+ * depends on one when it is sent (sign-up with a guest's token makes the guest
+ * the account). It is `optionalAuth`, except that an expired token gets 401
+ * TOKEN_EXPIRED (the client refreshes and repeats) instead of being silently
+ * ignored. A revoked or unusable token still carries on without `req.auth`:
+ * there is no live session to act for.
+ *
  * @param {{tokens?: object, sessions?: object}} [deps] `tokens.verifyAccessToken` and `sessions.assertSessionActive`
  */
 function createAuth({ tokens = defaultTokens, sessions = defaultSessions } = {}) {
@@ -90,7 +97,17 @@ function createAuth({ tokens = defaultTokens, sessions = defaultSessions } = {})
     next();
   });
 
-  return { requireAuth, optionalAuth };
+  const authIfSent = asyncHandler(async (req, res, next) => {
+    try {
+      const auth = await authenticate(req);
+      if (auth) req.auth = auth;
+    } catch (err) {
+      if (!(err instanceof ApiError && err.status === 401) || err.code === 'TOKEN_EXPIRED') throw err;
+    }
+    next();
+  });
+
+  return { requireAuth, optionalAuth, authIfSent };
 }
 
 /**

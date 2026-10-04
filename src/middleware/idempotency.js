@@ -37,8 +37,9 @@ const inProgress = () => new ApiError({
   detail: 'A request with this Idempotency-Key is still running. Retry shortly.',
 });
 
-/** Who is acting: the user, else the install, else the IP address. */
+/** Who is acting: as the route says (`scopeToInstallation`), else the user, else the install, else the IP address. */
 function principal(req) {
+  if (req.idempotencyPrincipal) return req.idempotencyPrincipal;
   if (req.auth && req.auth.userId) return `user:${req.auth.userId}`;
   const installation = req.get('x-installation-id');
   if (installation) return `installation:${installation}`;
@@ -164,4 +165,15 @@ function createIdempotency({
   });
 }
 
-module.exports = { createIdempotency, canonicalJson, idempotency: createIdempotency() };
+/**
+ * Mount before the idempotency middleware on a route whose request belongs to the install whatever token comes
+ * with it. Sign-up completion: the guest session it ends can no longer sign a repeat, so a repeat keyed by the
+ * guest would not find the stored answer.
+ */
+function scopeToInstallation(req, res, next) {
+  const installation = req.get('x-installation-id');
+  if (installation) req.idempotencyPrincipal = `installation:${installation}`;
+  next();
+}
+
+module.exports = { createIdempotency, canonicalJson, scopeToInstallation, idempotency: createIdempotency() };

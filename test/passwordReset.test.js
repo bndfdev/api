@@ -331,6 +331,38 @@ test('a failing "password changed" email does not fail the reset', async () => {
   assert.equal((await complete(client, resetToken)).status, 200);
 });
 
+test('if signing out the other devices fails, the password is unchanged and the same token works again', async () => {
+  const realSessions = require('../src/modules/sessions/service');
+  let failing = true;
+  const flaky = {
+    ...realSessions,
+    revokeAllSessions: async (input) => {
+      if (failing) throw new Error('database unavailable');
+      return realSessions.revokeAllSessions(input);
+    },
+  };
+  const target = buildApp({ sessions: flaky });
+  const finish = (client, resetToken) => request(target).post('/v1/auth/password-reset/complete').set(client.headers)
+    .send({ resetToken, newPassword: NEW_PASSWORD, device: client.device });
+
+  const { email } = await makeAccount();
+  const elsewhere = newClient();
+  const other = await login(elsewhere, email, OLD_PASSWORD);
+  const client = newClient();
+  const { resetToken } = await resetTokenFor(client, email);
+
+  assert.equal((await finish(client, resetToken)).status, 500);
+  assert.equal((await login(newClient(), email, OLD_PASSWORD)).status, 200, 'the old password still works');
+  const stillIn = await post(elsewhere, '/v1/auth/token/refresh', { refreshToken: other.body.tokens.refreshToken });
+  assert.equal(stillIn.status, 200, stillIn.text);
+
+  failing = false;
+  const done = await finish(client, resetToken);
+  assert.equal(done.status, 200, done.text);
+  assertProblem(await login(newClient(), email, OLD_PASSWORD), 401, 'INVALID_CREDENTIALS');
+  assertProblem(await post(elsewhere, '/v1/auth/token/refresh', { refreshToken: stillIn.body.refreshToken }), 401, 'SESSION_REVOKED');
+});
+
 test('reset codes share the 5-per-24-hours limit per address', async () => {
   const { email } = await makeAccount();
   const client = newClient();

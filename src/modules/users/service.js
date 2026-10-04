@@ -27,6 +27,11 @@ const NAME_MAX_LENGTH = 50;
 const GENDERS = Object.freeze({ female: 'female', male: 'male', non_binary: 'non_binary', prefer_not_to_say: 'prefer_not_to_say', other: 'prefer_not_to_say' });
 
 const orNull = (value, pattern) => (typeof value === 'string' && pattern.test(value) ? value : null);
+/**
+ * Whether the number was proved with a code accepted by this API (`phoneVerifiedAt`). The old API's
+ * `mobileNumberVerified` is not enough: it set it after a fixed code.
+ */
+const phoneProved = (user) => typeof user.phone === 'string' && user.phoneVerifiedAt instanceof Date;
 
 /**
  * Progress through the onboarding flow, worked out from what is stored.
@@ -38,7 +43,7 @@ function buildOnboarding(user) {
   const done = {
     email_verified: true,
     password_set: typeof user.password === 'string' && user.password !== '',
-    phone_verified: user.mobileNumberVerified === true,
+    phone_verified: phoneProved(user),
     date_of_birth: orNull(user.dateOfBirth, DATE_ONLY) !== null,
     terms_accepted: false,
     gender: Object.hasOwn(GENDERS, user.gender),
@@ -70,7 +75,7 @@ function toUserResponse(user) {
     email: typeof user.email === 'string' && user.email !== '' ? user.email : null,
     emailVerified: user.emailVerified !== false,
     phoneNumber: orNull(user.phone, E164),
-    phoneVerified: user.mobileNumberVerified === true,
+    phoneVerified: phoneProved(user),
     name,
     dateOfBirth: orNull(user.dateOfBirth, DATE_ONLY),
     gender: GENDERS[user.gender] || null,

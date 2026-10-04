@@ -187,6 +187,14 @@ test('a guest token carries the guest type; account-only endpoints answer 403 GU
   assertProblem(del, 403, 'GUEST_NOT_ALLOWED');
 });
 
+test('a guest can sign out its own session by id (the spec lists no 403 there)', async () => {
+  const client = newClient();
+  const { body } = await startGuest(client);
+  const del = await request(app).delete(`/v1/me/sessions/${body.session.id}`).set({ ...client.headers, ...bearer(body.tokens.accessToken) });
+  assert.equal(del.status, 204, del.text);
+  assertProblem(await post(client, '/v1/auth/token/refresh', { refreshToken: body.tokens.refreshToken }), 401, 'SESSION_REVOKED');
+});
+
 test('a guest can refresh (which keeps the guest alive) and log out', async () => {
   const client = newClient();
   const { body } = await startGuest(client);
@@ -252,6 +260,62 @@ test('signing up with a guest token moves the guest over and retires it', async 
   assert.equal(await GuestAccount.countDocuments(), 0, 'the guest is gone');
   assertProblem(await post(client, '/v1/auth/token/refresh', { refreshToken: guest.tokens.refreshToken }), 401, 'SESSION_REVOKED');
   assert.equal((await get(client, '/v1/me/sessions', bearer(done.body.tokens.accessToken))).status, 200, 'the new account works');
+});
+
+test('an expired guest token at sign-up is refused before anything happens; refreshed, the guest moves over', async () => {
+  const client = newClient();
+  const guest = (await startGuest(client, { preferredLanguage: 'hi' })).body;
+  // The same guest's token as it is 16 minutes later (access tokens live 15 minutes).
+  const later = createTokens({ jwt: config.jwt, now: () => Date.now() - 16 * 60 * 1000 });
+  const { token: expired } = await later.signAccessToken({ userId: guest.user.id, sessionId: guest.session.id, accountType: 'guest' });
+  const token = await signupToken(client, 'late.guest@example.com');
+  const body = { signupToken: token, password: PASSWORD, device: client.device };
+
+  assertProblem(await post(client, '/v1/auth/signup/complete', body, bearer(expired)), 401, 'TOKEN_EXPIRED');
+  assert.equal(await User.countDocuments(), 0, 'no account yet');
+
+  const refreshed = await post(client, '/v1/auth/token/refresh', { refreshToken: guest.tokens.refreshToken });
+  assert.equal(refreshed.status, 200, refreshed.text);
+  const done = await post(client, '/v1/auth/signup/complete', body, bearer(refreshed.body.accessToken));
+  assert.equal(done.status, 201, done.text);
+  assert.equal(done.body.user.dateOfBirth, '2000-05-17');
+  assert.equal(await GuestAccount.countDocuments(), 0);
+});
+
+test('a revoked guest token at sign-up is ignored: the sign-up goes on without it', async () => {
+  const client = newClient();
+  const guest = (await startGuest(client)).body;
+  await post(client, '/v1/auth/logout', { refreshToken: guest.tokens.refreshToken }, bearer(guest.tokens.accessToken));
+  const done = await post(client, '/v1/auth/signup/complete',
+    { signupToken: await signupToken(client, 'gone.guest@example.com'), password: PASSWORD, device: client.device },
+    bearer(guest.tokens.accessToken));
+  assert.equal(done.status, 201, done.text);
+  assert.equal(done.body.user.dateOfBirth, null);
+});
+
+test('a guest token from another install does not move that install\'s guest', async () => {
+  const a = newClient();
+  const b = newClient();
+  const guestA = (await startGuest(a, { dateOfBirth: '1990-01-02' })).body;
+  const done = await post(b, '/v1/auth/signup/complete',
+    { signupToken: await signupToken(b, 'b@example.com'), password: PASSWORD, device: b.device }, bearer(guestA.tokens.accessToken));
+  assert.equal(done.status, 201, done.text);
+  assert.equal(done.body.user.dateOfBirth, null);
+  assert.equal(await GuestAccount.countDocuments({ _id: guestA.user.id }), 1, 'install A keeps its guest');
+  assert.equal((await post(a, '/v1/auth/token/refresh', { refreshToken: guestA.tokens.refreshToken })).status, 200);
+});
+
+test('repeating a guest\'s sign-up with the same Idempotency-Key replays it, although the guest session has ended', async () => {
+  const client = newClient();
+  const guest = (await startGuest(client)).body;
+  const body = { signupToken: await signupToken(client, 'repeat.guest@example.com'), password: PASSWORD, device: client.device };
+  const headers = { ...bearer(guest.tokens.accessToken), 'Idempotency-Key': crypto.randomUUID() };
+  const first = await post(client, '/v1/auth/signup/complete', body, headers);
+  assert.equal(first.status, 201, first.text);
+  const again = await post(client, '/v1/auth/signup/complete', body, headers);
+  assert.equal(again.status, 201, again.text);
+  assert.equal(again.headers['idempotent-replayed'], 'true');
+  assert.equal(again.body.user.id, first.body.user.id);
 });
 
 test('a language sent at sign-up wins over the guest\'s', async () => {
