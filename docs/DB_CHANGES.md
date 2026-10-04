@@ -13,13 +13,15 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 **Existing data affected:**
 - **`users`: one new optional field**, `phoneVerifiedAt` (when the number in `phone` was verified with a code).
 - **`users`: existing fields the new code now writes**, the same ones the old API writes:
-  - `phone` and `mobileNumberVerified`, when a number is verified or removed;
-  - `password` and `passwordAlgo` (argon2id), plus the new-login lock fields, when a password is reset.
-- **`users`: one change to *other* accounts.** When someone verifies a phone number that a different account has in `phone` but never verified (`mobileNumberVerified` is not `true`), the number is removed from that other account (`$unset: {phone}`). Proof of ownership wins over a number that was only typed in. A number another account **has verified** is never taken: the request gets `409 PHONE_TAKEN`.
-  - Pre-flight check, to see how many unverified numbers exist:
+  - `phone` and `mobileNumberVerified` (and `updatedAt`), when a number is verified, or removed from an account that has one;
+  - `password` and `passwordAlgo` (argon2id), plus the new-login lock fields, when a password is reset;
+  - on a new account created from a guest's sign-up: the guest's `dateOfBirth` (`YYYY-MM-DD`) and `preferredLanguage`.
+- **`users`: one change to *other* accounts.** Only a code accepted by v1 proves a number (`phoneVerifiedAt`). The old API marks every number it saves as verified (`mobileNumberVerified: true`) after a fixed code (`123456`), so that flag proves nothing. When someone verifies a number through v1 that a different account has in `phone` without `phoneVerifiedAt` (in practice, any number saved by the old API), the number is removed from that other account: `$unset: {phone}`, `mobileNumberVerified: false`, `updatedAt` set. A number another account **verified through v1** is never taken: the request gets `409 PHONE_TAKEN`.
+  - Pre-flight check, to see how many numbers this can apply to (every number saved by the old API):
     ```js
-    db.users.countDocuments({ phone: { $exists: true }, mobileNumberVerified: { $ne: true } })
+    db.users.countDocuments({ phone: { $exists: true }, phoneVerifiedAt: { $exists: false } })
     ```
+  - The old API's own phone routes (`/user/send-mobile-otp`, `/user/verify-mobile-otp`) are still mounted and still accept the fixed code. They are removed with the other old routes.
 - **`sessions`: one new optional field**, `accountType` (`guest` on a guest's session; absent on an account's). Existing sessions are unaffected.
 - **No index changes on existing collections.** The existing unique sparse index on `users.phone` is relied on as it is.
 - **`guestusers` (the old API's guests, shown on the admin panel's "Guest users" page) is not touched.** New guests go to `guest_accounts` instead (below), so they don't appear on that admin page until the admin panel reads the new collection.
@@ -35,7 +37,7 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 - Stop the new code.
 - Drop `reset_tokens` and `guest_accounts`.
 - `users.phoneVerifiedAt` and `sessions.accountType` can stay, because nothing else reads them, or be removed with `$unset`.
-- Numbers removed from accounts that had never verified them are not restored.
+- Numbers removed from other accounts (numbers saved by the old API) are not restored.
 - Passwords changed through a reset are argon2id, which the old `/user/login` cannot check (as in PR 3).
 
 **Reviewed by:** _pending (database owner)_
