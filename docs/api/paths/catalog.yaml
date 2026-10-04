@@ -1,0 +1,312 @@
+# Public and catalog data: health, app config, legal documents, countries,
+# interests.
+
+health:
+  servers:
+    - url: https://api.bondfire.app
+    - url: https://staging-api.bondfire.app
+    - url: http://localhost:3000
+  get:
+    operationId: getHealth
+    tags: [Meta]
+    summary: Liveness check (unversioned)
+    description: For load balancers. Answers without touching the database.
+    security: []
+    responses:
+      '200':
+        description: The process is up.
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, const: ok }
+      '429':
+        description: Too many probes from one address (edge rate limit).
+
+ready:
+  servers:
+    - url: https://api.bondfire.app
+    - url: https://staging-api.bondfire.app
+    - url: http://localhost:3000
+  get:
+    operationId: getReadiness
+    tags: [Meta]
+    summary: Readiness check (unversioned)
+    description: Checks the database and required providers. `503` takes the instance out of rotation.
+    security: []
+    responses:
+      '200':
+        description: Ready to serve traffic.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/readiness'
+      '503':
+        description: A dependency is down.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/readiness'
+      '429':
+        description: Too many probes from one address (edge rate limit).
+
+config:
+  get:
+    operationId: getConfig
+    tags: [Meta]
+    summary: App configuration
+    description: |
+      First call on every launch (before sign-in). Supplies the password
+      policy, code timings, minimum age, languages, legal versions, feature
+      switches and upload limits, so none of these are hardcoded in the app.
+      Supports `If-None-Match`.
+    security: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IfNoneMatch'
+    responses:
+      '200':
+        description: Current configuration.
+        headers:
+          ETag:
+            $ref: '../components/headers.yaml#/ETag'
+          Cache-Control:
+            $ref: '../components/headers.yaml#/CacheControl'
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/AppConfig'
+            example:
+              minimumSupportedVersion: { ios: 1.0.0, android: 1.0.0, web: 1.0.0 }
+              latestVersion: { ios: 1.4.0, android: 1.4.0, web: 1.4.0 }
+              passwordPolicy: { minLength: 12, maxLength: 128, requireUppercase: true, requireLowercase: false, requireDigit: true, requireSymbol: true }
+              otp: { length: 6, ttlSeconds: 600, resendCooldownSeconds: 30, maxAttempts: 5 }
+              minimumAge: 13
+              supportedLanguages:
+                - { tag: en, name: English, nativeName: English }
+                - { tag: es, name: Spanish, nativeName: Español }
+                - { tag: fr, name: French, nativeName: Français }
+                - { tag: de, name: German, nativeName: Deutsch }
+                - { tag: hi, name: Hindi, nativeName: हिन्दी }
+              legal: { termsVersion: '2026-09-01', privacyVersion: '2026-09-01' }
+              features:
+                guestMode: true
+                phoneVerificationRequired: true
+                socialLogin: { apple: false, google: false, facebook: false }
+              limits: { maxInterests: 100, avatarMaxBytes: 10485760, bannerMaxBytes: 10485760, nameMaxLength: 50 }
+      '304': { $ref: '../components/responses.yaml#/NotModified' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
+legalDocument:
+  get:
+    operationId: getLegalDocument
+    tags: [Legal]
+    summary: Current version of the terms or privacy policy
+    description: |
+      Feeds the Terms and Conditions screen (Figma 1270:11938): `title`,
+      `summary` excerpt and a link to the full text. Localised by
+      `Accept-Language` when a translation exists.
+
+      Errors: `LEGAL_DOCUMENT_NOT_FOUND` (404).
+    security: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/LegalDocumentType'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IfNoneMatch'
+    responses:
+      '200':
+        description: The live document.
+        headers:
+          ETag:
+            $ref: '../components/headers.yaml#/ETag'
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/LegalDocument'
+      '304': { $ref: '../components/responses.yaml#/NotModified' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+countries:
+  get:
+    operationId: listCountries
+    tags: [Catalog]
+    summary: Countries for the phone picker
+    description: |
+      Every country with dial code and flag, sorted by localised name, plus
+      a `defaultCountryCode` guessed from the IP. Small and rarely changes:
+      cache with `ETag` (`max-age` 1 day). Countries sharing a dial code
+      (e.g. +1) are separate entries.
+    security: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IfNoneMatch'
+    responses:
+      '200':
+        description: Countries.
+        headers:
+          ETag:
+            $ref: '../components/headers.yaml#/ETag'
+          Cache-Control:
+            $ref: '../components/headers.yaml#/CacheControl'
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/CountryList'
+      '304': { $ref: '../components/responses.yaml#/NotModified' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+interestsFeatured:
+  get:
+    operationId: listFeaturedInterests
+    tags: [Interests]
+    summary: Curated interests for the onboarding grid
+    description: |
+      "Tell us what you're interested in" (Figma 1261:36247). A curated,
+      region-aware list; `presentation.size` says which items are drawn as
+      the large card. Guests allowed. Items already selected by the user
+      are still returned (the app marks them).
+    security:
+      - bearerAuth: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+    responses:
+      '200':
+        description: A page of featured interests.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/InterestPage'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+interestsSearch:
+  get:
+    operationId: searchInterests
+    tags: [Interests]
+    summary: Search interests
+    description: |
+      Search Interests screen (Figma 1372:42256).
+
+      - `q` is trimmed; empty `q` returns popular items for the chosen kinds.
+      - Matching ignores case and accents ("Coastin" finds "Coastin’") and
+        supports prefixes as the user types; the app debounces (~300 ms)
+        and cancels stale requests.
+      - Results are paginated with a cursor; a cursor from a different
+        query or older than 24 hours is `CURSOR_INVALID`.
+
+      Errors: `SEARCH_QUERY_INVALID`, `CURSOR_INVALID` (422).
+    security:
+      - bearerAuth: []
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+        description: Search text.
+      - name: kind
+        in: query
+        required: false
+        description: Filter row (Figma icons). Repeat to combine, e.g. `kind=artist&kind=album`.
+        style: form
+        explode: true
+        schema:
+          type: array
+          maxItems: 9
+          items:
+            $ref: '../components/schemas.yaml#/InterestKind'
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [relevance, popular, recent, alphabetical]
+          default: relevance
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+    responses:
+      '200':
+        description: A page of results.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/InterestPage'
+            example:
+              data:
+                - id: int_paradise
+                  kind: album
+                  title: Paradise
+                  subtitle: Daya
+                  image: { url: 'https://cdn.bondfire.app/i/paradise.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj' }
+              page: { nextCursor: 'eyJvIjoyMH0', hasMore: true }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+interest:
+  get:
+    operationId: getInterest
+    tags: [Interests]
+    summary: Get one interest
+    security:
+      - bearerAuth: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/InterestId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+    responses:
+      '200':
+        description: The interest.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Interest'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+components:
+  readiness:
+    type: object
+    required: [status, checks]
+    properties:
+      status:
+        type: string
+        enum: [ready, degraded, down]
+      checks:
+        type: object
+        additionalProperties:
+          type: string
+          enum: [ok, failing]
+        examples: [{ database: ok, email: ok, sms: failing, storage: ok }]

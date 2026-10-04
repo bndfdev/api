@@ -126,3 +126,17 @@ gh workflow run deploy.yml --ref main --field branch=dev
    - Go to the repository Actions tab → select `CI/CD Deploy` → Run workflow → choose `branch` → Run workflow.
 
 These commands are what the team needs to perform to set secrets and trigger builds; adjust `YOUR_ORG` and `YOUR_REPO` to your values and replace the masked ARN when creating the secret.
+
+## Development
+
+```bash
+cp .env.example .env   # set MONGODB_URI (and CORS_ORIGINS if needed)
+npm install
+npm start              # http://localhost:3000, Swagger UI at /api-docs
+npm test               # node:test + supertest, no database needed
+```
+
+The v1 contract lives in `docs/api/` (split source: `openapi.yaml`, `paths/`, `components/`;
+bundled: `dist/openapi.yaml`). `/v1` requests are validated against the bundle at runtime and
+CI lints the spec and checks that the bundle is current:
+`npx redocly bundle docs/api/openapi.yaml --config docs/api/redocly.yaml -o docs/api/dist/openapi.yaml`.
