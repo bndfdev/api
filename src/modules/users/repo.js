@@ -273,4 +273,31 @@ async function markOnboardingStep(userId, step, status, at) {
   );
 }
 
-module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/**
+ * Set the avatar or banner, in one atomic update.
+ * @param {'avatar' | 'banner'} kind
+ * @returns {Promise<{found: boolean, previous: object | null}>} the image it replaced, so its files can be deleted
+ */
+async function setImage(userId, kind, image, at) {
+  const before = await User.findOneAndUpdate(
+    { _id: userId },
+    { $set: { [kind]: image, updatedAt: new Date(at) } },
+    { projection: { [kind]: 1 }, new: false },
+  ).lean();
+  return { found: Boolean(before), previous: (before && before[kind]) || null };
+}
+
+/**
+ * Remove the avatar or banner (idempotent: an account without one is not written to).
+ * @returns {Promise<object | null>} the image removed, or null when there was none
+ */
+async function removeImage(userId, kind, at) {
+  const before = await User.findOneAndUpdate(
+    { _id: userId, [kind]: { $exists: true } },
+    { $unset: { [kind]: '' }, $set: { updatedAt: new Date(at) } },
+    { projection: { [kind]: 1 }, new: false },
+  ).lean();
+  return (before && before[kind]) || null;
+}
+
+module.exports = { setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

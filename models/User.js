@@ -1,5 +1,16 @@
 const mongoose = require('mongoose');
 
+/** A processed profile image (see `avatar` and `banner` below). */
+function imageSchema() {
+  return new mongoose.Schema({
+    path: { type: String, required: true },
+    width: { type: Number, required: true },
+    height: { type: Number, required: true },
+    variants: { type: [new mongoose.Schema({ width: Number, height: Number }, { _id: false })], default: undefined },
+    updatedAt: { type: Date, required: true },
+  }, { _id: false });
+}
+
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
@@ -59,6 +70,11 @@ const userSchema = new mongoose.Schema({
   interests: { type: [{ _id: false, id: { type: String, required: true }, addedAt: { type: Date, required: true } }], default: undefined },
   // When the selection last changed.
   interestsUpdatedAt: { type: Date },
+  // Profile photos set through v1 (PUT /me/avatar, PUT /me/banner): where the processed files are in storage
+  // (`path`, a folder per upload holding `<width>.jpg`), the size of the default one, every size made, and when.
+  // Separate from `profileImage` / `profileBanner` above, which the old API and admin panel keep using.
+  avatar: { type: imageSchema(), default: undefined },
+  banner: { type: imageSchema(), default: undefined },
 });
 
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:

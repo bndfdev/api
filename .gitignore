@@ -2,3 +2,5 @@
 node_modules/
 .DS_Store
 .vscode/
+# Profile photos stored by the local media driver (MEDIA_DIR default)
+public/media/

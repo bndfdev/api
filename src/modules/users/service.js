@@ -7,6 +7,7 @@
  * spec promises (an old free-text language, say), is reported as null rather than passed on.
  */
 const { iso } = require('../../lib/time');
+const { storage: defaultStorage } = require('../../providers/storage');
 
 /** Onboarding steps, in the Figma order (the spec's `OnboardingStepName`). */
 const ONBOARDING_STEPS = Object.freeze([
@@ -35,6 +36,27 @@ const orNull = (value, pattern) => (typeof value === 'string' && pattern.test(va
  */
 const phoneProved = (user) => typeof user.phone === 'string' && user.phoneVerifiedAt instanceof Date;
 const timeOrNull = (value) => (value instanceof Date && !Number.isNaN(value.getTime()) ? iso(value) : null);
+
+/**
+ * The spec's `Image` for a stored avatar or banner (`users.avatar` / `users.banner`), or null. Processing happens
+ * before the upload answers, so a stored image is always `ready`.
+ * @param {object | undefined} stored
+ * @param {(key: string) => string} urlFor storage key to the address the app loads it from
+ */
+function toImage(stored, urlFor) {
+  if (!stored || typeof stored.path !== 'string' || !Number.isInteger(stored.width) || !Number.isInteger(stored.height)) return null;
+  const variants = {};
+  for (const v of stored.variants || []) {
+    if (Number.isInteger(v.width)) variants[String(v.width)] = urlFor(`${stored.path}/${v.width}.jpg`);
+  }
+  return {
+    url: urlFor(`${stored.path}/${stored.width}.jpg`),
+    width: stored.width,
+    height: stored.height,
+    status: 'ready',
+    variants,
+  };
+}
 
 /** Nothing accepted yet (the app shows the Terms screen). */
 const NO_CONSENTS = Object.freeze({ termsAcceptedVersion: null, termsUpToDate: false, privacyAcceptedVersion: null, privacyUpToDate: false });
@@ -88,11 +110,12 @@ function buildOnboarding(user, { termsUpToDate = false, phoneVerificationRequire
 
 /**
  * @param {object} user a lean `users` document
- * @param {{consents?: object, phoneVerificationRequired?: boolean}} [context] `consents` is the account's
- *   `ConsentStatus` (legal service); without it nothing counts as accepted
+ * @param {{consents?: object, phoneVerificationRequired?: boolean, storage?: object}} [context] `consents` is the
+ *   account's `ConsentStatus` (legal service); without it nothing counts as accepted. `storage` gives the photos'
+ *   addresses.
  * @returns {object} `User`
  */
-function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequired = true } = {}) {
+function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequired = true, storage = defaultStorage } = {}) {
   const name = typeof user.name === 'string' && user.name.trim() !== '' ? [...user.name.trim()].slice(0, NAME_MAX_LENGTH).join('') : null;
   const createdAt = user.createdAt || new Date(0);
   return {
@@ -108,9 +131,9 @@ function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequire
     dateOfBirth: orNull(user.dateOfBirth, DATE_ONLY),
     gender: GENDERS[user.gender] || null,
     preferredLanguage: orNull(user.preferredLanguage, LANGUAGE_TAG),
-    // TODO(media PR): avatar and banner as `Image` objects once uploads exist (only an old file path is stored now).
-    avatar: null,
-    banner: null,
+    // Photos set through v1 only; the old API's `profileImage` / `profileBanner` paths are not `Image`s.
+    avatar: toImage(user.avatar, (key) => storage.publicUrl(key)),
+    banner: toImage(user.banner, (key) => storage.publicUrl(key)),
     loginMethods: typeof user.password === 'string' && user.password !== '' ? ['password'] : [],
     onboarding: buildOnboarding(user, { termsUpToDate: consents.termsUpToDate, phoneVerificationRequired }),
     consents: { ...consents },
@@ -159,4 +182,4 @@ function isSuspended(user, at) {
   return user.isBlocked === true && (!user.blockedUntil || new Date(user.blockedUntil).getTime() > at);
 }
 
-module.exports = { toUserResponse, toGuestResponse, buildOnboarding, isSuspended, ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH };
+module.exports = { toImage, toUserResponse, toGuestResponse, buildOnboarding, isSuspended, ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH };

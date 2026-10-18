@@ -82,6 +82,32 @@ db.guest_accounts.countDocuments({ interests: { $exists: true } })
 
 ---
 
+## 2026-10-18: Profile photos (avatar and banner)
+
+**Existing data affected:** none. Nothing is written until a user sets a photo through v1. The old API's `profileImage` and `profileBanner` fields are not read or changed (the admin panel and old screens keep using them).
+
+**`users`: new optional fields** (absent until used)
+
+| Field | Purpose |
+| --- | --- |
+| `avatar` | The v1 profile photo: `{path, width, height, variants: [{width, height}], updatedAt}`. `path` is the storage folder of that upload (its files are `<width>.jpg`); width and height are the default size's. |
+| `banner` | The v1 profile banner, in the same shape. |
+
+Setting a photo replaces the field in one update and then deletes the old upload's files. Removing a photo unsets the field and deletes its files.
+
+**Files outside the database:** the images themselves are in `MEDIA_DIR` (default `public/media`, git-ignored) on the server that processed them, under `avatars/<userId>/<id>/` and `banners/<userId>/<id>/`. They are JPEGs with all metadata (EXIF, GPS) removed. With more than one server, or a server whose disk is replaced, they must move to shared object storage first (a later storage driver).
+
+**No new collections; no index changes.**
+
+**Rollback:**
+- Stop the new code.
+- The two fields can stay, because nothing else reads them, or be removed with `$unset: {avatar: '', banner: ''}`.
+- Delete `MEDIA_DIR` if the photos are not wanted.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-03: Profile, onboarding progress and terms (PR 5)
 
 **Existing data affected:** `onboardingCompletedAt` (below) is set once on an account the first time it is read with every onboarding step done or skipped. Otherwise nothing until a user edits their profile. Then the new code writes these existing `users` fields, in v1 formats:
