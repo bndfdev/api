@@ -16,6 +16,7 @@ const { router: defaultEmailRouter } = require('./modules/email/routes');
 const { router: defaultMeRouter } = require('./modules/me/routes');
 const { router: defaultMetaRouter } = require('./modules/meta/routes');
 const { router: defaultCredentialsRouter } = require('./modules/credentials/routes');
+const { router: defaultInterestsRouter } = require('./modules/interests/routes');
 const { clientVersionGate: defaultVersionGate } = require('./middleware/clientVersion');
 
 const ROOT = path.join(__dirname, '..');
@@ -25,13 +26,13 @@ const ROOT = path.join(__dirname, '..');
  * @param {{extend?: (app: import('express').Express) => void, trustProxy?: number | false,
  *   authRouter?: import('express').Router, phoneRouter?: import('express').Router, emailRouter?: import('express').Router,
  *   meRouter?: import('express').Router, metaRouter?: import('express').Router, credentialsRouter?: import('express').Router,
- *   versionGate?: Function}} [options]
+ *   interestsRouter?: import('express').Router, versionGate?: Function}} [options]
  *   `extend` is a hook used only by tests to add routes after the legacy
  *   mounts and before the /v1 404 and error handlers. `trustProxy` overrides
  *   config.trustProxy (tests). `authRouter` replaces the sign-up and login
  *   routes (tests give them a fake email provider and a clock, see
- *   createAuthRouter in src/modules/auth/routes.js); `phoneRouter`, `emailRouter`, `meRouter`, `metaRouter` and
- *   `credentialsRouter` likewise
+ *   createAuthRouter in src/modules/auth/routes.js); `phoneRouter`, `emailRouter`, `meRouter`, `metaRouter`,
+ *   `credentialsRouter` and `interestsRouter` likewise
  *   replace those routes, and `versionGate` the minimum-app-version check.
  */
 function createApp({
@@ -43,6 +44,7 @@ function createApp({
   meRouter = defaultMeRouter,
   metaRouter = defaultMetaRouter,
   credentialsRouter = defaultCredentialsRouter,
+  interestsRouter = defaultInterestsRouter,
   versionGate = defaultVersionGate,
 } = {}) {
   const app = express();
@@ -153,6 +155,7 @@ function createApp({
   v1.use(emailRouter);
   v1.use(meRouter);
   v1.use(credentialsRouter);
+  v1.use(interestsRouter);
   v1.use(notFound);
   app.use('/v1', v1);
 

@@ -18,7 +18,7 @@
  *   3. completePasswordReset  sets the new password, signs out every device and signs in this one.
  *
  * Guests (startGuestSession): one limited account per app install, with a date of birth. Completing
- * sign-up with a guest's access token moves its date of birth and language to the new account, ends the
+ * sign-up with a guest's access token moves its date of birth, language and interests to the new account, ends the
  * guest's sessions and deletes the guest.
  *
  * A phone code (sent by the phone module) is checked here too, with its owner's access token; a correct
@@ -252,9 +252,8 @@ function createAuthService({
    * Create the account for a verified email and sign in. The password is checked first, so a weak one
    * can be fixed and sent again with the same token. The token works once.
    * With a guest's access token (`auth.accountType === 'guest'`) the guest becomes the account: its date of
-   * birth, language and accepted legal documents move over (a language in the request wins), then its sessions
-   * end and the guest is deleted.
-   * TODO(interests PR): the guest's interests move over too.
+   * birth, language, chosen interests and accepted legal documents move over (a language in the request wins),
+   * then its sessions end and the guest is deleted.
    * @param {{signupToken: string, password: string, device: object, preferredLanguage?: string, installationId: string,
    *   auth?: {userId: string, accountType: string}}} input `auth` is the caller's verified access token, if any
    * @returns {Promise<object>} `Session`, with `isNewUser: true`
@@ -283,7 +282,9 @@ function createAuthService({
         passwordAlgo: 'argon2id',
         ...(language ? { preferredLanguage: language } : {}),
         ...(guest ? { dateOfBirth: guest.dateOfBirth, dateOfBirthSetAt: new Date(at), dateOfBirthChanges: 0 } : {}),
-        createdAt: new Date(at),
+        ...(guest && Array.isArray(guest.interests) && guest.interests.length > 0
+          ? { interests: guest.interests, interestsUpdatedAt: guest.interestsUpdatedAt || new Date(at) }
+          : {}),        createdAt: new Date(at),
         updatedAt: new Date(at),
       });
       // Two requests for the same address at once: the unique index lets only one create it.

@@ -48,9 +48,9 @@ const stored = (user, step) => {
 /**
  * Progress through the onboarding flow (the spec's `Onboarding`). Data steps are done when their data is
  * stored; terms when the live terms version was accepted; `interests` and `profile` when the user marked
- * them (completed or skipped), and `profile` also once a name is set. When the phone is not required
+ * them (completed or skipped), `interests` also while at least one interest is chosen (`users.interests`;
+ * PUT /me/interests marks it completed), and `profile` also once a name is set. When the phone is not required
  * (`features.phoneVerificationRequired` off) an unverified phone step is skipped.
- * TODO(interests PR): `interests` also completes when interests are chosen.
  * @param {object} user a lean `users` document
  * @param {{termsUpToDate?: boolean, phoneVerificationRequired?: boolean}} [context]
  * @returns {object} `Onboarding`
@@ -63,12 +63,13 @@ function buildOnboarding(user, { termsUpToDate = false, phoneVerificationRequire
     date_of_birth: orNull(user.dateOfBirth, DATE_ONLY) !== null,
     terms_accepted: termsUpToDate === true,
     gender: Object.hasOwn(GENDERS, user.gender),
-    interests: false,
+    interests: Array.isArray(user.interests) && user.interests.length > 0,
     profile: typeof user.name === 'string' && user.name.trim() !== '',
   };
   const when = {
     phone_verified: timeOrNull(user.phoneVerifiedAt),
     date_of_birth: timeOrNull(user.dateOfBirthSetAt),
+    interests: timeOrNull(user.interestsUpdatedAt),
   };
   const steps = ONBOARDING_STEPS.map(({ step, skippable }) => {
     const mark = stored(user, step);

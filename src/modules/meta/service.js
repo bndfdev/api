@@ -19,8 +19,8 @@ const { RULES: CODE_RULES } = require('../challenges/service');
 const defaultLegal = require('../legal/service');
 
 /**
- * Limits the app shows before the server would refuse. The name limit is enforced now; the interest and photo
- * limits are enforced by the interests and photo-upload PRs.
+ * Limits the app shows before the server would refuse. The name and interest limits are enforced now (users
+ * and interests services); the photo limits are enforced by the photo-upload PR.
  */
 const LIMITS = Object.freeze({ maxInterests: 100, avatarMaxBytes: 10 * 1024 * 1024, bannerMaxBytes: 10 * 1024 * 1024, nameMaxLength: NAME_MAX_LENGTH });
 const REGION = /^[A-Z]{2}$/;

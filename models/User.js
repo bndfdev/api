@@ -53,6 +53,12 @@ const userSchema = new mongoose.Schema({
   // Moves on with every profile change through v1 (PATCH /me), so two changes worked out from the same state
   // cannot both be saved.
   profileRevision: { type: Number },
+  // The interests the user chose (v1, /me/interests): catalog ids (`genre_<id>`, `artist_<id>`, `place_<id>`) in
+  // the order chosen, each with when it was added; at most GET /config's maxInterests (100). Absent until the
+  // user chooses (no default, so documents created through this model do not get an empty list).
+  interests: { type: [{ _id: false, id: { type: String, required: true }, addedAt: { type: Date, required: true } }], default: undefined },
+  // When the selection last changed.
+  interestsUpdatedAt: { type: Date },
 });
 
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:

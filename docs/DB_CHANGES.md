@@ -47,6 +47,41 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-23: Interests (catalog and the user's selection)
+
+**Existing data affected:** none. The new code only adds the fields below, on accounts and guests that choose interests. No migration, no edit of existing documents.
+
+**Read only, never written:** `genres`, `artists` and `countries`. The interest catalog (`src/modules/interests/catalog.js`) is built from them: `genres` gives kind `genre`, `artists` kind `artist`, `countries` kind `place`. It reads `name`, `image`, `active` and `counter` (genres), `name`, `image` and `active` (artists), and `name`, `code` and `enabled` (countries), once a minute at most. Nothing in v1 writes to these collections: choosing a genre does **not** move its `counter` (the old API's `/user/set-genres` still does), and the old `userpreferences` collection is neither read nor written.
+
+**`users`: new optional fields** (absent until the user chooses interests)
+
+| Field | Purpose |
+| --- | --- |
+| `interests` | The chosen interests: `[{id, addedAt}]` in the order chosen, at most 100 (GET /config's `maxInterests`). `id` is a catalog id such as `genre_<genres._id>`, `artist_<artists._id>` or `place_<countries._id>`. |
+| `interestsUpdatedAt` | When the selection last changed |
+
+PUT /me/interests also sets the existing `onboardingSteps.interests` (`{status: 'completed', updatedAt}`) and `updatedAt`, as "Later" already does.
+
+**`guest_accounts`: the same two optional fields**, for a guest's selection. They go when the guest is deleted (the existing 180-day TTL), and are copied onto the new `users` document when the guest signs up.
+
+**Why on the owner's document and not in a new collection:** the selection is small and bounded (100 short entries, a few KB at most), it is always read with its owner (GET /me needs it for the onboarding step), and keeping it on the document makes "add one, but never beyond 100" one atomic update. A guest's selection is then deleted with the guest, and moves to the account in the same insert that creates it. Nothing else reads these fields; the admin panel's own model ignores them.
+
+**Pre-flight check:** this code assumes no document already has an `interests` or `interestsUpdatedAt` field of its own (the API's code never wrote one; the admin panel's is not known here). Both counts should be 0:
+```js
+db.users.countDocuments({ $or: [{ interests: { $exists: true } }, { interestsUpdatedAt: { $exists: true } }] })
+db.guest_accounts.countDocuments({ interests: { $exists: true } })
+```
+
+**No new collections. No index changes.** Nothing queries by interest yet; if "who follows this artist" is needed later, a multikey index on `users.interests.id` would serve it (please decide then).
+
+**Rollback:**
+- Stop the new code.
+- The new fields can stay (nothing else reads them) or be removed: `db.users.updateMany({}, {$unset: {interests: '', interestsUpdatedAt: ''}})`, and the same on `guest_accounts`.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-03: Profile, onboarding progress and terms (PR 5)
 
 **Existing data affected:** `onboardingCompletedAt` (below) is set once on an account the first time it is read with every onboarding step done or skipped. Otherwise nothing until a user edits their profile. Then the new code writes these existing `users` fields, in v1 formats:
