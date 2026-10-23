@@ -124,7 +124,8 @@ challenge:
     description: |
       Lets the code screen restore its countdown and attempts after the app
       was killed or the phone rotated. Public for sign-up and reset
-      challenges; phone challenges need the owner's access token.
+      challenges; phone and email-change challenges need the owner's
+      access token.
 
       Errors: `CHALLENGE_NOT_FOUND` (404, also when called from another
       install), `CHALLENGE_EXPIRED` (410).
@@ -199,7 +200,8 @@ challengeVerify:
     description: |
       The code screens auto-submit at 6 digits. A correct code consumes the
       challenge and returns what it unlocks (see `ChallengeVerification`):
-      a `signupToken`, a `resetToken`, or a verified phone number.
+      a `signupToken`, a `resetToken`, a verified phone number, or the
+      account's new email.
 
       - Codes are compared in constant time; only a hash is stored.
       - After 5 wrong codes the challenge locks (`CHALLENGE_LOCKED`); the
@@ -208,11 +210,19 @@ challengeVerify:
         `CODE_FORMAT_INVALID` and does **not** use up an attempt.
       - Phone challenges need the owner's access token. If another account
         verified the same number in the meantime, this returns `PHONE_TAKEN`.
+      - `change_email` challenges also need the owner's access token. On
+        success the account's email becomes the new address (`EmailChanged`),
+        `emailVerified` stays `true`, password login uses the new address
+        from then on, and a security notice goes to the **old** address. If
+        another account took the address in the meantime, this returns
+        `EMAIL_TAKEN`.
+      - Without the owner's token, a phone or `change_email` challenge
+        returns `CHALLENGE_NOT_FOUND`.
 
       Errors: `CHALLENGE_NOT_FOUND` (404), `CHALLENGE_ALREADY_USED`,
-      `PHONE_TAKEN` (409), `CHALLENGE_EXPIRED` (410), `CODE_INCORRECT`
-      (422, `meta.attemptsRemaining`), `CODE_FORMAT_INVALID` (422),
-      `CHALLENGE_LOCKED` (423).
+      `PHONE_TAKEN`, `EMAIL_TAKEN` (409), `CHALLENGE_EXPIRED` (410),
+      `CODE_INCORRECT` (422, `meta.attemptsRemaining`),
+      `CODE_FORMAT_INVALID` (422), `CHALLENGE_LOCKED` (423).
     security:
       - {}
       - bearerAuth: []
@@ -253,6 +263,11 @@ challengeVerify:
                 value:
                   purpose: phone_verification
                   phoneNumber: '+14155550123'
+                  verifiedAt: '2026-09-27T10:16:00Z'
+              emailChange:
+                value:
+                  purpose: change_email
+                  email: amelia.new@example.com
                   verifiedAt: '2026-09-27T10:16:00Z'
       '400': { $ref: '../components/responses.yaml#/BadRequest' }
       '403': { $ref: '../components/responses.yaml#/Forbidden' }
@@ -681,8 +696,8 @@ reauthenticate:
     summary: Confirm identity before a sensitive action
     description: |
       Returns a 5-minute `reauthToken` for sensitive calls (delete account,
-      unlink a login method, set a first password). Social-only users
-      re-confirm with a fresh provider credential.
+      change the email, unlink a login method, set a first password).
+      Social-only users re-confirm with a fresh provider credential.
 
       Wrong password is `422 PASSWORD_INCORRECT` (not 401, which would sign
       the user out). 5 failures lock it like login (`ACCOUNT_LOCKED`, 423).

@@ -415,8 +415,13 @@ PasswordPolicy:
 
 ChallengePurpose:
   type: string
-  description: What a verified code unlocks.
-  enum: [signup_email, password_reset, phone_verification]
+  description: |
+    What a verified code unlocks:
+    - `signup_email`: a `signupToken` for `POST /auth/signup/complete`.
+    - `password_reset`: a `resetToken` for `POST /auth/password-reset/complete`.
+    - `phone_verification`: the number becomes the account's verified phone (`POST /me/phone/verification`).
+    - `change_email`: the address becomes the account's verified email (`POST /me/email/verification`).
+  enum: [signup_email, password_reset, phone_verification, change_email]
 
 Challenge:
   type: object
@@ -466,12 +471,14 @@ ChallengeVerification:
     - $ref: '#/SignupEmailVerified'
     - $ref: '#/PasswordResetVerified'
     - $ref: '#/PhoneVerified'
+    - $ref: '#/EmailChanged'
   discriminator:
     propertyName: purpose
     mapping:
       signup_email: '#/SignupEmailVerified'
       password_reset: '#/PasswordResetVerified'
       phone_verification: '#/PhoneVerified'
+      change_email: '#/EmailChanged'
 
 SignupEmailVerified:
   type: object
@@ -510,6 +517,19 @@ PhoneVerified:
       const: phone_verification
     phoneNumber:
       $ref: '#/PhoneNumber'
+    verifiedAt:
+      $ref: '#/Timestamp'
+
+EmailChanged:
+  type: object
+  description: The account's email is now `email` (verified); the previous address was sent a security notice.
+  required: [purpose, email, verifiedAt]
+  properties:
+    purpose:
+      type: string
+      const: change_email
+    email:
+      $ref: '#/Email'
     verifiedAt:
       $ref: '#/Timestamp'
 
@@ -840,6 +860,7 @@ User:
         - $ref: '#/Timestamp'
         - type: 'null'
     email:
+      description: Changed only through `POST /me/email/verification` (not `PATCH /me`).
       oneOf:
         - $ref: '#/Email'
         - type: 'null'

@@ -60,7 +60,7 @@ tags:
   - name: Auth
     description: Sign-up, one-time codes, login, social login, guest, tokens, password reset.
   - name: Account
-    description: The signed-in user's profile, password, phone and deletion.
+    description: The signed-in user's profile, email, password, phone and deletion.
   - name: Onboarding
     description: Server-side onboarding progress so the flow resumes on any device.
   - name: Legal
@@ -130,6 +130,8 @@ paths:
     $ref: './paths/me.yaml#/me'
   /me/password:
     $ref: './paths/me.yaml#/mePassword'
+  /me/email/verification:
+    $ref: './paths/me.yaml#/meEmailVerification'
   /me/phone:
     $ref: './paths/me.yaml#/mePhone'
   /me/phone/verification:

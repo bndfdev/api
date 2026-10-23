@@ -173,6 +173,109 @@ mePassword:
       '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
       '500': { $ref: '../components/responses.yaml#/InternalError' }
 
+meEmailVerification:
+  post:
+    operationId: startEmailChange
+    tags: [Account]
+    summary: Send a code to a new email address to change the account's email
+    description: |
+      Change email in settings: confirm the password (`POST
+      /auth/reauthenticate`), enter the new address, then enter the code
+      sent to it. Verify with `POST /auth/challenges/{id}/verify` (purpose
+      `change_email`, owner's access token).
+
+      - Needs a fresh `X-Reauth-Token` (5 minutes). It is checked here only;
+        resending or verifying the code does not need it.
+      - The code goes to the **new** address. The account keeps its current
+        email (and signs in with it) until the code is accepted; then the
+        new address replaces it, stays verified, and the old address gets a
+        security notice.
+      - The address is normalised like at sign-up (trimmed, domain
+        lowercased) and compared case-insensitively.
+      - The address is not reserved while the code is pending: if another
+        account takes it first, verifying returns `EMAIL_TAKEN`.
+      - The account's current email returns `409 CONFLICT`, as the same
+        number does for phone.
+      - Calling again for the same address and install returns the **same
+        challenge** (no new code) until it expires.
+
+      Errors: `REAUTH_REQUIRED` (401, header missing, invalid or expired),
+      `GUEST_NOT_ALLOWED` (403), `EMAIL_TAKEN`, `CONFLICT` (409),
+      `EMAIL_INVALID`, `EMAIL_DOMAIN_NOT_ALLOWED` (422),
+      `SEND_LIMIT_REACHED` (429, 5 codes per address per 24 h),
+      `RATE_LIMITED` (429, 10 per account per 24 h),
+      `EMAIL_DELIVERY_FAILED` (503).
+    x-rate-limit:
+      - { key: email, limit: 5, window: 24h }
+      - { key: account, limit: 10, window: 24h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+      - name: X-Reauth-Token
+        in: header
+        required: false
+        description: |
+          From `POST /auth/reauthenticate`, valid 5 minutes. Always needed
+          here; declared optional so a missing token is `401
+          REAUTH_REQUIRED` (the app asks for the password) rather than
+          `400 MALFORMED_REQUEST`.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/EmailRequest'
+          example:
+            email: amelia.new@example.com
+    responses:
+      '202':
+        description: Code sent to the new address (or an unexpired one already exists).
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Challenge'
+            example:
+              id: chl_01J8Z9C2
+              purpose: change_email
+              channel: email
+              destination: a•••••w@example.com
+              codeLength: 6
+              expiresAt: '2026-09-27T10:25:00Z'
+              resendAvailableAt: '2026-09-27T10:15:30Z'
+              attemptsRemaining: 5
+              sendsRemaining: 4
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401':
+        description: Missing or expired access token, or no valid reauth token.
+        headers:
+          WWW-Authenticate:
+            description: '`Bearer error="invalid_token"` when a token was sent.'
+            schema:
+              type: string
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/reauth-required
+              title: Confirm your password
+              status: 401
+              code: REAUTH_REQUIRED
+              detail: Enter your password again to change your email.
+              requestId: req_01J8Z3K5QH
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
 mePhoneVerification:
   post:
     operationId: startPhoneVerification

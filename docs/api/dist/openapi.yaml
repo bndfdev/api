@@ -57,7 +57,7 @@ tags:
   - name: Auth
     description: Sign-up, one-time codes, login, social login, guest, tokens, password reset.
   - name: Account
-    description: The signed-in user's profile, password, phone and deletion.
+    description: The signed-in user's profile, email, password, phone and deletion.
   - name: Onboarding
     description: Server-side onboarding progress so the flow resumes on any device.
   - name: Legal
@@ -655,7 +655,8 @@ paths:
       description: |
         Lets the code screen restore its countdown and attempts after the app
         was killed or the phone rotated. Public for sign-up and reset
-        challenges; phone challenges need the owner's access token.
+        challenges; phone and email-change challenges need the owner's
+        access token.
 
         Errors: `CHALLENGE_NOT_FOUND` (404, also when called from another
         install), `CHALLENGE_EXPIRED` (410).
@@ -747,7 +748,8 @@ paths:
       description: |
         The code screens auto-submit at 6 digits. A correct code consumes the
         challenge and returns what it unlocks (see `ChallengeVerification`):
-        a `signupToken`, a `resetToken`, or a verified phone number.
+        a `signupToken`, a `resetToken`, a verified phone number, or the
+        account's new email.
 
         - Codes are compared in constant time; only a hash is stored.
         - After 5 wrong codes the challenge locks (`CHALLENGE_LOCKED`); the
@@ -756,11 +758,19 @@ paths:
           `CODE_FORMAT_INVALID` and does **not** use up an attempt.
         - Phone challenges need the owner's access token. If another account
           verified the same number in the meantime, this returns `PHONE_TAKEN`.
+        - `change_email` challenges also need the owner's access token. On
+          success the account's email becomes the new address (`EmailChanged`),
+          `emailVerified` stays `true`, password login uses the new address
+          from then on, and a security notice goes to the **old** address. If
+          another account took the address in the meantime, this returns
+          `EMAIL_TAKEN`.
+        - Without the owner's token, a phone or `change_email` challenge
+          returns `CHALLENGE_NOT_FOUND`.
 
         Errors: `CHALLENGE_NOT_FOUND` (404), `CHALLENGE_ALREADY_USED`,
-        `PHONE_TAKEN` (409), `CHALLENGE_EXPIRED` (410), `CODE_INCORRECT`
-        (422, `meta.attemptsRemaining`), `CODE_FORMAT_INVALID` (422),
-        `CHALLENGE_LOCKED` (423).
+        `PHONE_TAKEN`, `EMAIL_TAKEN` (409), `CHALLENGE_EXPIRED` (410),
+        `CODE_INCORRECT` (422, `meta.attemptsRemaining`),
+        `CODE_FORMAT_INVALID` (422), `CHALLENGE_LOCKED` (423).
       security:
         - {}
         - bearerAuth: []
@@ -805,6 +815,11 @@ paths:
                   value:
                     purpose: phone_verification
                     phoneNumber: '+14155550123'
+                    verifiedAt: '2026-09-27T10:16:00Z'
+                emailChange:
+                  value:
+                    purpose: change_email
+                    email: amelia.new@example.com
                     verifiedAt: '2026-09-27T10:16:00Z'
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -1251,8 +1266,8 @@ paths:
       summary: Confirm identity before a sensitive action
       description: |
         Returns a 5-minute `reauthToken` for sensitive calls (delete account,
-        unlink a login method, set a first password). Social-only users
-        re-confirm with a fresh provider credential.
+        change the email, unlink a login method, set a first password).
+        Social-only users re-confirm with a fresh provider credential.
 
         Wrong password is `422 PASSWORD_INCORRECT` (not 401, which would sign
         the user out). 5 failures lock it like login (`ACCOUNT_LOCKED`, 423).
@@ -1497,6 +1512,121 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+  /me/email/verification:
+    post:
+      operationId: startEmailChange
+      tags:
+        - Account
+      summary: Send a code to a new email address to change the account's email
+      description: |
+        Change email in settings: confirm the password (`POST
+        /auth/reauthenticate`), enter the new address, then enter the code
+        sent to it. Verify with `POST /auth/challenges/{id}/verify` (purpose
+        `change_email`, owner's access token).
+
+        - Needs a fresh `X-Reauth-Token` (5 minutes). It is checked here only;
+          resending or verifying the code does not need it.
+        - The code goes to the **new** address. The account keeps its current
+          email (and signs in with it) until the code is accepted; then the
+          new address replaces it, stays verified, and the old address gets a
+          security notice.
+        - The address is normalised like at sign-up (trimmed, domain
+          lowercased) and compared case-insensitively.
+        - The address is not reserved while the code is pending: if another
+          account takes it first, verifying returns `EMAIL_TAKEN`.
+        - The account's current email returns `409 CONFLICT`, as the same
+          number does for phone.
+        - Calling again for the same address and install returns the **same
+          challenge** (no new code) until it expires.
+
+        Errors: `REAUTH_REQUIRED` (401, header missing, invalid or expired),
+        `GUEST_NOT_ALLOWED` (403), `EMAIL_TAKEN`, `CONFLICT` (409),
+        `EMAIL_INVALID`, `EMAIL_DOMAIN_NOT_ALLOWED` (422),
+        `SEND_LIMIT_REACHED` (429, 5 codes per address per 24 h),
+        `RATE_LIMITED` (429, 10 per account per 24 h),
+        `EMAIL_DELIVERY_FAILED` (503).
+      x-rate-limit:
+        - key: email
+          limit: 5
+          window: 24h
+        - key: account
+          limit: 10
+          window: 24h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: X-Reauth-Token
+          in: header
+          required: false
+          description: |
+            From `POST /auth/reauthenticate`, valid 5 minutes. Always needed
+            here; declared optional so a missing token is `401
+            REAUTH_REQUIRED` (the app asks for the password) rather than
+            `400 MALFORMED_REQUEST`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+            example:
+              email: amelia.new@example.com
+      responses:
+        '202':
+          description: Code sent to the new address (or an unexpired one already exists).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Challenge'
+              example:
+                id: chl_01J8Z9C2
+                purpose: change_email
+                channel: email
+                destination: a•••••w@example.com
+                codeLength: 6
+                expiresAt: '2026-09-27T10:25:00Z'
+                resendAvailableAt: '2026-09-27T10:15:30Z'
+                attemptsRemaining: 5
+                sendsRemaining: 4
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Missing or expired access token, or no valid reauth token.
+          headers:
+            WWW-Authenticate:
+              description: '`Bearer error="invalid_token"` when a token was sent.'
+              schema:
+                type: string
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/reauth-required
+                title: Confirm your password
+                status: 401
+                code: REAUTH_REQUIRED
+                detail: Enter your password again to change your email.
+                requestId: req_01J8Z3K5QH
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /me/phone:
     delete:
       operationId: removePhone
@@ -2941,11 +3071,17 @@ components:
             - amelia.jane@gmail.com
     ChallengePurpose:
       type: string
-      description: What a verified code unlocks.
+      description: |
+        What a verified code unlocks:
+        - `signup_email`: a `signupToken` for `POST /auth/signup/complete`.
+        - `password_reset`: a `resetToken` for `POST /auth/password-reset/complete`.
+        - `phone_verification`: the number becomes the account's verified phone (`POST /me/phone/verification`).
+        - `change_email`: the address becomes the account's verified email (`POST /me/email/verification`).
       enum:
         - signup_email
         - password_reset
         - phone_verification
+        - change_email
     MaskedDestination:
       type: string
       description: Where a code was sent, partly hidden for display (never the full value).
@@ -3265,6 +3401,7 @@ components:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
         email:
+          description: Changed only through `POST /me/email/verification` (not `PATCH /me`).
           oneOf:
             - $ref: '#/components/schemas/Email'
             - type: 'null'
@@ -3406,18 +3543,35 @@ components:
           $ref: '#/components/schemas/PhoneNumber'
         verifiedAt:
           $ref: '#/components/schemas/Timestamp'
+    EmailChanged:
+      type: object
+      description: The account's email is now `email` (verified); the previous address was sent a security notice.
+      required:
+        - purpose
+        - email
+        - verifiedAt
+      properties:
+        purpose:
+          type: string
+          const: change_email
+        email:
+          $ref: '#/components/schemas/Email'
+        verifiedAt:
+          $ref: '#/components/schemas/Timestamp'
     ChallengeVerification:
       description: Result of a correct code. Shape depends on the challenge purpose.
       oneOf:
         - $ref: '#/components/schemas/SignupEmailVerified'
         - $ref: '#/components/schemas/PasswordResetVerified'
         - $ref: '#/components/schemas/PhoneVerified'
+        - $ref: '#/components/schemas/EmailChanged'
       discriminator:
         propertyName: purpose
         mapping:
           signup_email: '#/components/schemas/SignupEmailVerified'
           password_reset: '#/components/schemas/PasswordResetVerified'
           phone_verification: '#/components/schemas/PhoneVerified'
+          change_email: '#/components/schemas/EmailChanged'
     LoginRequest:
       type: object
       required:
@@ -4118,7 +4272,9 @@ components:
     Unauthorized:
       description: |
         Missing, invalid or expired credentials. On `TOKEN_EXPIRED` the app
-        refreshes once and retries; on any other 401 it signs the user out.
+        refreshes once and retries; on `REAUTH_REQUIRED` it asks for the
+        password again (`POST /auth/reauthenticate`) and retries; on any other
+        401 it signs the user out.
       headers:
         WWW-Authenticate:
           description: '`Bearer error="invalid_token"` when a token was sent.'
