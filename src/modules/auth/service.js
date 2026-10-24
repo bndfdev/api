@@ -495,4 +495,4 @@ function createAuthService({
   };
 }
 
-module.exports = { createAuthService, LOGIN_RULES };
+module.exports = { createAuthService, LOGIN_RULES, accountLocked };

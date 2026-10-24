@@ -14,6 +14,7 @@ const { router: defaultAuthRouter } = require('./modules/auth/routes');
 const { router: defaultPhoneRouter } = require('./modules/phone/routes');
 const { router: defaultMeRouter } = require('./modules/me/routes');
 const { router: defaultMetaRouter } = require('./modules/meta/routes');
+const { router: defaultCredentialsRouter } = require('./modules/credentials/routes');
 const { clientVersionGate: defaultVersionGate } = require('./middleware/clientVersion');
 
 const ROOT = path.join(__dirname, '..');
@@ -22,12 +23,12 @@ const ROOT = path.join(__dirname, '..');
  * Build the express app. Does not connect to MongoDB and does not listen.
  * @param {{extend?: (app: import('express').Express) => void, trustProxy?: number | false,
  *   authRouter?: import('express').Router, phoneRouter?: import('express').Router, meRouter?: import('express').Router,
- *   metaRouter?: import('express').Router, versionGate?: Function}} [options]
+ *   metaRouter?: import('express').Router, credentialsRouter?: import('express').Router, versionGate?: Function}} [options]
  *   `extend` is a hook used only by tests to add routes after the legacy
  *   mounts and before the /v1 404 and error handlers. `trustProxy` overrides
  *   config.trustProxy (tests). `authRouter` replaces the sign-up and login
  *   routes (tests give them a fake email provider and a clock, see
- *   createAuthRouter in src/modules/auth/routes.js); `phoneRouter`, `meRouter` and `metaRouter` likewise
+ *   createAuthRouter in src/modules/auth/routes.js); `phoneRouter`, `meRouter`, `metaRouter` and `credentialsRouter` likewise
  *   replace those routes, and `versionGate` the minimum-app-version check.
  */
 function createApp({
@@ -37,6 +38,7 @@ function createApp({
   phoneRouter = defaultPhoneRouter,
   meRouter = defaultMeRouter,
   metaRouter = defaultMetaRouter,
+  credentialsRouter = defaultCredentialsRouter,
   versionGate = defaultVersionGate,
 } = {}) {
   const app = express();
@@ -145,6 +147,7 @@ function createApp({
   v1.use(authRouter);
   v1.use(phoneRouter);
   v1.use(meRouter);
+  v1.use(credentialsRouter);
   v1.use(notFound);
   app.use('/v1', v1);
 

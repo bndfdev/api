@@ -8,6 +8,27 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-23: Re-authentication and password change
+
+**Existing data affected:** `users` gets no new field. On a password change through `PUT /v1/me/password` the new code writes the existing `password` and `passwordAlgo` (argon2id) and the PR 3 lock fields (`loginFailedCount`, `loginFailedSince`, `loginLockedUntil`, cleared), plus `updatedAt`, only if the stored `password` is still the one the request was checked against. A wrong password at `POST /v1/auth/reauthenticate` or in a password change updates the same lock fields as a failed login. Other devices' `sessions` are revoked with `revokeReason: 'password_changed'` (an existing field).
+
+**New collection**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `reauth_tokens` | SHA-256 hashes of single-use re-authentication tokens (valid 5 minutes), with the user and session each was issued to | `tokenHash` unique; `{expiresAt: 1}` TTL | Deleted when they expire |
+
+**No index changes on existing collections.**
+
+**Rollback:**
+- Stop the new code.
+- Drop `reauth_tokens`.
+- Passwords changed through v1 are argon2id, which the old `/user/login` cannot check (as in PR 3).
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-03: Profile, onboarding progress and terms (PR 5)
 
 **Existing data affected:** `onboardingCompletedAt` (below) is set once on an account the first time it is read with every onboarding step done or skipped. Otherwise nothing until a user edits their profile. Then the new code writes these existing `users` fields, in v1 formats:

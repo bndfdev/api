@@ -162,6 +162,20 @@ async function setPassword(userId, { hash, algo, at }) {
   return result.matchedCount === 1;
 }
 
+/**
+ * Change the password (PUT /me/password), but only if the stored `password` is still `oldHash` (null for an
+ * account that has none), so of two changes made from the same password only one is saved. Clears the
+ * password-login lock like `setPassword`.
+ * @returns {Promise<boolean>} false when the password changed in the meantime, or there is no such user
+ */
+async function changePassword(userId, { oldHash, hash, algo, at }) {
+  const result = await User.updateOne(
+    { _id: userId, password: oldHash ?? null },
+    { $set: { password: hash, passwordAlgo: algo, loginFailedCount: 0, loginFailedSince: null, loginLockedUntil: null, updatedAt: new Date(at) } },
+  );
+  return result.matchedCount === 1;
+}
+
 /** The account that has this E.164 number in `phone` (verified or not), or null. */
 function findByPhone(e164) {
   return User.findOne({ phone: e164 }).select('_id phone phoneVerifiedAt').lean();
@@ -239,4 +253,4 @@ async function markOnboardingStep(userId, step, status, at) {
   );
 }
 
-module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
