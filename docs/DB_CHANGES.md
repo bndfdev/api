@@ -13,6 +13,7 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 **Existing data affected:**
 - **`users`: existing fields the new code now writes**, only for the account that changes its email, once the code sent to the new address is accepted: `email` (the new address, normalised: trimmed, lowercase, punycode domain), `emailVerified: true` and `updatedAt`. The write only applies if the stored `email` is still the one read just before, so a change made at the same time is never overwritten. The unique index on `email` (already there) refuses an address another account holds; an older account holding it in another case is found first through the existing `email_case_insensitive` index.
 - **`challenges`: one new value** in `purpose`, `change_email` (sent by email, with the account's `userId` set, as for `phone_verification`). The model's allowed list is widened (schema only; no stored document changes).
+- **`reauth_tokens`** (from the re-authentication entry below): `POST /v1/me/email/verification` marks the request's token used (`usedAt`), as a password change does, and sets `usedAt` back to null when the request then fails, so the token can be sent again.
 
 **No new collections, fields or indexes.**
 

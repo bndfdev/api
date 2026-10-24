@@ -14,7 +14,10 @@ const { createAuthService } = require('../src/modules/auth/service');
 const { createAuthRouter } = require('../src/modules/auth/routes');
 const { createEmailChangeService } = require('../src/modules/email/service');
 const { createEmailRouter, LIMITS } = require('../src/modules/email/routes');
-const { createReauthCheck } = require('../src/modules/reauth/check');
+const { createCredentialsService } = require('../src/modules/credentials/service');
+const { createCredentialsRouter } = require('../src/modules/credentials/routes');
+const { createReauthTokenService } = require('../src/modules/reauthTokens/service');
+const { createReauthCheck } = require('../src/modules/reauthTokens/check');
 const { maskDestination } = require('../src/lib/destination');
 const { emailMessage, noticeEmail } = require('../src/providers/messages');
 const { createMemoryEmailProvider } = require('../src/providers/email/memory');
@@ -22,42 +25,34 @@ const { createMemorySmsProvider } = require('../src/providers/sms/memory');
 const passwords = require('../src/lib/passwords');
 const User = require('../models/User');
 const Challenge = require('../models/Challenge');
+const ReauthToken = require('../models/ReauthToken');
+const { sha256 } = require('../src/lib/secrets');
 const db = require('./support/db');
 const { assertProblem, makeUser, signIn, CLIENT } = require('./support/api');
 
-const MINUTE = 60 * 1000;
+const SECOND = 1000;
+const MINUTE = 60 * SECOND;
 const PASSWORD = 'Correct-Horse-9';
 const silent = { debug() {}, info() {}, warn() {}, error() {} };
 const mail = createMemoryEmailProvider();
 const sms = createMemorySmsProvider();
 
-// ---------------------------------------------------------------------------
-// A stand-in for POST /auth/reauthenticate (built in the change-password work): tokens it "issued", each for one
-// user and session, valid 5 minutes, as the spec describes the reauth token.
-// ---------------------------------------------------------------------------
-const reauthTokens = new Map();
-function issueReauth(who, { expiresInMs = 5 * MINUTE } = {}) {
-  const token = `rat_${crypto.randomBytes(24).toString('base64url')}`;
-  reauthTokens.set(token, { userId: String(who.user._id), sessionId: who.session.id, expiresAt: Date.now() + expiresInMs });
-  return token;
-}
-const fakeReauth = createReauthCheck({
-  async verifyToken(token, { userId, sessionId }) {
-    const issued = reauthTokens.get(token);
-    return Boolean(issued) && issued.userId === userId && issued.sessionId === sessionId && issued.expiresAt > Date.now();
-  },
-});
+// The clock of the reauth tokens (issued and checked): the real time, unless a test sets `at` (epoch ms).
+const clock = { at: null, now: () => clock.at ?? Date.now() };
+const reauthTokens = createReauthTokenService({ now: clock.now });
 
-/** An app with memory providers and the reauth stand-in (or `reauth`). */
-function buildApp({ reauth = fakeReauth, codesConfig } = {}) {
+/** An app with memory providers, and the real reauth tokens on `clock`. */
+function buildApp({ codesConfig } = {}) {
   const cfg = codesConfig ? { ...config, codes: { ...config.codes, ...codesConfig } } : config;
   const challenges = createChallengeService({ config: cfg, emailProvider: mail, smsProvider: sms, logger: silent });
   const emailChange = createEmailChangeService({ challenges, emailProvider: mail, logger: silent });
   const auth = createAuthService({ challenges, emailChange, emailProvider: mail, logger: silent });
+  const credentials = createCredentialsService({ now: clock.now, reauthTokens, emailProvider: mail, logger: silent });
   return createApp({
     trustProxy: 1,
     authRouter: createAuthRouter({ service: auth }),
-    emailRouter: createEmailRouter({ service: emailChange, reauth }),
+    emailRouter: createEmailRouter({ service: emailChange, reauth: createReauthCheck({ tokens: reauthTokens, logger: silent }) }),
+    credentialsRouter: createCredentialsRouter({ service: credentials }),
   });
 }
 const app = buildApp();
@@ -78,7 +73,7 @@ beforeEach(async () => {
   await db.clear();
   mail.clear();
   sms.clear();
-  reauthTokens.clear();
+  clock.at = null;
 });
 after(db.disconnect);
 
@@ -86,24 +81,33 @@ let counter = 0;
 const uniqueEmail = (prefix = 'user') => `${prefix}${(counter += 1)}@example.com`;
 const ipFor = (n) => `10.7.${(n >> 8) & 255}.${n & 255}`;
 
-/** A signed-in account (its own install and IP) with a password, and a fresh reauth token. */
+/** A user with the password PASSWORD. */
+const passwordUser = async (extra = {}) =>
+  makeUser({ email: uniqueEmail('old'), password: await passwords.hash(PASSWORD), passwordAlgo: 'argon2id', ...extra });
+/** A signed-in account (its own install and IP) with a password. */
 async function account(extra = {}) {
   counter += 1;
-  const user = await makeUser({ email: uniqueEmail('old'), password: await passwords.hash(PASSWORD), passwordAlgo: 'argon2id', ...extra });
-  return session(user);
+  return session(await passwordUser(extra));
 }
-/** Another session (install) of the same user, with its own reauth token. */
+/** Another session (install) of the same user. */
 async function session(user) {
   counter += 1;
   const signedIn = await signIn(user);
   signedIn.headers['X-Forwarded-For'] = ipFor(counter);
-  signedIn.reauth = issueReauth(signedIn);
   return signedIn;
 }
 
-const withReauth = (who) => ({ ...who.headers, 'X-Reauth-Token': who.reauth });
-const startChange = (who, email, { headers = withReauth(who), target = app } = {}) =>
-  request(target).post('/v1/me/email/verification').set(headers).send({ email });
+/** A real reauth token for this signed-in device: POST /v1/auth/reauthenticate with the account's password. */
+async function reauthFor(who) {
+  const res = await request(app).post('/v1/auth/reauthenticate').set(who.headers).send({ password: PASSWORD });
+  assert.equal(res.status, 200, res.text);
+  return res.body.reauthToken;
+}
+const withReauth = async (who, token) => ({ ...who.headers, 'X-Reauth-Token': token ?? await reauthFor(who) });
+/** POST /v1/me/email/verification; with a fresh reauth token unless `headers` are given. */
+const startChange = async (who, email, { headers, target = app } = {}) =>
+  request(target).post('/v1/me/email/verification').set(headers ?? await withReauth(who)).send({ email });
+const usedAt = async (token) => (await ReauthToken.findOne({ tokenHash: sha256(token) }).lean()).usedAt;
 const verify = (headers, challengeId, code, target = app) =>
   request(target).post(`/v1/auth/challenges/${challengeId}/verify`).set(headers).send({ code });
 const login = (email, password = PASSWORD) => {
@@ -259,34 +263,100 @@ test('resend needs the owner\'s token but no reauth token, and sends a new code 
 test('without a valid reauth token it is 401 REAUTH_REQUIRED and nothing is sent', async () => {
   const me = await account();
   const other = await account();
+  const myOtherDevice = await session(me.user);
   const newEmail = uniqueEmail('new');
+  const theirs = await reauthFor(other);
+  // A token from another session of the same user is not this session's.
+  const otherDevices = await reauthFor(myOtherDevice);
   const cases = {
     missing: me.headers,
     empty: { ...me.headers, 'X-Reauth-Token': '' },
     unknown: { ...me.headers, 'X-Reauth-Token': 'rat_made-up' },
-    'another account\'s': { ...me.headers, 'X-Reauth-Token': other.reauth },
-    'expired': { ...me.headers, 'X-Reauth-Token': issueReauth(me, { expiresInMs: -1 }) },
+    'another account\'s': { ...me.headers, 'X-Reauth-Token': theirs },
+    'another session\'s': { ...me.headers, 'X-Reauth-Token': otherDevices },
     'too long': { ...me.headers, 'X-Reauth-Token': 'x'.repeat(5000) },
+    'sent under another name': { ...me.headers, 'X-Reauth': await reauthFor(me) },
   };
-  // A token from another session of the same user is not this session's.
-  const myOtherDevice = await session(me.user);
-  cases['another session\'s'] = { ...me.headers, 'X-Reauth-Token': myOtherDevice.reauth };
   for (const [name, headers] of Object.entries(cases)) {
     const res = await startChange(me, newEmail, { headers });
     assertProblem(res, 401, 'REAUTH_REQUIRED');
     assert.equal(res.headers['www-authenticate'], undefined, `${name}: not a bearer-token problem, so the app does not sign out`);
   }
   assert.equal(mail.sent.length, 0);
+  // The refusals used up nobody's token: each still works for its own session.
+  assert.equal((await startChange(other, uniqueEmail('new'), { headers: await withReauth(other, theirs) })).status, 202);
+  assert.equal((await startChange(myOtherDevice, uniqueEmail('new'), { headers: await withReauth(myOtherDevice, otherDevices) })).status, 202);
 });
 
-test('the real check refuses every token until /auth/reauthenticate is merged (fails closed)', async () => {
-  const realApp = buildApp({ reauth: createReauthCheck() });
+test('a token issued to another user is refused, even with that user\'s session id on it', async () => {
   const me = await account();
-  assertProblem(await startChange(me, uniqueEmail('new'), { target: realApp }), 401, 'REAUTH_REQUIRED');
+  const other = await account();
+  // Issued to the other user for this very session: only the user it names may use it.
+  const { reauthToken } = await reauthTokens.issue({ userId: String(other.user._id), sessionId: me.session.id });
+  assertProblem(await startChange(me, uniqueEmail('new'), { headers: await withReauth(me, reauthToken) }), 401, 'REAUTH_REQUIRED');
+  assert.equal(await usedAt(reauthToken), null);
   assert.equal(mail.sent.length, 0);
-  // The default export is the same closed check.
-  const check = require('../src/modules/reauth/check');
-  await assert.rejects(check.assertReauth({ get: () => 'rat_x', auth: { userId: 'u', sessionId: 's' } }), { code: 'REAUTH_REQUIRED' });
+});
+
+test('a token is good for 5 minutes after POST /auth/reauthenticate and refused from then on', async () => {
+  const me = await account();
+  clock.at = Math.floor(Date.now() / SECOND) * SECOND;
+  const late = await reauthFor(me);
+  const inTime = await reauthFor(me);
+  clock.at += 5 * MINUTE;
+  assertProblem(await startChange(me, uniqueEmail('new'), { headers: await withReauth(me, late) }), 401, 'REAUTH_REQUIRED');
+  assert.equal(mail.sent.length, 0);
+  clock.at -= SECOND;
+  assert.equal((await startChange(me, uniqueEmail('new'), { headers: await withReauth(me, inTime) })).status, 202);
+});
+
+test('single-use: the token from POST /auth/reauthenticate is used up by the code being sent', async () => {
+  const me = await account();
+  const token = await reauthFor(me);
+  const first = await startChange(me, uniqueEmail('new'), { headers: await withReauth(me, token) });
+  assert.equal(first.status, 202, first.text);
+  assert.ok(await usedAt(token), 'the token is used up');
+  assertProblem(await startChange(me, uniqueEmail('new'), { headers: await withReauth(me, token) }), 401, 'REAUTH_REQUIRED');
+  assert.equal(mail.sent.length, 1);
+});
+
+test('single-use: two requests at once with one token, only one gets through', async () => {
+  const me = await account();
+  const headers = await withReauth(me);
+  const results = await Promise.all([startChange(me, uniqueEmail('new'), { headers }), startChange(me, uniqueEmail('new'), { headers })]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [202, 401]);
+  assert.equal(mail.sent.length, 1);
+});
+
+test('single-use, shared with PUT /me/password: a token used by one is refused by the other', async () => {
+  // An account without a usable password (social-only), so PUT /me/password takes a reauth token too.
+  const me = await session(await makeUser({ email: uniqueEmail('old') }));
+  const changePassword = (token) => request(app).put('/v1/me/password').set({ ...me.headers, 'X-Reauth-Token': token })
+    .send({ newPassword: 'Another-Pass-42!' });
+
+  const usedHere = (await reauthTokens.issue({ userId: String(me.user._id), sessionId: me.session.id })).reauthToken;
+  assert.equal((await startChange(me, uniqueEmail('new'), { headers: await withReauth(me, usedHere) })).status, 202);
+  assertProblem(await changePassword(usedHere), 401, 'REAUTH_REQUIRED');
+
+  const usedThere = (await reauthTokens.issue({ userId: String(me.user._id), sessionId: me.session.id })).reauthToken;
+  assert.equal((await changePassword(usedThere)).status, 204);
+  assertProblem(await startChange(me, uniqueEmail('new'), { headers: await withReauth(me, usedThere) }), 401, 'REAUTH_REQUIRED');
+  assert.equal(mail.sent.length, 1);
+});
+
+test('a request that fails after the check gives its token back: the user fixes the address without the password', async () => {
+  const me = await account();
+  const other = await account();
+  const token = await reauthFor(me);
+  const headers = await withReauth(me, token);
+  assertProblem(await startChange(me, me.user.email, { headers }), 409, 'CONFLICT');
+  assertProblem(await startChange(me, other.user.email, { headers }), 409, 'EMAIL_TAKEN');
+  assertProblem(await startChange(me, 'a..b@example.com', { headers }), 422, 'EMAIL_INVALID');
+  mail.failNext();
+  assertProblem(await startChange(me, uniqueEmail('new'), { headers }), 503, 'EMAIL_DELIVERY_FAILED');
+  assert.equal(await usedAt(token), null, 'still unused');
+  assert.equal((await startChange(me, uniqueEmail('new'), { headers })).status, 202);
+  assert.ok(await usedAt(token));
 });
 
 test('signed out is 401 UNAUTHENTICATED; a guest is 403 GUEST_NOT_ALLOWED, before the reauth check', async () => {
@@ -462,18 +532,19 @@ test('Idempotency-Key: a repeat gets the same answer, replayed', async () => {
   const me = await account();
   const newEmail = uniqueEmail('new');
   const key = crypto.randomUUID();
-  const first = await startChange(me, newEmail, { headers: { ...withReauth(me), 'Idempotency-Key': key } });
-  const repeat = await startChange(me, newEmail, { headers: { ...withReauth(me), 'Idempotency-Key': key } });
+  // The repeat comes with a new reauth token: the first one was used up by the first request.
+  const first = await startChange(me, newEmail, { headers: { ...(await withReauth(me)), 'Idempotency-Key': key } });
+  const repeat = await startChange(me, newEmail, { headers: { ...(await withReauth(me)), 'Idempotency-Key': key } });
   assert.equal(first.status, 202);
   assert.equal(repeat.status, 202);
   assert.deepEqual(repeat.body, first.body);
   assert.equal(repeat.headers['idempotent-replayed'], 'true');
   assert.equal(mail.sent.length, 1);
-  assertProblem(await startChange(me, uniqueEmail('other'), { headers: { ...withReauth(me), 'Idempotency-Key': key } }), 422, 'IDEMPOTENCY_KEY_REUSED');
+  assertProblem(await startChange(me, uniqueEmail('other'), { headers: { ...(await withReauth(me)), 'Idempotency-Key': key } }), 422, 'IDEMPOTENCY_KEY_REUSED');
 });
 
 test('5 codes per address per 24 h: the sixth is 429 SEND_LIMIT_REACHED', async () => {
-  const user = await makeUser({ email: uniqueEmail('old') });
+  const user = await passwordUser();
   const newEmail = uniqueEmail('new');
   for (let i = 0; i < 5; i += 1) {
     const res = await startChange(await session(user), newEmail);

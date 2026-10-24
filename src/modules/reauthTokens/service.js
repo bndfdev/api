@@ -73,4 +73,4 @@ function createReauthTokenService({ repo = defaultRepo, now = Date.now } = {}) {
   return { issue, consume, release };
 }
 
-module.exports = { createReauthTokenService, REAUTH_TOKEN_TTL_MS };
+module.exports = { createReauthTokenService, reauthRequired, REAUTH_TOKEN_TTL_MS };

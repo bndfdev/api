@@ -4,7 +4,7 @@ const { rateLimit, byUser } = require('../../middleware/rateLimit');
 const defaultAuth = require('../../middleware/requireAuth');
 const { accountOnly } = require('../../middleware/requireAuth');
 const { idempotency: defaultIdempotency } = require('../../middleware/idempotency');
-const defaultReauth = require('../reauth/check');
+const defaultReauth = require('../reauthTokens/check');
 const { createChallengeService } = require('../challenges/service');
 const { createEmailChangeService } = require('./service');
 
@@ -19,8 +19,10 @@ const LIMITS = Object.freeze({
 /**
  * Changing the account's email (`docs/api/paths/me.yaml`: meEmailVerification). Account-only: guests get 403
  * GUEST_NOT_ALLOWED. Needs a fresh X-Reauth-Token (401 REAUTH_REQUIRED otherwise), checked before anything is
- * counted. The code is checked by POST /auth/challenges/{id}/verify (auth module), with the owner's access token.
- * @param {{service?: object, auth?: {requireAuth: Function}, reauth?: {requireReauth: Function}, idempotency?: Function}} [deps]
+ * counted and used up only when the code is sent (202). The code is checked by POST /auth/challenges/{id}/verify
+ * (auth module), with the owner's access token.
+ * @param {{service?: object, auth?: {requireAuth: Function}, reauth?: {requireReauth: Function, giveBackOnError: Function},
+ *   idempotency?: Function}} [deps]
  *   Without `service`, the real one is built when the first request arrives.
  */
 function createEmailRouter({ service, auth = defaultAuth, reauth = defaultReauth, idempotency = defaultIdempotency } = {}) {
@@ -46,6 +48,8 @@ function createEmailRouter({ service, auth = defaultAuth, reauth = defaultReauth
       res.status(202).json(challenge);
     }),
   );
+  // A request that failed after the reauth check gets its token back.
+  router.use('/me/email/verification', reauth.giveBackOnError);
 
   return router;
 }
