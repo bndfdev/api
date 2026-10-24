@@ -8,6 +8,23 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-24: Change email
+
+**Existing data affected:**
+- **`users`: existing fields the new code now writes**, only for the account that changes its email, once the code sent to the new address is accepted: `email` (the new address, normalised: trimmed, lowercase, punycode domain), `emailVerified: true` and `updatedAt`. The write only applies if the stored `email` is still the one read just before, so a change made at the same time is never overwritten. The unique index on `email` (already there) refuses an address another account holds; an older account holding it in another case is found first through the existing `email_case_insensitive` index.
+- **`challenges`: one new value** in `purpose`, `change_email` (sent by email, with the account's `userId` set, as for `phone_verification`). The model's allowed list is widened (schema only; no stored document changes).
+
+**No new collections, fields or indexes.**
+
+**Rollback:**
+- Stop the new code.
+- Challenges with `purpose: 'change_email'` are deleted by the existing TTL index on `purgeAt`; nothing else needs removing.
+- Changed emails stay changed: `email` keeps its type and format, so the old API reads it as before.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-23: Re-authentication and password change
 
 **Existing data affected:** `users` gets no new field. On a password change through `PUT /v1/me/password` the new code writes the existing `password` and `passwordAlgo` (argon2id) and the PR 3 lock fields (`loginFailedCount`, `loginFailedSince`, `loginLockedUntil`, cleared), plus `updatedAt`, only if the stored `password` is still the one the request was checked against. A wrong password at `POST /v1/auth/reauthenticate` or in a password change updates the same lock fields as a failed login. Other devices' `sessions` are revoked with `revokeReason: 'password_changed'` (an existing field).

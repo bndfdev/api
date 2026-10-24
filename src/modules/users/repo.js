@@ -176,6 +176,26 @@ async function changePassword(userId, { oldHash, hash, algo, at }) {
   return result.matchedCount === 1;
 }
 
+/**
+ * Make `email` (normalised) the user's verified email, but only if the stored email is still `from`, so a change
+ * made at the same time elsewhere is never overwritten (and its old address is the one that gets the notice).
+ * @returns {Promise<'saved' | 'taken' | 'stale' | 'missing'>} 'taken' when the unique index on `email` refuses it;
+ *   'stale' when the email is no longer `from`
+ */
+async function setEmail(userId, { from, email, at }) {
+  try {
+    const result = await User.updateOne(
+      { _id: userId, email: from },
+      { $set: { email, emailVerified: true, updatedAt: new Date(at) } },
+    );
+    if (result.matchedCount === 1) return 'saved';
+    return (await User.exists({ _id: userId })) ? 'stale' : 'missing';
+  } catch (err) {
+    if (err && err.code === DUPLICATE_KEY) return 'taken';
+    throw err;
+  }
+}
+
 /** The account that has this E.164 number in `phone` (verified or not), or null. */
 function findByPhone(e164) {
   return User.findOne({ phone: e164 }).select('_id phone phoneVerifiedAt').lean();
@@ -253,4 +273,4 @@ async function markOnboardingStep(userId, step, status, at) {
   );
 }
 
-module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
