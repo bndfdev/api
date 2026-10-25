@@ -1370,8 +1370,9 @@ paths:
       description: |
         Used by the birthday, gender and Your Profile (name) screens, and by
         Settings: Account Information (Story Translation), Location, Stories
-        Language (`preferredLanguage`) and Privacy > Account Privacy. Saving a
-        field completes its onboarding step automatically.
+        Language (`preferredLanguage`), Privacy > Account Privacy and Location
+        Services (`locationSharing`). Saving a field completes its onboarding
+        step automatically.
 
         - **Age gate:** a date of birth under `minimumAge` (13) is rejected
           with `AGE_REQUIREMENT_NOT_MET`; the account is flagged and the app
@@ -1417,6 +1418,9 @@ paths:
               privacy:
                 value:
                   accountPrivacy: followers
+              locationSharing:
+                value:
+                  locationSharing: while_using
           application/json:
             schema:
               $ref: '#/components/schemas/UserUpdate'
@@ -3584,6 +3588,18 @@ components:
       enum:
         - public
         - followers
+    LocationSharing:
+      type: string
+      description: |
+        Account > Location Sharing, chosen on the Location Services screen
+        (Figma 1627:73609): `always` is "Always allow", `while_using` is "Only
+        when app is open", `never` (the default) is "Never". It records the
+        user's choice only; the device's own location permission is asked for
+        by the app.
+      enum:
+        - always
+        - while_using
+        - never
     OnboardingStepName:
       type: string
       description: Steps of the Figma onboarding flow, in order.
@@ -3670,6 +3686,7 @@ components:
         - storyTranslation
         - location
         - accountPrivacy
+        - locationSharing
         - onboarding
         - consents
         - createdAt
@@ -3734,6 +3751,8 @@ components:
             - Seattle, WA
         accountPrivacy:
           $ref: '#/components/schemas/AccountPrivacy'
+        locationSharing:
+          $ref: '#/components/schemas/LocationSharing'
         avatar:
           oneOf:
             - $ref: '#/components/schemas/Image'
@@ -4068,6 +4087,8 @@ components:
             characters is `LOCATION_INVALID`. `null` clears it.
         accountPrivacy:
           $ref: '#/components/schemas/AccountPrivacy'
+        locationSharing:
+          $ref: '#/components/schemas/LocationSharing'
     PasswordChangeRequest:
       type: object
       required:

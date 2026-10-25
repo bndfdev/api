@@ -75,11 +75,14 @@ const userSchema = new mongoose.Schema({
   // Separate from `profileImage` / `profileBanner` above, which the old API and admin panel keep using.
   avatar: { type: imageSchema(), default: undefined },
   banner: { type: imageSchema(), default: undefined },
-  // Settings (v1, PATCH /me). Absent means the default: Story Translation off, no location, a public account.
+  // Settings (v1, PATCH /me). Absent means the default: Story Translation off, no location, a public account,
+  // location never shared.
   storyTranslation: { type: Boolean },
   // The free-text location from the Location screen, trimmed, 1 to 100 characters.
   location: { type: String },
   accountPrivacy: { type: String, enum: ['public', 'followers'] },
+  // The Location Services choice: "Always allow", "Only when app is open" or "Never".
+  locationSharing: { type: String, enum: ['always', 'while_using', 'never'] },
   // The notification switches (v1, /me/notification-settings). Only the switches the user changed are stored; a
   // missing one is on. No default, so documents created through this model do not get an empty object.
   notificationSettings: {

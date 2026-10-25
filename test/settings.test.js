@@ -164,7 +164,7 @@ test('location: control, zero-width and direction characters are LOCATION_INVALI
 
 test('guests cannot change the settings', async () => {
   const g = await guest();
-  for (const body of [{ location: 'Seattle' }, { storyTranslation: true }, { accountPrivacy: 'followers' }]) {
+  for (const body of [{ location: 'Seattle' }, { storyTranslation: true }, { accountPrivacy: 'followers' }, { locationSharing: 'always' }]) {
     assertProblem(await patchMe(g, body), 403, 'GUEST_NOT_ALLOWED');
   }
 });
@@ -191,6 +191,65 @@ test('stored values not in the spec\'s shape read as the defaults', async () => 
   assert.deepEqual([res.body.storyTranslation, res.body.location, res.body.accountPrivacy], [false, null, 'public']);
   await User.collection.updateOne({ _id: me.user._id }, { $set: { location: '   ' } });
   assert.equal((await getMe(me)).body.location, null);
+});
+
+// ---------------------------------------------------------------------------
+// User.locationSharing (Location Services)
+// ---------------------------------------------------------------------------
+
+test('locationSharing is never by default, for accounts and guests, and is not stored until chosen', async () => {
+  const me = await account();
+  const res = await getMe(me);
+  assertMatchesSpec('User', res.body);
+  assert.equal(res.body.locationSharing, 'never');
+  assert.equal(Object.hasOwn(await stored(me), 'locationSharing'), false);
+  const g = await guest();
+  const mine = (await getMe(g)).body;
+  assertMatchesSpec('User', mine);
+  assert.equal(mine.locationSharing, 'never');
+});
+
+test('each Location Services choice is saved and read back; other fields keep their value', async () => {
+  const me = await account();
+  await patchMe(me, { accountPrivacy: 'followers' });
+  for (const choice of ['always', 'while_using', 'never', 'while_using']) {
+    const res = await patchMe(me, { locationSharing: choice });
+    assert.equal(res.status, 200, res.text);
+    assertMatchesSpec('User', res.body);
+    assert.equal(res.body.locationSharing, choice);
+    assert.equal((await stored(me)).locationSharing, choice);
+    assert.equal((await getMe(me)).body.locationSharing, choice);
+    assert.equal(res.body.accountPrivacy, 'followers');
+  }
+});
+
+test('locationSharing outside the enum is refused (validator) and changes nothing', async () => {
+  const me = await account();
+  await patchMe(me, { locationSharing: 'always' });
+  for (const locationSharing of ['sometimes', 'Always', 'while-using', 'whileUsing', '', null, true, 1]) {
+    assertProblem(await patchMe(me, { locationSharing }), 422, 'VALIDATION_FAILED');
+  }
+  assert.equal((await stored(me)).locationSharing, 'always');
+});
+
+test('If-Match covers locationSharing', async () => {
+  const me = await account();
+  const first = await getMe(me);
+  assert.equal((await patchMe(me, { locationSharing: 'always' })).status, 200);
+  assertProblem(await patchMe(me, { name: 'Mine' }, { 'If-Match': first.headers.etag }), 412, 'PRECONDITION_FAILED');
+  assertProblem(await patchMe(me, { locationSharing: 'never' }, { 'If-Match': first.headers.etag }), 412, 'PRECONDITION_FAILED');
+  const fresh = await getMe(me);
+  assert.equal((await patchMe(me, { locationSharing: 'never' }, { 'If-Match': fresh.headers.etag })).status, 200);
+});
+
+test('a stored locationSharing outside the enum reads as never', async () => {
+  const me = await account();
+  for (const value of ['sometimes', 'ALWAYS', 42, null]) {
+    await User.collection.updateOne({ _id: me.user._id }, { $set: { locationSharing: value } });
+    const res = await getMe(me);
+    assertMatchesSpec('User', res.body);
+    assert.equal(res.body.locationSharing, 'never', String(value));
+  }
 });
 
 // ---------------------------------------------------------------------------

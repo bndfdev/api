@@ -15,8 +15,8 @@
  *   DATE_OF_BIRTH_LOCKED (support can change it).
  * - gender: one of the spec's four, or `null`.
  * - language: one of the supported languages (LANGUAGE_UNSUPPORTED).
- * - settings: `storyTranslation` (a boolean) and `accountPrivacy` (`public` or `followers`; the validator checks
- *   both); `location` is trimmed with inner whitespace collapsed, Unicode NFC, then 1 to 100 characters with no
+ * - settings: `storyTranslation` (a boolean), `accountPrivacy` (`public` or `followers`) and `locationSharing`
+ *   (`always`, `while_using` or `never`); the validator checks all three. `location` is trimmed with inner whitespace collapsed, Unicode NFC, then 1 to 100 characters with no
  *   control or invisible characters (LOCATION_INVALID, see FORBIDDEN_IN_LOCATION); `null` removes it.
  * - `If-Match` with the ETag from GET or PATCH /me refuses the change with 412 if the profile (name, date of
  *   birth, gender, language and the settings above) changed since. Other changes (terms, onboarding steps,
@@ -171,6 +171,7 @@ function createMeService({
     if (Object.hasOwn(patch, 'gender')) set.gender = patch.gender;
     if (Object.hasOwn(patch, 'storyTranslation')) set.storyTranslation = patch.storyTranslation;
     if (Object.hasOwn(patch, 'accountPrivacy')) set.accountPrivacy = patch.accountPrivacy;
+    if (Object.hasOwn(patch, 'locationSharing')) set.locationSharing = patch.locationSharing;
     if (Object.hasOwn(patch, 'location')) {
       if (patch.location === null) unset.push('location');
       else set.location = cleanLocation(patch.location);

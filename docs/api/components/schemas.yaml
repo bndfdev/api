@@ -848,7 +848,7 @@ AccountType:
 User:
   type: object
   description: The signed-in account as its owner sees it (private view).
-  required: [id, accountType, status, storyTranslation, location, accountPrivacy, onboarding, consents, createdAt, updatedAt]
+  required: [id, accountType, status, storyTranslation, location, accountPrivacy, locationSharing, onboarding, consents, createdAt, updatedAt]
   properties:
     id:
       $ref: '#/Id'
@@ -902,6 +902,8 @@ User:
       examples: ['Seattle, WA']
     accountPrivacy:
       $ref: '#/AccountPrivacy'
+    locationSharing:
+      $ref: '#/LocationSharing'
     avatar:
       oneOf:
         - $ref: '#/Image'
@@ -961,6 +963,8 @@ UserUpdate:
         characters is `LOCATION_INVALID`. `null` clears it.
     accountPrivacy:
       $ref: '#/AccountPrivacy'
+    locationSharing:
+      $ref: '#/LocationSharing'
 
 AccountPrivacy:
   type: string
@@ -968,6 +972,16 @@ AccountPrivacy:
     Privacy > Account Privacy. `followers` is the "Restrict to Followers"
     toggle turned on; `public` (the default) is off.
   enum: [public, followers]
+
+LocationSharing:
+  type: string
+  description: |
+    Account > Location Sharing, chosen on the Location Services screen
+    (Figma 1627:73609): `always` is "Always allow", `while_using` is "Only
+    when app is open", `never` (the default) is "Never". It records the
+    user's choice only; the device's own location permission is asked for
+    by the app.
+  enum: [always, while_using, never]
 
 AccountDeletionRequest:
   type: object

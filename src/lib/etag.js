@@ -6,7 +6,9 @@
 const crypto = require('node:crypto');
 
 /** The fields of `User` that PATCH /me changes: what an If-Match on /me protects. */
-const PROFILE_FIELDS = Object.freeze(['name', 'dateOfBirth', 'gender', 'preferredLanguage', 'storyTranslation', 'location', 'accountPrivacy']);
+const PROFILE_FIELDS = Object.freeze([
+  'name', 'dateOfBirth', 'gender', 'preferredLanguage', 'storyTranslation', 'location', 'accountPrivacy', 'locationSharing',
+]);
 
 const hashOf = (value, length) => crypto.createHash('sha256').update(JSON.stringify(value)).digest('base64url').slice(0, length);
 

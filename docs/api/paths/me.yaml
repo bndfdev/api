@@ -38,8 +38,9 @@ me:
     description: |
       Used by the birthday, gender and Your Profile (name) screens, and by
       Settings: Account Information (Story Translation), Location, Stories
-      Language (`preferredLanguage`) and Privacy > Account Privacy. Saving a
-      field completes its onboarding step automatically.
+      Language (`preferredLanguage`), Privacy > Account Privacy and Location
+      Services (`locationSharing`). Saving a field completes its onboarding
+      step automatically.
 
       - **Age gate:** a date of birth under `minimumAge` (13) is rejected
         with `AGE_REQUIREMENT_NOT_MET`; the account is flagged and the app
@@ -80,6 +81,8 @@ me:
               value: { location: 'Seattle, WA' }
             privacy:
               value: { accountPrivacy: followers }
+            locationSharing:
+              value: { locationSharing: while_using }
         application/json:
           schema:
             $ref: '../components/schemas.yaml#/UserUpdate'

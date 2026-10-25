@@ -32,6 +32,7 @@ const GENDERS = Object.freeze({ female: 'female', male: 'male', non_binary: 'non
 /** The longest location, in characters (code points): PATCH /me and the `User` view. */
 const LOCATION_MAX_LENGTH = 100;
 const ACCOUNT_PRIVACY = Object.freeze(['public', 'followers']);
+const LOCATION_SHARING = Object.freeze(['always', 'while_using', 'never']);
 
 const orNull = (value, pattern) => (typeof value === 'string' && pattern.test(value) ? value : null);
 /** The stored location as the spec's `User.location`: a non-empty string of at most 100 characters, or null. */
@@ -41,6 +42,7 @@ const settingsOf = (doc) => ({
   storyTranslation: doc.storyTranslation === true,
   location: locationOrNull(doc.location),
   accountPrivacy: ACCOUNT_PRIVACY.includes(doc.accountPrivacy) ? doc.accountPrivacy : 'public',
+  locationSharing: LOCATION_SHARING.includes(doc.locationSharing) ? doc.locationSharing : 'never',
 });
 /**
  * Whether the number was proved with a code accepted by this API (`phoneVerifiedAt`). The old API's
@@ -199,5 +201,5 @@ function isSuspended(user, at) {
 
 module.exports = {
   toImage, toUserResponse, toGuestResponse, buildOnboarding, isSuspended,
-  ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH, LOCATION_MAX_LENGTH, ACCOUNT_PRIVACY,
+  ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH, LOCATION_MAX_LENGTH, ACCOUNT_PRIVACY, LOCATION_SHARING,
 };

@@ -19,6 +19,7 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 | `storyTranslation` | Boolean, Account Information > Story Translation. Absent = `false`. |
 | `location` | String, the Location screen's free text, stored trimmed (1 to 100 characters). Removed (`$unset`) when the user clears it. |
 | `accountPrivacy` | `'public'` or `'followers'` (Privacy > Restrict to Followers). Absent = `'public'`. |
+| `locationSharing` | `'always'`, `'while_using'` or `'never'` (Account > Location Sharing, the Location Services screen). Absent, or any other value, reads as `'never'`. Added in a follow-up (`feat/api-location-sharing`). It stores only the user's choice, never a position. |
 | `notificationSettings` | Sub-document (no `_id`) with the switches the user changed (`likesAndComments`, `followRequests`, `profileEngagement`, `contributorMetrics`, `yourEngagement`, `newOrTrendingContent`, each a boolean) and `updatedAt`. A switch never saved is on. Stored on the user (six booleans, so the document stays small, and it goes with the account) rather than in its own collection. |
 
 `PATCH /v1/me` also writes the existing `updatedAt` and `profileRevision`, as for the other profile fields. Values in another shape (written elsewhere) read as the defaults.
@@ -38,7 +39,7 @@ The `hidden` filter of `GET /v1/me/content` (`hidden: true`, or `hidden: {$ne: t
 **Rollback:**
 - Stop the new code.
 - Drop `contents`.
-- The new `users` fields can stay (the old API and the admin panel ignore them), or be removed with `db.users.updateMany({}, { $unset: { storyTranslation: '', location: '', accountPrivacy: '', notificationSettings: '' } })`.
+- The new `users` fields can stay (the old API and the admin panel ignore them), or be removed with `db.users.updateMany({}, { $unset: { storyTranslation: '', location: '', accountPrivacy: '', locationSharing: '', notificationSettings: '' } })`.
 
 **Reviewed by:** _pending (database owner)_
 
