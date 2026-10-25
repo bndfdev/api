@@ -34,9 +34,11 @@ me:
   patch:
     operationId: updateMe
     tags: [Account]
-    summary: Update name, date of birth, gender or language
+    summary: Update the profile and account settings
     description: |
-      Used by the birthday, gender and Your Profile (name) screens. Saving a
+      Used by the birthday, gender and Your Profile (name) screens, and by
+      Settings: Account Information (Story Translation), Location, Stories
+      Language (`preferredLanguage`) and Privacy > Account Privacy. Saving a
       field completes its onboarding step automatically.
 
       - **Age gate:** a date of birth under `minimumAge` (13) is rejected
@@ -48,10 +50,13 @@ me:
         1 March in non-leap years.
       - Once set, date of birth can be changed only once (typo fix) within
         30 days; after that `DATE_OF_BIRTH_LOCKED` (support can change it).
+      - `location` is trimmed (inner whitespace collapsed) and must then be
+        1 to 100 characters with no control or zero-width characters
+        (`LOCATION_INVALID`); `null` clears it.
       - Guests can set `preferredLanguage` only.
 
       Errors: stale `If-Match` (412), `DATE_OF_BIRTH_LOCKED` (409), `NAME_INVALID`, `DATE_OF_BIRTH_INVALID`,
-      `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED` (422),
+      `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED`, `LOCATION_INVALID` (422),
       `GUEST_NOT_ALLOWED` (403).
     parameters:
       - $ref: '../components/parameters.yaml#/ClientPlatform'
@@ -71,6 +76,10 @@ me:
               value: { gender: non_binary }
             name:
               value: { name: Amelia Jane }
+            location:
+              value: { location: 'Seattle, WA' }
+            privacy:
+              value: { accountPrivacy: followers }
         application/json:
           schema:
             $ref: '../components/schemas.yaml#/UserUpdate'
@@ -482,6 +491,11 @@ meInterests:
     operationId: getMyInterests
     tags: [Interests]
     summary: Get the user's selected interests
+    description: |
+      In the order chosen. Each item carries `followedAt`, when it was first
+      followed (`null` for selections saved before that was recorded). For
+      Settings > Your Interests sorted by follow time, use
+      `GET /interests/search?sort=recently_followed`.
     parameters:
       - $ref: '../components/parameters.yaml#/ClientPlatform'
       - $ref: '../components/parameters.yaml#/ClientVersion'
@@ -562,6 +576,197 @@ meInterest:
       '401': { $ref: '../components/responses.yaml#/Unauthorized' }
       '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
       '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meNotificationSettings:
+  get:
+    operationId: getNotificationSettings
+    tags: [Account]
+    summary: Get the notification switches
+    description: |
+      Settings > Notifications. A user who never saved them gets every
+      switch `true`. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The switches.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/NotificationSettings'
+            example:
+              likesAndComments: true
+              followRequests: true
+              profileEngagement: true
+              contributorMetrics: true
+              yourEngagement: true
+              newOrTrendingContent: true
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  patch:
+    operationId: updateNotificationSettings
+    tags: [Account]
+    summary: Change some notification switches
+    description: |
+      Send only the switches that change; the others keep their value.
+      Returns every switch. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/NotificationSettingsUpdate'
+          example:
+            followRequests: false
+        application/merge-patch+json:
+          schema:
+            $ref: '../components/schemas.yaml#/NotificationSettingsUpdate'
+    responses:
+      '200':
+        description: Every switch, after the change.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/NotificationSettings'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meContent:
+  get:
+    operationId: listMyContent
+    tags: [Content]
+    summary: List the user's own content
+    description: |
+      Profile tabs (All, Playlists, Albums, Songs, Stories) and Popular
+      Releases (`sort=popular&limit=3`), both with `hidden=false`, and
+      Privacy > Hide Content / Restrict Content (no `hidden`). This is the
+      owner's view: unless `hidden` filters them, hidden and followers-only
+      items are included, with their flags.
+
+      - `type`: `all` (default) or one content type.
+      - `sort`: `recent` (default; newest first), `popular` (most listens
+        first) or `title` (A to Z, ignoring case and accents). Ties keep a
+        stable order.
+      - `hidden`: `false` lists only items that are not hidden (the Profile
+        page: Popular Releases and the tabs), `true` only hidden ones;
+        absent lists both (the Privacy lists).
+      - `page.total` counts every item that matches `type` and `hidden`.
+      - A cursor only works for the same `type`, `hidden` and `sort` and for
+        24 hours (`CURSOR_INVALID`).
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - name: type
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [all, playlist, album, song, story]
+          default: all
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [recent, popular, title]
+          default: recent
+      - name: hidden
+        in: query
+        required: false
+        description: '`false`: only items that are not hidden; `true`: only hidden ones; absent: both.'
+        schema:
+          type: boolean
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: A page of the user's content.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/ContentPage'
+            example:
+              data:
+                - id: 6650f1c2a4b7e9d3c1f00b01
+                  type: album
+                  title: Late Night Drive
+                  image: { url: 'https://cdn.bondfire.app/c/late-night-drive.jpg', width: 512, height: 512, status: ready, blurhash: null }
+                  year: 2024
+                  songCount: 12
+                  durationSec: 2710
+                  listens: 48210
+                  badge: top10
+                  hidden: false
+                  followersOnly: false
+                  createdAt: '2026-09-27T10:15:00Z'
+              page: { nextCursor: null, hasMore: false, total: 1 }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meContentItem:
+  patch:
+    operationId: updateMyContent
+    tags: [Content]
+    summary: Hide or restrict one of the user's items
+    description: |
+      Privacy > Hide Content (`hidden`) and Restrict Content
+      (`followersOnly`). Send either or both.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+      another user's content).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ContentId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ContentUpdate'
+          example:
+            hidden: true
+        application/merge-patch+json:
+          schema:
+            $ref: '../components/schemas.yaml#/ContentUpdate'
+    responses:
+      '200':
+        description: The item after the change.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Content'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
       '500': { $ref: '../components/responses.yaml#/InternalError' }
 
 meMediaUploads:

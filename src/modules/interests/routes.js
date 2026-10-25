@@ -34,6 +34,7 @@ function createInterestsRouter({ interests = defaultInterests, auth = defaultAut
   router.get('/interests/search', requireAuth, searchLimit, asyncHandler(async (req, res) => {
     const { kind } = req.query;
     res.json(await interests.search({
+      auth: req.auth,
       q: req.query.q,
       kinds: kind === undefined ? [] : [].concat(kind),
       sort: req.query.sort,

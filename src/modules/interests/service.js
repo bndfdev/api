@@ -7,12 +7,15 @@
  * - Pages: `limit` items (1 to 50, 20 by default) and an opaque cursor for the next page. A cursor is only good
  *   for the same request (the same query, kinds and sort; for featured, the same region) and for 24 hours;
  *   otherwise CURSOR_INVALID (422).
+ *   `page.total` counts every match, on every page.
  * - Search text is trimmed; control characters make it SEARCH_QUERY_INVALID (422).
+ * - Search sorts: `suggested` (the default) and `recently_played` (there is no play data yet) are `relevance`;
+ *   `recently_followed` and `following` put the interests the caller follows first (catalog.js).
  * - The selection holds at most GET /config's `maxInterests`. Replacing it ignores duplicates (the first one
  *   counts), refuses unknown ids all at once (INTEREST_NOT_FOUND, `meta.unknownIds`) and keeps the date each
- *   interest that stays was first added. Replacing it completes the `interests` onboarding step, even with an
- *   empty list (the app's "Next" with nothing chosen); having at least one interest completes it too (users
- *   service). Adding and removing one are idempotent.
+ *   interest that stays was first added (its `followedAt`). Replacing it completes the `interests` onboarding
+ *   step, even with an empty list (the app's "Next" with nothing chosen); having at least one interest completes
+ *   it too (users service). Adding and removing one are idempotent.
  * - Reading the selection leaves out interests no longer in the catalog (they still count towards the limit
  *   until the selection is replaced).
  */
@@ -72,6 +75,14 @@ function toInterest(item) {
   return body;
 }
 
+/** The spec's `UserInterest`: a catalog item the user follows, with when they first followed it (null if unknown). */
+const toUserInterest = (item, followedAt) => ({ ...toInterest(item), followedAt: followedAt instanceof Date ? iso(followedAt) : null });
+
+/** Sorts that are another sort's order: no play data exists yet, so "recently played" is the suggested order. */
+const SORT_ALIASES = Object.freeze({ suggested: 'relevance', recently_played: 'relevance' });
+/** Sorts that need the caller's own selection. */
+const FOLLOW_SORTS = Object.freeze(['recently_followed', 'following']);
+
 /** What a cursor is tied to: a hash of the request it was made for. */
 const fingerprintOf = (parts) => crypto.createHash('sha256').update(JSON.stringify(parts)).digest('base64url').slice(0, 16);
 
@@ -109,10 +120,10 @@ function createInterestsService({
     return Number.isInteger(n) && n >= 1 && n <= MAX_LIMIT ? n : DEFAULT_LIMIT;
   }
 
-  function page({ items, hasMore }, offset, limit, fingerprint) {
+  function page({ items, hasMore, total }, offset, limit, fingerprint) {
     return {
       data: items.map(toInterest),
-      page: { nextCursor: hasMore ? encodeCursor(offset + limit, fingerprint) : null, hasMore },
+      page: { nextCursor: hasMore ? encodeCursor(offset + limit, fingerprint) : null, hasMore, total },
     };
   }
 
@@ -132,17 +143,25 @@ function createInterestsService({
 
   /**
    * GET /interests/search.
-   * @param {{q?: string, kinds?: string[], sort?: string, limit?: number, cursor?: string}} input
+   * @param {{auth?: object, q?: string, kinds?: string[], sort?: string, limit?: number, cursor?: string}} input
+   *   `auth` (`req.auth`) is needed for the sorts that put the caller's own interests first
    * @returns {Promise<object>} `InterestPage`
    */
-  async function search({ q, kinds = [], sort = 'relevance', limit, cursor } = {}) {
+  async function search({ auth, q, kinds = [], sort = 'suggested', limit, cursor } = {}) {
     const query = typeof q === 'string' ? q.trim() : '';
     if (CONTROL.test(query)) throw queryInvalid();
     const chosen = [...new Set(kinds)].sort();
+    const order = SORT_ALIASES[sort] || sort;
     const size = pageSize(limit);
-    const fingerprint = fingerprintOf(['search', query.normalize('NFC').toLowerCase(), chosen, sort]);
+    const fingerprint = fingerprintOf(['search', query.normalize('NFC').toLowerCase(), chosen, order]);
     const offset = offsetFrom(cursor, fingerprint);
-    return page(await catalog.search({ query, kinds: chosen, sort, offset, limit: size }), offset, size, fingerprint);
+    let followed;
+    if (FOLLOW_SORTS.includes(order)) {
+      const doc = auth ? await selections.find(auth) : null;
+      if (!doc) throw accountGone();
+      followed = new Map((doc.interests || []).map((e) => [e.id, e.addedAt instanceof Date ? e.addedAt.getTime() : null]));
+    }
+    return page(await catalog.search({ query, kinds: chosen, sort: order, offset, limit: size, followed }), offset, size, fingerprint);
   }
 
   /** GET /interests/{interestId}. @returns {Promise<object>} `Interest` */
@@ -156,7 +175,7 @@ function createInterestsService({
   async function viewOf(entries, updatedAt) {
     const found = await catalog.findByIds(entries.map((e) => e.id));
     return {
-      data: entries.filter((e) => found.has(e.id)).map((e) => toInterest(found.get(e.id))),
+      data: entries.filter((e) => found.has(e.id)).map((e) => toUserInterest(found.get(e.id), e.addedAt)),
       updatedAt: updatedAt instanceof Date ? iso(updatedAt) : null,
     };
   }
@@ -191,7 +210,7 @@ function createInterestsService({
     if (auth.accountType !== 'guest' && !(step && step.status === 'completed')) {
       await users.markOnboardingStep(auth.userId, 'interests', 'completed', at);
     }
-    return { data: ids.map((id) => toInterest(found.get(id))), updatedAt: iso(new Date(at)) };
+    return { data: entries.map((e) => toUserInterest(found.get(e.id), e.addedAt)), updatedAt: iso(new Date(at)) };
   }
 
   /** PUT /me/interests/{interestId}: add one (idempotent). */

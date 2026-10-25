@@ -234,6 +234,7 @@ ErrorCode:
     - DATE_OF_BIRTH_INVALID
     - DATE_OF_BIRTH_LOCKED
     - LANGUAGE_UNSUPPORTED
+    - LOCATION_INVALID
     # legal
     - LEGAL_DOCUMENT_NOT_FOUND
     - LEGAL_VERSION_OUTDATED
@@ -246,6 +247,8 @@ ErrorCode:
     - INTEREST_LIMIT_EXCEEDED
     - SEARCH_QUERY_INVALID
     - CURSOR_INVALID
+    # the user's own content
+    - CONTENT_NOT_FOUND
     # media
     - UPLOAD_NOT_FOUND
     - UPLOAD_EXPIRED
@@ -845,7 +848,7 @@ AccountType:
 User:
   type: object
   description: The signed-in account as its owner sees it (private view).
-  required: [id, accountType, status, onboarding, consents, createdAt, updatedAt]
+  required: [id, accountType, status, storyTranslation, location, accountPrivacy, onboarding, consents, createdAt, updatedAt]
   properties:
     id:
       $ref: '#/Id'
@@ -884,9 +887,21 @@ User:
         - $ref: '#/Gender'
         - type: 'null'
     preferredLanguage:
+      description: The app and stories language (Settings > Stories Language).
       oneOf:
         - $ref: '#/LanguageTag'
         - type: 'null'
+    storyTranslation:
+      type: boolean
+      description: Account Information > Story Translation. `false` until the user turns it on (always `false` for guests).
+    location:
+      type: [string, 'null']
+      minLength: 1
+      maxLength: 100
+      description: The free-text location on the Location screen, as saved (trimmed). `null` when not set.
+      examples: ['Seattle, WA']
+    accountPrivacy:
+      $ref: '#/AccountPrivacy'
     avatar:
       oneOf:
         - $ref: '#/Image'
@@ -935,6 +950,24 @@ UserUpdate:
         - type: 'null'
     preferredLanguage:
       $ref: '#/LanguageTag'
+    storyTranslation:
+      type: boolean
+    location:
+      type: [string, 'null']
+      maxLength: 200
+      description: |
+        Trimmed and inner whitespace collapsed; then 1 to 100 characters.
+        Empty after trimming, longer, or holding control or zero-width
+        characters is `LOCATION_INVALID`. `null` clears it.
+    accountPrivacy:
+      $ref: '#/AccountPrivacy'
+
+AccountPrivacy:
+  type: string
+  description: |
+    Privacy > Account Privacy. `followers` is the "Restrict to Followers"
+    toggle turned on; `public` (the default) is off.
+  enum: [public, followers]
 
 AccountDeletionRequest:
   type: object
@@ -1139,6 +1172,19 @@ InterestPage:
     page:
       $ref: '#/PageInfo'
 
+UserInterest:
+  description: An interest the user follows, with when they followed it.
+  allOf:
+    - $ref: '#/Interest'
+    - type: object
+      required: [followedAt]
+      properties:
+        followedAt:
+          description: When the user first followed it (kept when the selection is replaced). `null` for selections saved before this was recorded.
+          oneOf:
+            - $ref: '#/Timestamp'
+            - type: 'null'
+
 UserInterests:
   type: object
   required: [data, updatedAt]
@@ -1146,7 +1192,7 @@ UserInterests:
     data:
       type: array
       items:
-        $ref: '#/Interest'
+        $ref: '#/UserInterest'
     updatedAt:
       oneOf:
         - $ref: '#/Timestamp'
@@ -1210,12 +1256,126 @@ CountryList:
 
 PageInfo:
   type: object
-  required: [hasMore]
+  required: [hasMore, total]
   properties:
     nextCursor:
       type: [string, 'null']
       description: Pass as `cursor` to get the next page. Opaque; expires after 24 hours (`CURSOR_INVALID`).
     hasMore:
+      type: boolean
+    total:
+      type: integer
+      minimum: 0
+      description: How many items match the request across all pages (the "All (2846)" count), not just this page.
+
+# ---------------------------------------------------------------------------
+# Notification settings
+# ---------------------------------------------------------------------------
+
+NotificationSettings:
+  type: object
+  description: |
+    Settings > Notifications. One switch per row; a user who never saved
+    them gets every switch `true`.
+  required: [likesAndComments, followRequests, profileEngagement, contributorMetrics, yourEngagement, newOrTrendingContent]
+  additionalProperties: false
+  properties:
+    likesAndComments: { type: boolean }
+    followRequests: { type: boolean }
+    profileEngagement: { type: boolean }
+    contributorMetrics: { type: boolean }
+    yourEngagement: { type: boolean }
+    newOrTrendingContent: { type: boolean }
+
+NotificationSettingsUpdate:
+  type: object
+  description: Any subset of the switches; the others keep their value.
+  minProperties: 1
+  additionalProperties: false
+  properties:
+    likesAndComments: { type: boolean }
+    followRequests: { type: boolean }
+    profileEngagement: { type: boolean }
+    contributorMetrics: { type: boolean }
+    yourEngagement: { type: boolean }
+    newOrTrendingContent: { type: boolean }
+
+# ---------------------------------------------------------------------------
+# The user's own content (Profile tabs, Popular Releases, Privacy)
+# ---------------------------------------------------------------------------
+
+ContentType:
+  type: string
+  enum: [playlist, album, song, story]
+
+ContentBadge:
+  type: string
+  description: Label drawn on the artwork.
+  enum: [trending, top10]
+
+Content:
+  type: object
+  description: One playlist, album, song or story the user published.
+  required: [id, type, title, image, year, songCount, durationSec, listens, badge, hidden, followersOnly, createdAt]
+  properties:
+    id:
+      $ref: '#/Id'
+    type:
+      $ref: '#/ContentType'
+    title:
+      type: string
+      examples: ['Late Night Drive']
+    image:
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    year:
+      type: [integer, 'null']
+      description: Release year.
+      examples: [2024]
+    songCount:
+      type: [integer, 'null']
+      minimum: 0
+      description: Number of songs; playlists and albums only (`null` for songs and stories).
+    durationSec:
+      type: integer
+      minimum: 0
+      description: Total length in seconds.
+    listens:
+      type: integer
+      minimum: 0
+    badge:
+      oneOf:
+        - $ref: '#/ContentBadge'
+        - type: 'null'
+    hidden:
+      type: boolean
+      description: Privacy > Hide Content. Still listed to the owner unless `GET /me/content` is called with `hidden=false`.
+    followersOnly:
+      type: boolean
+      description: Privacy > Restrict Content (only followers can play it).
+    createdAt:
+      $ref: '#/Timestamp'
+
+ContentPage:
+  type: object
+  required: [data, page]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Content'
+    page:
+      $ref: '#/PageInfo'
+
+ContentUpdate:
+  type: object
+  minProperties: 1
+  additionalProperties: false
+  properties:
+    hidden:
+      type: boolean
+    followersOnly:
       type: boolean
 
 # ---------------------------------------------------------------------------

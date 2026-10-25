@@ -148,7 +148,7 @@ test('featured mixes the kinds in turn, most popular first, with grid sizes and 
   ]);
   assert.deepEqual(res.body.data.map((i) => i.presentation.size),
     ['small', 'small', 'large', 'small', 'small', 'small', 'small', 'small', 'large', 'small']);
-  assert.deepEqual(res.body.page, { nextCursor: null, hasMore: false });
+  assert.deepEqual(res.body.page, { nextCursor: null, hasMore: false, total: 10 });
   const byId = Object.fromEntries(res.body.data.map((i) => [i.id, i]));
   assert.deepEqual(byId[s.pop], {
     id: s.pop, kind: 'genre', title: 'Pop', subtitle: null,
@@ -209,7 +209,7 @@ test('featured needs a session; guests may read it; an empty catalog is an empty
   const visitor = await guest();
   const empty = await get(visitor, '/v1/interests/featured');
   assert.equal(empty.status, 200, empty.text);
-  assert.deepEqual(empty.body, { data: [], page: { nextCursor: null, hasMore: false } });
+  assert.deepEqual(empty.body, { data: [], page: { nextCursor: null, hasMore: false, total: 0 } });
 });
 
 test('featured refuses a bad limit (validator) and a bad cursor', async () => {
@@ -565,6 +565,126 @@ test('accounts and guests that never chose anything have no interests field', as
   const visitor = await guest();
   assert.equal(Object.hasOwn(await User.findById(me.user._id).lean(), 'interests'), false);
   assert.equal(Object.hasOwn(await GuestAccount.findById(visitor.id).lean(), 'interests'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Settings > Your Interests: follow sorts, totals, followedAt
+// ---------------------------------------------------------------------------
+
+const isoAt = (t) => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
+const SUGGESTED = (s) => [s.pop, s.hiphop, s.jazz, s.kpop, s.beyonce, s.coastin, s.daya, s.india, s.popsmoke, s.us];
+
+test('search page.total counts every match on every page, with and without filters', async () => {
+  await seed();
+  const me = await account();
+  const first = await get(me, '/v1/interests/search').query({ limit: 3 });
+  assert.equal(first.status, 200, first.text);
+  assertMatchesSpec('InterestPage', first.body);
+  assert.equal(first.body.page.total, 10);
+  const second = await get(me, '/v1/interests/search').query({ limit: 3, cursor: first.body.page.nextCursor });
+  assert.equal(second.body.page.total, 10, 'the same on the next page');
+  assert.equal((await get(me, '/v1/interests/search').query({ kind: 'genre' })).body.page.total, 4);
+  assert.equal((await get(me, '/v1/interests/search').query({ kind: ['artist', 'place'], limit: 1 })).body.page.total, 6);
+  assert.equal((await get(me, '/v1/interests/search').query({ q: 'pop' })).body.page.total, 3);
+  assert.equal((await get(me, '/v1/interests/search').query({ q: 'zzz' })).body.page.total, 0);
+  assert.equal((await get(me, '/v1/interests/search').query({ kind: 'story' })).body.page.total, 0, 'no topics yet');
+});
+
+test('suggested is the default and the relevance order; recently_played is the same until play data exists', async () => {
+  const s = await seed();
+  const me = await account();
+  const order = async (query) => ids(await get(me, '/v1/interests/search').query(query));
+  assert.deepEqual(await order({}), SUGGESTED(s));
+  for (const sort of ['suggested', 'relevance', 'recently_played']) {
+    assert.deepEqual(await order({ sort }), SUGGESTED(s), sort);
+    assert.deepEqual(await order({ sort, q: 'pop' }), [s.pop, s.popsmoke, s.kpop], `${sort} with text`);
+  }
+  // suggested and relevance are one order, so their cursors are interchangeable.
+  const cursor = (await get(me, '/v1/interests/search').query({ sort: 'suggested', limit: 2 })).body.page.nextCursor;
+  assert.deepEqual(await order({ sort: 'relevance', limit: 2, cursor }), [s.jazz, s.kpop]);
+});
+
+test('recently_followed: the interests followed, newest follow first, then the rest suggested', async () => {
+  const s = await seed();
+  const me = await account();
+  for (const id of [s.jazz, s.us, s.daya]) {
+    assert.equal((await addOne(me, id)).status, 204);
+    clock.t += 1000;
+  }
+  const order = async (query) => ids(await get(me, '/v1/interests/search').query({ sort: 'recently_followed', ...query }));
+  assert.deepEqual(await order({}), [s.daya, s.us, s.jazz, s.pop, s.hiphop, s.kpop, s.beyonce, s.coastin, s.india, s.popsmoke]);
+  assert.deepEqual(await order({ kind: 'genre' }), [s.jazz, s.pop, s.hiphop, s.kpop], 'filters still apply');
+  assert.deepEqual(await order({ q: 'u' }), [s.us], 'and the search text');
+  // Following one again later moves nothing (it was already followed); unfollowing and following moves it up.
+  await addOne(me, s.jazz);
+  assert.deepEqual((await order({})).slice(0, 3), [s.daya, s.us, s.jazz]);
+  await removeOne(me, s.jazz);
+  clock.t += 1000;
+  await addOne(me, s.jazz);
+  assert.deepEqual((await order({})).slice(0, 3), [s.jazz, s.daya, s.us]);
+  const all = await allPages(me, '/v1/interests/search', { sort: 'recently_followed', limit: 4 });
+  assert.deepEqual(all.map((i) => i.id), await order({}), 'pages follow the same order');
+});
+
+test('following: the interests followed A to Z, then the rest A to Z', async () => {
+  const s = await seed();
+  const me = await account();
+  assert.equal((await putAll(me, [s.us, s.jazz, s.daya])).status, 200);
+  const order = async (query) => ids(await get(me, '/v1/interests/search').query({ sort: 'following', ...query }));
+  assert.deepEqual(await order({}), [s.daya, s.jazz, s.us, s.beyonce, s.coastin, s.hiphop, s.india, s.kpop, s.pop, s.popsmoke]);
+  assert.deepEqual(await order({ kind: 'place' }), [s.us, s.india]);
+  const nobody = await account();
+  assert.deepEqual(ids(await get(nobody, '/v1/interests/search').query({ sort: 'following' })),
+    [s.beyonce, s.coastin, s.daya, s.hiphop, s.india, s.jazz, s.kpop, s.pop, s.popsmoke, s.us],
+    'with nothing followed it is A to Z');
+});
+
+test('selections saved before follow times were recorded: followedAt null, listed after the dated ones', async () => {
+  const s = await seed();
+  const me = await account();
+  const at = new Date(clock.t - 60000);
+  await User.collection.updateOne({ _id: me.user._id }, {
+    $set: { interests: [{ id: s.jazz }, { id: s.us, addedAt: at }, { id: s.pop }], interestsUpdatedAt: at },
+  });
+  const mine = await get(me, '/v1/me/interests');
+  assert.equal(mine.status, 200, mine.text);
+  assertMatchesSpec('UserInterests', mine.body);
+  assert.deepEqual(mine.body.data.map((i) => [i.id, i.followedAt]), [[s.jazz, null], [s.us, isoAt(at)], [s.pop, null]]);
+  const order = ids(await get(me, '/v1/interests/search').query({ sort: 'recently_followed' }));
+  assert.deepEqual(order.slice(0, 3), [s.us, s.pop, s.jazz], 'dated first; the undated by suggested order');
+  // Replacing the selection keeps what it knows and dates the new ones.
+  const res = await putAll(me, [s.us, s.jazz, s.daya]);
+  assert.deepEqual(res.body.data.map((i) => [i.id, i.followedAt]), [[s.us, isoAt(at)], [s.jazz, isoAt(clock.t)], [s.daya, isoAt(clock.t)]]);
+});
+
+test('GET and PUT /me/interests carry followedAt: the first follow time, kept when the selection is replaced', async () => {
+  const s = await seed();
+  const me = await account();
+  const t0 = clock.t;
+  let res = await putAll(me, [s.jazz, s.us]);
+  assertMatchesSpec('UserInterests', res.body);
+  assert.deepEqual(res.body.data.map((i) => i.followedAt), [isoAt(t0), isoAt(t0)]);
+  clock.t += 5000;
+  res = await putAll(me, [s.us, s.daya]);
+  assert.deepEqual(res.body.data.map((i) => [i.id, i.followedAt]), [[s.us, isoAt(t0)], [s.daya, isoAt(t0 + 5000)]]);
+  clock.t += 5000;
+  await addOne(me, s.pop);
+  const mine = await get(me, '/v1/me/interests');
+  assertMatchesSpec('UserInterests', mine.body);
+  assert.deepEqual(mine.body.data.map((i) => [i.id, i.followedAt]),
+    [[s.us, isoAt(t0)], [s.daya, isoAt(t0 + 5000)], [s.pop, isoAt(t0 + 10000)]]);
+});
+
+test('guests get the follow sorts too; a deleted account is signed out', async () => {
+  const s = await seed();
+  const visitor = await guest();
+  await addOne(visitor, s.india);
+  assert.deepEqual(ids(await get(visitor, '/v1/interests/search').query({ sort: 'following', kind: 'place' })), [s.india, s.us]);
+  const me = await account();
+  await User.deleteOne({ _id: me.user._id });
+  for (const sort of ['recently_followed', 'following']) {
+    assertProblem(await get(me, '/v1/interests/search').query({ sort }), 401, 'SESSION_REVOKED');
+  }
 });
 
 // ---------------------------------------------------------------------------

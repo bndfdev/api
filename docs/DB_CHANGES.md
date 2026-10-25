@@ -8,6 +8,42 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-25: Settings, notification switches and the user's own content
+
+**Existing data affected:** none. The new code only adds the fields and the collection below. No migration, no edit of existing documents.
+
+**`users`: new optional fields** (absent until the user changes them; absent reads as the default)
+
+| Field | Purpose |
+| --- | --- |
+| `storyTranslation` | Boolean, Account Information > Story Translation. Absent = `false`. |
+| `location` | String, the Location screen's free text, stored trimmed (1 to 100 characters). Removed (`$unset`) when the user clears it. |
+| `accountPrivacy` | `'public'` or `'followers'` (Privacy > Restrict to Followers). Absent = `'public'`. |
+| `notificationSettings` | Sub-document (no `_id`) with the switches the user changed (`likesAndComments`, `followRequests`, `profileEngagement`, `contributorMetrics`, `yourEngagement`, `newOrTrendingContent`, each a boolean) and `updatedAt`. A switch never saved is on. Stored on the user (six booleans, so the document stays small, and it goes with the account) rather than in its own collection. |
+
+`PATCH /v1/me` also writes the existing `updatedAt` and `profileRevision`, as for the other profile fields. Values in another shape (written elsewhere) read as the defaults.
+
+**`users.interests` (from the Interests entry): no change.** Each entry's existing `addedAt` is now returned as `followedAt` (`GET`/`PUT /v1/me/interests`) and orders the `recently_followed` search sort. It is already set when an interest is added, and kept for interests that stay when the selection is replaced. An entry without `addedAt` (none are written by v1) reads as `followedAt: null`. The same applies to `guest_accounts.interests`.
+
+**New collection**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `contents` | Each user's playlists, albums, songs and stories: `ownerId` (users `_id`), `type`, `title`, `titleLower` (the title without accents, lower case, for the A-to-Z sort), `image` (`{url, width, height}` or null), `year`, `songCount`, `durationSec`, `listens`, `badge` (`trending`, `top10` or null), `hidden`, `followersOnly`, `createdAt`, `updatedAt` | `owner_recent` `{ownerId: 1, createdAt: -1, _id: -1}`; `owner_popular` `{ownerId: 1, listens: -1, _id: -1}`; `owner_title` `{ownerId: 1, titleLower: 1, _id: 1}` | None (content is kept). Nothing deletes a user's content yet: account deletion will have to. |
+
+The `hidden` filter of `GET /v1/me/content` (`hidden: true`, or `hidden: {$ne: true}`) is applied on top of these indexes, with no index of its own: one user's content is small. There is no create endpoint in this change: v1 only reads `contents` and writes `hidden` / `followersOnly` (`PATCH /v1/me/content/{id}`). Whatever creates content later must set `titleLower` with the same rule (`models/Content.js` sets it on `save`) and give `createdAt` and `listens` a value, since the page queries compare them. Locally, `tools.local/e2e/seed_content.js` (not in this repo) inserts demo rows marked `seed: 'e2e'`, and refuses any non-localhost database.
+
+**No index changes on existing collections.**
+
+**Rollback:**
+- Stop the new code.
+- Drop `contents`.
+- The new `users` fields can stay (the old API and the admin panel ignore them), or be removed with `db.users.updateMany({}, { $unset: { storyTranslation: '', location: '', accountPrivacy: '', notificationSettings: '' } })`.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-24: Change email
 
 **Existing data affected:**

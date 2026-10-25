@@ -193,19 +193,23 @@ function createCatalog({ config = defaultConfig, ttlMs = 60 * 1000, now = Date.n
       ...item,
       presentation: { size: LARGE_POSITIONS.includes((offset + i) % 9) ? 'large' : 'small' },
     }));
-    return { items, hasMore: offset + limit < order.length };
+    return { items, hasMore: offset + limit < order.length, total: order.length };
   }
 
   /**
    * Search. With query words, an item matches when every word starts a word of its title (accents, case and
    * punctuation ignored, see `fold`); without any, every item matches. `kinds` filters (empty: every kind).
    * Sorts: `relevance` (best match first, see `matchRank`, then popularity; with no query it is `popular`),
-   * `popular`, `recent` (newest in the catalog first) and `alphabetical`.
-   * @param {{query: string, kinds: string[], sort: string, offset: number, limit: number}} input
-   *   `query` already trimmed
-   * @returns {Promise<{items: object[], hasMore: boolean}>}
+   * `popular`, `recent` (newest in the catalog first) and `alphabetical`; and, with `followed` (the interests the
+   * user follows, by id, each with when it was followed in epoch ms, or null when that is not known):
+   * `recently_followed` (followed items first, the most recently followed first and those with no time last, then
+   * the rest by relevance) and `following` (followed items first A to Z, then the rest A to Z). Any other sort is
+   * `relevance`.
+   * @param {{query: string, kinds: string[], sort: string, offset: number, limit: number,
+   *   followed?: Map<string, number | null>}} input `query` already trimmed
+   * @returns {Promise<{items: object[], hasMore: boolean, total: number}>} `total`: every match, on every page
    */
-  async function search({ query, kinds, sort, offset, limit }) {
+  async function search({ query, kinds, sort, offset, limit, followed = new Map() }) {
     const { items } = await current();
     const folded = fold(query);
     const queryWords = wordsOf(folded);
@@ -216,14 +220,26 @@ function createCatalog({ config = defaultConfig, ttlMs = 60 * 1000, now = Date.n
       if (rank !== null) ranked.push({ item, rank });
     }
     const relevance = (a, b) => a.rank - b.rank || byPopularity(a.item, b.item);
+    const alphabetical = (a, b) => byTitle(a.item, b.item);
+    const isFollowed = (r) => followed.has(r.item.id);
+    // Unknown follow times sort after every known one.
+    const followTime = (r) => followed.get(r.item.id) ?? -Infinity;
+    const followedFirst = (then) => (a, b) => Number(isFollowed(b)) - Number(isFollowed(a)) || then(a, b);
+    const newerFollow = (a, b) => (followTime(a) === followTime(b) ? 0 : followTime(b) - followTime(a));
     const compare = {
       relevance,
       popular: (a, b) => byPopularity(a.item, b.item),
       recent: (a, b) => byRecent(a.item, b.item),
-      alphabetical: (a, b) => byTitle(a.item, b.item),
+      alphabetical,
+      recently_followed: followedFirst((a, b) => (isFollowed(a) ? newerFollow(a, b) : 0) || relevance(a, b)),
+      following: followedFirst(alphabetical),
     }[sort] || relevance;
     ranked.sort(compare);
-    return { items: ranked.slice(offset, offset + limit).map((r) => r.item), hasMore: offset + limit < ranked.length };
+    return {
+      items: ranked.slice(offset, offset + limit).map((r) => r.item),
+      hasMore: offset + limit < ranked.length,
+      total: ranked.length,
+    };
   }
 
   return { get, findByIds, featured, search };

@@ -32,7 +32,7 @@ info:
     - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
       operation are listed under `x-rate-limit`.
     - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
-      `page.hasMore`).
+      `page.hasMore`; `page.total` counts every match).
     - **Every response** carries `X-Request-Id`; errors repeat it as
       `requestId`.
     - **Transport:** HTTPS only (HSTS). Tokens, codes and passwords are
@@ -64,6 +64,8 @@ tags:
     description: Terms and privacy documents and the user's acceptance.
   - name: Interests
     description: The interest catalog and the user's selection.
+  - name: Content
+    description: The user's own playlists, albums, songs and stories.
   - name: Catalog
     description: Reference data (countries).
   - name: Media
@@ -342,6 +344,19 @@ paths:
           and cancels stale requests.
         - Results are paginated with a cursor; a cursor from a different
           query or older than 24 hours is `CURSOR_INVALID`.
+        - `page.total` counts every match across all pages (the "All (2846)"
+          count on Settings > Your Interests).
+        - Sorts: `suggested` (the default) and `relevance` are the same order:
+          best match first, then most popular (most popular first when `q` is
+          empty). `popular`, `recent` (newest in the catalog first) and
+          `alphabetical` (A to Z). For Settings > Your Interests:
+          `recently_followed` puts the interests the user follows first, the
+          most recently followed first, then the rest in `suggested` order;
+          `following` puts them first A to Z, then the rest A to Z.
+          `recently_played` has no play data yet and is the same as
+          `suggested`.
+        - The Your Interests filter pills map to `kind`: `artist`, `genre`,
+          `story` (the Topics pill) and `place` (countries and places).
 
         Errors: `SEARCH_QUERY_INVALID`, `CURSOR_INVALID` (422).
       security:
@@ -375,11 +390,15 @@ paths:
           schema:
             type: string
             enum:
+              - suggested
               - relevance
               - popular
               - recent
               - alphabetical
-            default: relevance
+              - recently_followed
+              - following
+              - recently_played
+            default: suggested
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/ClientPlatform'
@@ -407,6 +426,7 @@ paths:
                 page:
                   nextCursor: eyJvIjoyMH0
                   hasMore: true
+                  total: 2846
         '401':
           $ref: '#/components/responses/Unauthorized'
         '422':
@@ -1346,9 +1366,11 @@ paths:
       operationId: updateMe
       tags:
         - Account
-      summary: Update name, date of birth, gender or language
+      summary: Update the profile and account settings
       description: |
-        Used by the birthday, gender and Your Profile (name) screens. Saving a
+        Used by the birthday, gender and Your Profile (name) screens, and by
+        Settings: Account Information (Story Translation), Location, Stories
+        Language (`preferredLanguage`) and Privacy > Account Privacy. Saving a
         field completes its onboarding step automatically.
 
         - **Age gate:** a date of birth under `minimumAge` (13) is rejected
@@ -1360,10 +1382,13 @@ paths:
           1 March in non-leap years.
         - Once set, date of birth can be changed only once (typo fix) within
           30 days; after that `DATE_OF_BIRTH_LOCKED` (support can change it).
+        - `location` is trimmed (inner whitespace collapsed) and must then be
+          1 to 100 characters with no control or zero-width characters
+          (`LOCATION_INVALID`); `null` clears it.
         - Guests can set `preferredLanguage` only.
 
         Errors: stale `If-Match` (412), `DATE_OF_BIRTH_LOCKED` (409), `NAME_INVALID`, `DATE_OF_BIRTH_INVALID`,
-        `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED` (422),
+        `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED`, `LOCATION_INVALID` (422),
         `GUEST_NOT_ALLOWED` (403).
       parameters:
         - $ref: '#/components/parameters/ClientPlatform'
@@ -1386,6 +1411,12 @@ paths:
               name:
                 value:
                   name: Amelia Jane
+              location:
+                value:
+                  location: Seattle, WA
+              privacy:
+                value:
+                  accountPrivacy: followers
           application/json:
             schema:
               $ref: '#/components/schemas/UserUpdate'
@@ -1875,6 +1906,11 @@ paths:
       tags:
         - Interests
       summary: Get the user's selected interests
+      description: |
+        In the order chosen. Each item carries `followedAt`, when it was first
+        followed (`null` for selections saved before that was recorded). For
+        Settings > Your Interests sorted by follow time, use
+        `GET /interests/search?sort=recently_followed`.
       parameters:
         - $ref: '#/components/parameters/ClientPlatform'
         - $ref: '#/components/parameters/ClientVersion'
@@ -1977,6 +2013,241 @@ paths:
           $ref: '#/components/responses/UpgradeRequired'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/notification-settings:
+    get:
+      operationId: getNotificationSettings
+      tags:
+        - Account
+      summary: Get the notification switches
+      description: |
+        Settings > Notifications. A user who never saved them gets every
+        switch `true`. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The switches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+              example:
+                likesAndComments: true
+                followRequests: true
+                profileEngagement: true
+                contributorMetrics: true
+                yourEngagement: true
+                newOrTrendingContent: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateNotificationSettings
+      tags:
+        - Account
+      summary: Change some notification switches
+      description: |
+        Send only the switches that change; the others keep their value.
+        Returns every switch. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationSettingsUpdate'
+            example:
+              followRequests: false
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/NotificationSettingsUpdate'
+      responses:
+        '200':
+          description: Every switch, after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/content:
+    get:
+      operationId: listMyContent
+      tags:
+        - Content
+      summary: List the user's own content
+      description: |
+        Profile tabs (All, Playlists, Albums, Songs, Stories) and Popular
+        Releases (`sort=popular&limit=3`), both with `hidden=false`, and
+        Privacy > Hide Content / Restrict Content (no `hidden`). This is the
+        owner's view: unless `hidden` filters them, hidden and followers-only
+        items are included, with their flags.
+
+        - `type`: `all` (default) or one content type.
+        - `sort`: `recent` (default; newest first), `popular` (most listens
+          first) or `title` (A to Z, ignoring case and accents). Ties keep a
+          stable order.
+        - `hidden`: `false` lists only items that are not hidden (the Profile
+          page: Popular Releases and the tabs), `true` only hidden ones;
+          absent lists both (the Privacy lists).
+        - `page.total` counts every item that matches `type` and `hidden`.
+        - A cursor only works for the same `type`, `hidden` and `sort` and for
+          24 hours (`CURSOR_INVALID`).
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - playlist
+              - album
+              - song
+              - story
+            default: all
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - recent
+              - popular
+              - title
+            default: recent
+        - name: hidden
+          in: query
+          required: false
+          description: '`false`: only items that are not hidden; `true`: only hidden ones; absent: both.'
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: A page of the user's content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentPage'
+              example:
+                data:
+                  - id: 6650f1c2a4b7e9d3c1f00b01
+                    type: album
+                    title: Late Night Drive
+                    image:
+                      url: https://cdn.bondfire.app/c/late-night-drive.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: null
+                    year: 2024
+                    songCount: 12
+                    durationSec: 2710
+                    listens: 48210
+                    badge: top10
+                    hidden: false
+                    followersOnly: false
+                    createdAt: '2026-09-27T10:15:00Z'
+                page:
+                  nextCursor: null
+                  hasMore: false
+                  total: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/content/{contentId}:
+    patch:
+      operationId: updateMyContent
+      tags:
+        - Content
+      summary: Hide or restrict one of the user's items
+      description: |
+        Privacy > Hide Content (`hidden`) and Restrict Content
+        (`followersOnly`). Send either or both.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+        another user's content).
+      parameters:
+        - $ref: '#/components/parameters/ContentId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentUpdate'
+            example:
+              hidden: true
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/ContentUpdate'
+      responses:
+        '200':
+          description: The item after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Content'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
         '500':
           $ref: '#/components/responses/InternalError'
   /me/media/uploads:
@@ -2720,6 +2991,7 @@ components:
         - DATE_OF_BIRTH_INVALID
         - DATE_OF_BIRTH_LOCKED
         - LANGUAGE_UNSUPPORTED
+        - LOCATION_INVALID
         - LEGAL_DOCUMENT_NOT_FOUND
         - LEGAL_VERSION_OUTDATED
         - CONSENT_REQUIRED
@@ -2729,6 +3001,7 @@ components:
         - INTEREST_LIMIT_EXCEEDED
         - SEARCH_QUERY_INVALID
         - CURSOR_INVALID
+        - CONTENT_NOT_FOUND
         - UPLOAD_NOT_FOUND
         - UPLOAD_EXPIRED
         - UPLOAD_INCOMPLETE
@@ -3012,6 +3285,7 @@ components:
       type: object
       required:
         - hasMore
+        - total
       properties:
         nextCursor:
           type:
@@ -3020,6 +3294,10 @@ components:
           description: Pass as `cursor` to get the next page. Opaque; expires after 24 hours (`CURSOR_INVALID`).
         hasMore:
           type: boolean
+        total:
+          type: integer
+          minimum: 0
+          description: How many items match the request across all pages (the "All (2846)" count), not just this page.
     InterestPage:
       type: object
       required:
@@ -3298,6 +3576,14 @@ components:
         - male
         - non_binary
         - prefer_not_to_say
+    AccountPrivacy:
+      type: string
+      description: |
+        Privacy > Account Privacy. `followers` is the "Restrict to Followers"
+        toggle turned on; `public` (the default) is off.
+      enum:
+        - public
+        - followers
     OnboardingStepName:
       type: string
       description: Steps of the Figma onboarding flow, in order.
@@ -3381,6 +3667,9 @@ components:
         - id
         - accountType
         - status
+        - storyTranslation
+        - location
+        - accountPrivacy
         - onboarding
         - consents
         - createdAt
@@ -3427,9 +3716,24 @@ components:
             - $ref: '#/components/schemas/Gender'
             - type: 'null'
         preferredLanguage:
+          description: The app and stories language (Settings > Stories Language).
           oneOf:
             - $ref: '#/components/schemas/LanguageTag'
             - type: 'null'
+        storyTranslation:
+          type: boolean
+          description: Account Information > Story Translation. `false` until the user turns it on (always `false` for guests).
+        location:
+          type:
+            - string
+            - 'null'
+          minLength: 1
+          maxLength: 100
+          description: The free-text location on the Location screen, as saved (trimmed). `null` when not set.
+          examples:
+            - Seattle, WA
+        accountPrivacy:
+          $ref: '#/components/schemas/AccountPrivacy'
         avatar:
           oneOf:
             - $ref: '#/components/schemas/Image'
@@ -3751,6 +4055,19 @@ components:
             - type: 'null'
         preferredLanguage:
           $ref: '#/components/schemas/LanguageTag'
+        storyTranslation:
+          type: boolean
+        location:
+          type:
+            - string
+            - 'null'
+          maxLength: 200
+          description: |
+            Trimmed and inner whitespace collapsed; then 1 to 100 characters.
+            Empty after trimming, longer, or holding control or zero-width
+            characters is `LOCATION_INVALID`. `null` clears it.
+        accountPrivacy:
+          $ref: '#/components/schemas/AccountPrivacy'
     PasswordChangeRequest:
       type: object
       required:
@@ -3818,6 +4135,19 @@ components:
           type: boolean
           const: true
           description: Declining is not recorded; the app signs the user out instead.
+    UserInterest:
+      description: An interest the user follows, with when they followed it.
+      allOf:
+        - $ref: '#/components/schemas/Interest'
+        - type: object
+          required:
+            - followedAt
+          properties:
+            followedAt:
+              description: When the user first followed it (kept when the selection is replaced). `null` for selections saved before this was recorded.
+              oneOf:
+                - $ref: '#/components/schemas/Timestamp'
+                - type: 'null'
     UserInterests:
       type: object
       required:
@@ -3827,7 +4157,7 @@ components:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/Interest'
+            $ref: '#/components/schemas/UserInterest'
         updatedAt:
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
@@ -3844,6 +4174,145 @@ components:
           maxItems: 100
           items:
             $ref: '#/components/schemas/Id'
+    NotificationSettings:
+      type: object
+      description: |
+        Settings > Notifications. One switch per row; a user who never saved
+        them gets every switch `true`.
+      required:
+        - likesAndComments
+        - followRequests
+        - profileEngagement
+        - contributorMetrics
+        - yourEngagement
+        - newOrTrendingContent
+      additionalProperties: false
+      properties:
+        likesAndComments:
+          type: boolean
+        followRequests:
+          type: boolean
+        profileEngagement:
+          type: boolean
+        contributorMetrics:
+          type: boolean
+        yourEngagement:
+          type: boolean
+        newOrTrendingContent:
+          type: boolean
+    NotificationSettingsUpdate:
+      type: object
+      description: Any subset of the switches; the others keep their value.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        likesAndComments:
+          type: boolean
+        followRequests:
+          type: boolean
+        profileEngagement:
+          type: boolean
+        contributorMetrics:
+          type: boolean
+        yourEngagement:
+          type: boolean
+        newOrTrendingContent:
+          type: boolean
+    ContentType:
+      type: string
+      enum:
+        - playlist
+        - album
+        - song
+        - story
+    ContentBadge:
+      type: string
+      description: Label drawn on the artwork.
+      enum:
+        - trending
+        - top10
+    Content:
+      type: object
+      description: One playlist, album, song or story the user published.
+      required:
+        - id
+        - type
+        - title
+        - image
+        - year
+        - songCount
+        - durationSec
+        - listens
+        - badge
+        - hidden
+        - followersOnly
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        type:
+          $ref: '#/components/schemas/ContentType'
+        title:
+          type: string
+          examples:
+            - Late Night Drive
+        image:
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        year:
+          type:
+            - integer
+            - 'null'
+          description: Release year.
+          examples:
+            - 2024
+        songCount:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+          description: Number of songs; playlists and albums only (`null` for songs and stories).
+        durationSec:
+          type: integer
+          minimum: 0
+          description: Total length in seconds.
+        listens:
+          type: integer
+          minimum: 0
+        badge:
+          oneOf:
+            - $ref: '#/components/schemas/ContentBadge'
+            - type: 'null'
+        hidden:
+          type: boolean
+          description: Privacy > Hide Content. Still listed to the owner unless `GET /me/content` is called with `hidden=false`.
+        followersOnly:
+          type: boolean
+          description: Privacy > Restrict Content (only followers can play it).
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+    ContentPage:
+      type: object
+      required:
+        - data
+        - page
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Content'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    ContentUpdate:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        hidden:
+          type: boolean
+        followersOnly:
+          type: boolean
     ImagePurpose:
       type: string
       enum:
@@ -4156,6 +4625,12 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/OnboardingStepName'
+    ContentId:
+      name: contentId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
     SessionId:
       name: sessionId
       in: path

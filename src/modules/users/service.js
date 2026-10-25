@@ -29,7 +29,19 @@ const NAME_MAX_LENGTH = 50;
 // The old API stored 'other'; the spec offers non_binary and prefer_not_to_say instead.
 const GENDERS = Object.freeze({ female: 'female', male: 'male', non_binary: 'non_binary', prefer_not_to_say: 'prefer_not_to_say', other: 'prefer_not_to_say' });
 
+/** The longest location, in characters (code points): PATCH /me and the `User` view. */
+const LOCATION_MAX_LENGTH = 100;
+const ACCOUNT_PRIVACY = Object.freeze(['public', 'followers']);
+
 const orNull = (value, pattern) => (typeof value === 'string' && pattern.test(value) ? value : null);
+/** The stored location as the spec's `User.location`: a non-empty string of at most 100 characters, or null. */
+const locationOrNull = (value) => (typeof value === 'string' && value.trim() !== '' && [...value].length <= LOCATION_MAX_LENGTH ? value : null);
+/** Settings every `User` carries, with their defaults for a value that is missing or not in the spec's shape. */
+const settingsOf = (doc) => ({
+  storyTranslation: doc.storyTranslation === true,
+  location: locationOrNull(doc.location),
+  accountPrivacy: ACCOUNT_PRIVACY.includes(doc.accountPrivacy) ? doc.accountPrivacy : 'public',
+});
 /**
  * Whether the number was proved with a code accepted by this API (`phoneVerifiedAt`). The old API's
  * `mobileNumberVerified` is not enough: it set it after a fixed code.
@@ -131,6 +143,7 @@ function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequire
     dateOfBirth: orNull(user.dateOfBirth, DATE_ONLY),
     gender: GENDERS[user.gender] || null,
     preferredLanguage: orNull(user.preferredLanguage, LANGUAGE_TAG),
+    ...settingsOf(user),
     // Photos set through v1 only; the old API's `profileImage` / `profileBanner` paths are not `Image`s.
     avatar: toImage(user.avatar, (key) => storage.publicUrl(key)),
     banner: toImage(user.banner, (key) => storage.publicUrl(key)),
@@ -163,6 +176,8 @@ function toGuestResponse(guest, { consents = NO_CONSENTS } = {}) {
     dateOfBirth: orNull(guest.dateOfBirth, DATE_ONLY),
     gender: null,
     preferredLanguage: orNull(guest.preferredLanguage, LANGUAGE_TAG),
+    // A guest cannot change these, so it always has the defaults.
+    ...settingsOf({}),
     avatar: null,
     banner: null,
     loginMethods: [],
@@ -182,4 +197,7 @@ function isSuspended(user, at) {
   return user.isBlocked === true && (!user.blockedUntil || new Date(user.blockedUntil).getTime() > at);
 }
 
-module.exports = { toImage, toUserResponse, toGuestResponse, buildOnboarding, isSuspended, ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH };
+module.exports = {
+  toImage, toUserResponse, toGuestResponse, buildOnboarding, isSuspended,
+  ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH, LOCATION_MAX_LENGTH, ACCOUNT_PRIVACY,
+};

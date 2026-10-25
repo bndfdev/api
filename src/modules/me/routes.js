@@ -22,7 +22,7 @@ function createMeRouter({ me = defaultMe, legal = defaultLegal, auth = defaultAu
     sendCacheable(req, res, user, { cacheControl: privateCache, etag: userEtagOf(user) });
   }));
 
-  // PATCH /me: name, date of birth, gender, language. If-Match guards against changes from another device.
+  // PATCH /me: name, date of birth, gender, language and the settings. If-Match guards against changes from another device.
   router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
     const user = await me.updateMe({ auth: req.auth, patch: req.body, ifMatch: req.get('if-match') });
     res.set('ETag', userEtagOf(user)).set('Cache-Control', privateCache).json(user);

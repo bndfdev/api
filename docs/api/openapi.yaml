@@ -32,7 +32,7 @@ info:
     - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
       operation are listed under `x-rate-limit`.
     - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
-      `page.hasMore`).
+      `page.hasMore`; `page.total` counts every match).
     - **Every response** carries `X-Request-Id`; errors repeat it as
       `requestId`.
     - **Transport:** HTTPS only (HSTS). Tokens, codes and passwords are
@@ -67,6 +67,8 @@ tags:
     description: Terms and privacy documents and the user's acceptance.
   - name: Interests
     description: The interest catalog and the user's selection.
+  - name: Content
+    description: The user's own playlists, albums, songs and stories.
   - name: Catalog
     description: Reference data (countries).
   - name: Media
@@ -146,6 +148,12 @@ paths:
     $ref: './paths/me.yaml#/meInterests'
   /me/interests/{interestId}:
     $ref: './paths/me.yaml#/meInterest'
+  /me/notification-settings:
+    $ref: './paths/me.yaml#/meNotificationSettings'
+  /me/content:
+    $ref: './paths/me.yaml#/meContent'
+  /me/content/{contentId}:
+    $ref: './paths/me.yaml#/meContentItem'
   /me/media/uploads:
     $ref: './paths/me.yaml#/meMediaUploads'
   /me/avatar:
