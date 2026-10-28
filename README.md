@@ -131,6 +131,45 @@ Steps to enable deploys for the team:
 
 Replace `<AWS_ACCOUNT_ID>` with the account containing the role. If the repository uses GitHub's immutable OIDC subject claims, update the `sub` values with the organization and repository numeric ID suffixes shown in the token claims.
 
+### Troubleshooting: `Not authorized to perform sts:AssumeRoleWithWebIdentity`
+
+This error comes from AWS rejecting the token, so the fix is almost always in the role's trust policy. Find the exact `sub` your run presents instead of guessing:
+
+```bash
+gh workflow run oidc-debug.yml --ref main      # or the branch/event that fails
+gh run watch
+```
+
+The job prints `event_name`, `ref` and the token's `sub`/`aud`. Then compare with the role:
+
+```bash
+aws iam get-role --role-name <ROLE_NAME> --query 'Role.AssumeRolePolicyDocument' --output json
+```
+
+The usual causes, in order of likelihood:
+
+1. **`sub` mismatch.** The `sub` reflects `github.ref` — the ref the workflow was dispatched on — **not** the branch the checkout step switches to. `gh workflow run deploy.yml --ref main --field branch=dev` therefore still presents `ref:refs/heads/main`, while the code deployed is `dev`. Prefer `gh workflow run deploy.yml --ref dev`.
+2. **Immutable subject claims.** Newer repos present `repo:OWNER@ORG_ID/REPO@REPO_ID:ref:...` instead of `repo:OWNER/REPO:ref:...`. A policy written as `repo:bndfdev/api:*` never matches; copy the printed `sub` verbatim.
+3. **Missing or misplaced `aud`.** The trust policy must contain `token.actions.githubusercontent.com:aud = sts.amazonaws.com` under `StringEquals`, and the IAM OIDC provider's client ID list must include `sts.amazonaws.com`:
+   ```bash
+   aws iam get-open-id-connect-provider \
+     --open-id-connect-provider-arn arn:aws:iam::<AWS_ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com \
+     --query 'ClientIDList'
+   ```
+4. **Wrong action or principal.** The statement needs `"Action": "sts:AssumeRoleWithWebIdentity"` (not `sts:AssumeRole`) and the principal must be the provider ARN **in the same account as the role**.
+5. **Wrong or malformed secret.** A trailing newline or quotes in `AWS_ROLE_TO_ASSUME` produce the same error. Re-set it with `gh secret set` and confirm with `gh secret list`.
+6. **An Organizations SCP** explicitly denying `sts:AssumeRoleWithWebIdentity`, which the trust policy cannot override.
+
+To unblock quickly, allow the whole repository and tighten afterwards:
+
+```json
+"StringLike": {
+  "token.actions.githubusercontent.com:sub": "repo:bndfdev/api:*"
+}
+```
+
+Also confirm the workflow/job that assumes the role declares `permissions: id-token: write` — without it no token is issued at all.
+
 6. Commands and steps to perform
 
 Below are concrete commands to create the required GitHub secrets, trigger builds by merging a PR into `main`, `dev`, or `stage`, and manually trigger the workflow from the CLI.
