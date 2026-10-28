@@ -1,0 +1,11 @@
+# Lint and bundle settings for the API spec.
+#   npx @redocly/cli lint docs/api/openapi.yaml
+#   npx @redocly/cli bundle docs/api/openapi.yaml -o docs/api/dist/openapi.yaml
+extends:
+  - recommended
+rules:
+  operation-4xx-response: error
+  operation-operationId-unique: error
+  no-unused-components: warn
+  security-defined: error
+  no-server-example.com: off # localhost is the intended local-dev server

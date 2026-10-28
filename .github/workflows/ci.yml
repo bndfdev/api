@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # The MongoDB the tests start in memory; same version as local development.
+      MONGOMS_VERSION: '8.2.6'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache MongoDB binaries
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/mongodb-memory-server
+          key: mongodb-binaries-${{ runner.os }}-${{ env.MONGOMS_VERSION }}
+
+      - name: Unit and integration tests
+        run: npm test
+
+      - name: Lint the OpenAPI spec
+        run: npx redocly lint docs/api/openapi.yaml --config docs/api/redocly.yaml
+
+      - name: Check the bundled spec is up to date
+        run: |
+          npx redocly bundle docs/api/openapi.yaml --config docs/api/redocly.yaml -o "$RUNNER_TEMP/openapi.bundle.yaml"
+          diff -u docs/api/dist/openapi.yaml "$RUNNER_TEMP/openapi.bundle.yaml" \
+            || { echo "docs/api/dist/openapi.yaml is stale. Run: npx redocly bundle --config docs/api/redocly.yaml docs/api/openapi.yaml -o docs/api/dist/openapi.yaml"; exit 1; }

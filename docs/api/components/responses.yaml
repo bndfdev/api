@@ -1,0 +1,214 @@
+# Reusable responses. Every error is `application/problem+json` with the
+# `Problem` shape; the `code` values each operation can return are listed in
+# that operation's description.
+
+NoContent:
+  description: Done. No body.
+  headers:
+    X-Request-Id:
+      $ref: './headers.yaml#/RequestId'
+
+NotModified:
+  description: Unchanged since the `If-None-Match` ETag; use the cached copy.
+  headers:
+    ETag:
+      $ref: './headers.yaml#/ETag'
+
+BadRequest:
+  description: The body is not valid JSON, or a required header is missing (`MALFORMED_REQUEST`).
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/malformed-request
+        title: Malformed request
+        status: 400
+        code: MALFORMED_REQUEST
+        detail: The request body is not valid JSON.
+        requestId: req_01J8Z3K5QH
+
+Unauthorized:
+  description: |
+    Missing, invalid or expired credentials. On `TOKEN_EXPIRED` the app
+    refreshes once and retries; on any other 401 it signs the user out.
+  headers:
+    WWW-Authenticate:
+      description: '`Bearer error="invalid_token"` when a token was sent.'
+      schema:
+        type: string
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/token-expired
+        title: Access token expired
+        status: 401
+        code: TOKEN_EXPIRED
+        requestId: req_01J8Z3K5QH
+
+Forbidden:
+  description: Signed in, but not allowed (for example a guest calling an account-only endpoint).
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/guest-not-allowed
+        title: Create an account to do this
+        status: 403
+        code: GUEST_NOT_ALLOWED
+        requestId: req_01J8Z3K5QH
+
+NotFound:
+  description: The resource does not exist or is not visible to this caller.
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/not-found
+        title: Not found
+        status: 404
+        code: NOT_FOUND
+        requestId: req_01J8Z3K5QH
+
+Conflict:
+  description: The request clashes with the current state (already taken, already used, stale version).
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/email-taken
+        title: Email already registered
+        status: 409
+        code: EMAIL_TAKEN
+        detail: An account already uses this email. Try signing in instead.
+        requestId: req_01J8Z3K5QH
+
+Gone:
+  description: The resource existed but has expired and cannot be used again.
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/challenge-expired
+        title: Code expired
+        status: 410
+        code: CHALLENGE_EXPIRED
+        detail: This code has expired. Request a new one.
+        requestId: req_01J8Z3K5QH
+
+PreconditionFailed:
+  description: '`If-Match` did not match; the resource changed on another device. Re-read and retry.'
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+
+PayloadTooLarge:
+  description: Body or file larger than allowed (`PAYLOAD_TOO_LARGE`). `meta.maxBytes` holds the limit.
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+
+UnsupportedMediaType:
+  description: Wrong `Content-Type`, or a file type that is not accepted (`UNSUPPORTED_MEDIA_TYPE`).
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+
+Unprocessable:
+  description: The request is well-formed but a value is not acceptable. `errors[]` lists each field.
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/validation-failed
+        title: Some details need fixing
+        status: 422
+        code: VALIDATION_FAILED
+        requestId: req_01J8Z3K5QH
+        errors:
+          - field: /password
+            code: PASSWORD_POLICY_VIOLATION
+            message: Add an uppercase letter and a symbol.
+            meta:
+              unmetRules: [uppercase, symbol]
+
+Locked:
+  description: Temporarily locked after too many attempts. Wait `retryAfterSeconds`.
+  headers:
+    Retry-After:
+      $ref: './headers.yaml#/RetryAfter'
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/account-locked
+        title: Too many attempts
+        status: 423
+        code: ACCOUNT_LOCKED
+        detail: Try again in 15 minutes, or reset your password.
+        retryAfterSeconds: 900
+        requestId: req_01J8Z3K5QH
+
+TooManyRequests:
+  description: Rate limited. Wait `Retry-After` seconds; do not retry sooner.
+  headers:
+    Retry-After:
+      $ref: './headers.yaml#/RetryAfter'
+    RateLimit:
+      $ref: './headers.yaml#/RateLimit'
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/resend-too-soon
+        title: Please wait before requesting another code
+        status: 429
+        code: RESEND_TOO_SOON
+        retryAfterSeconds: 22
+        requestId: req_01J8Z3K5QH
+
+UpgradeRequired:
+  description: This app version is no longer supported (`UPGRADE_REQUIRED`). The app shows a blocking "Update Bondfire" screen with a store link.
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+      example:
+        type: https://api.bondfire.app/errors/upgrade-required
+        title: Update required
+        status: 426
+        code: UPGRADE_REQUIRED
+        requestId: req_01J8Z3K5QH
+        meta:
+          minimumVersion: 1.2.0
+
+InternalError:
+  description: Unexpected server failure (`INTERNAL_ERROR`). Safe to retry idempotent calls with backoff.
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'
+
+ServiceUnavailable:
+  description: |
+    A dependency is down (`SERVICE_UNAVAILABLE`, `EMAIL_DELIVERY_FAILED`,
+    `SMS_DELIVERY_FAILED`) or planned `MAINTENANCE`. Retry after `Retry-After`.
+  headers:
+    Retry-After:
+      $ref: './headers.yaml#/RetryAfter'
+  content:
+    application/problem+json:
+      schema:
+        $ref: './schemas.yaml#/Problem'

@@ -1,0 +1,714 @@
+# Authentication: sign-up, codes, login, social, guest, tokens, password reset.
+# Each top-level key is one path item, referenced from openapi.yaml.
+
+emailAvailability:
+  post:
+    operationId: checkEmailAvailability
+    tags: [Auth]
+    summary: Check whether an email can be used to sign up
+    description: |
+      Used by the Email address screen (Figma 1261:31574) before sending a
+      code, so the user sees "already registered" without waiting for mail.
+
+      **Enumeration trade-off:** this reveals whether an address has an
+      account. It is limited hard (see `x-rate-limit`) and returns the same
+      timing for both answers. If product prefers full privacy, the app can
+      skip this call and rely on `POST /auth/signup/email`.
+
+      Errors: `EMAIL_INVALID`, `EMAIL_DOMAIN_NOT_ALLOWED` (422),
+      `RATE_LIMITED` (429).
+    security: []
+    x-rate-limit:
+      - { key: ip, limit: 30, window: 1h }
+      - { key: installation, limit: 20, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/EmailRequest'
+    responses:
+      '200':
+        description: Availability of the address.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/EmailAvailability'
+            examples:
+              available:
+                value: { email: new.user@example.com, available: true, suggestion: null }
+              taken:
+                value: { email: amelia.jane@example.com, available: false, suggestion: null }
+              typo:
+                value: { email: amelia.jane@gmial.com, available: true, suggestion: amelia.jane@gmail.com }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
+signupEmail:
+  post:
+    operationId: startEmailSignup
+    tags: [Auth]
+    summary: Send a sign-up code to an email address
+    description: |
+      Starts sign-up (Figma 1261:31574 → 1261:31607). Sends a 6-digit code
+      valid for 10 minutes and returns the challenge to verify it.
+
+      - Calling again for the same email and install returns the **same
+        challenge** (no new code) until it expires, so a double tap never
+        sends two emails.
+      - The email is normalised before the check (trimmed, domain lowercased).
+      - Nothing is created in the user table until `POST /auth/signup/complete`.
+
+      Errors: `EMAIL_TAKEN` (409), `EMAIL_INVALID`,
+      `EMAIL_DOMAIN_NOT_ALLOWED` (422), `SEND_LIMIT_REACHED` (429, 5 sends
+      per address per 24 h), `EMAIL_DELIVERY_FAILED` (503).
+    security: []
+    x-rate-limit:
+      - { key: email, limit: 5, window: 24h }
+      - { key: ip, limit: 20, window: 1h }
+      - { key: installation, limit: 10, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/EmailRequest'
+    responses:
+      '202':
+        description: Code sent (or an unexpired one already exists).
+        headers:
+          RateLimit:
+            $ref: '../components/headers.yaml#/RateLimit'
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Challenge'
+            example:
+              id: chl_01J8Z4A7
+              purpose: signup_email
+              channel: email
+              destination: a•••••e@example.com
+              codeLength: 6
+              expiresAt: '2026-09-27T10:25:00Z'
+              resendAvailableAt: '2026-09-27T10:15:30Z'
+              attemptsRemaining: 5
+              sendsRemaining: 4
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
+challenge:
+  get:
+    operationId: getChallenge
+    tags: [Auth]
+    summary: Get a challenge's current state
+    description: |
+      Lets the code screen restore its countdown and attempts after the app
+      was killed or the phone rotated. Public for sign-up and reset
+      challenges; phone challenges need the owner's access token.
+
+      Errors: `CHALLENGE_NOT_FOUND` (404, also when called from another
+      install), `CHALLENGE_EXPIRED` (410).
+    security:
+      - {}
+      - bearerAuth: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ChallengeId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+    responses:
+      '200':
+        description: The challenge.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Challenge'
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '410': { $ref: '../components/responses.yaml#/Gone' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+challengeResend:
+  post:
+    operationId: resendChallenge
+    tags: [Auth]
+    summary: Send a new code for the same challenge
+    description: |
+      "Send again" on the code screens. Allowed once `resendAvailableAt` has
+      passed (30 s cooldown). The new code replaces the old one, the
+      attempt counter resets and `expiresAt` moves to 10 minutes from now.
+
+      Errors: `CHALLENGE_NOT_FOUND` (404), `CHALLENGE_ALREADY_USED` (409),
+      `CHALLENGE_EXPIRED` (410, start over), `CHALLENGE_LOCKED` (423),
+      `RESEND_TOO_SOON` / `SEND_LIMIT_REACHED` (429),
+      `EMAIL_DELIVERY_FAILED` / `SMS_DELIVERY_FAILED` (503).
+    security:
+      - {}
+      - bearerAuth: []
+    x-rate-limit:
+      - { key: challenge, limit: 1, window: 30s }
+      - { key: destination, limit: 5, window: 24h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ChallengeId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    responses:
+      '202':
+        description: New code sent.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Challenge'
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '410': { $ref: '../components/responses.yaml#/Gone' }
+      '423': { $ref: '../components/responses.yaml#/Locked' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
+challengeVerify:
+  post:
+    operationId: verifyChallenge
+    tags: [Auth]
+    summary: Verify a one-time code
+    description: |
+      The code screens auto-submit at 6 digits. A correct code consumes the
+      challenge and returns what it unlocks (see `ChallengeVerification`):
+      a `signupToken`, a `resetToken`, or a verified phone number.
+
+      - Codes are compared in constant time; only a hash is stored.
+      - After 5 wrong codes the challenge locks (`CHALLENGE_LOCKED`); the
+        user must request a new code, which counts toward the daily limit.
+      - Leading/trailing spaces are trimmed; anything but 6 digits is
+        `CODE_FORMAT_INVALID` and does **not** use up an attempt.
+      - Phone challenges need the owner's access token. If another account
+        verified the same number in the meantime, this returns `PHONE_TAKEN`.
+
+      Errors: `CHALLENGE_NOT_FOUND` (404), `CHALLENGE_ALREADY_USED`,
+      `PHONE_TAKEN` (409), `CHALLENGE_EXPIRED` (410), `CODE_INCORRECT`
+      (422, `meta.attemptsRemaining`), `CODE_FORMAT_INVALID` (422),
+      `CHALLENGE_LOCKED` (423).
+    security:
+      - {}
+      - bearerAuth: []
+    x-rate-limit:
+      - { key: challenge, limit: 5, window: challenge-lifetime }
+      - { key: ip, limit: 60, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ChallengeId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ChallengeVerifyRequest'
+    responses:
+      '200':
+        description: Code accepted.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/ChallengeVerification'
+            examples:
+              signup:
+                value:
+                  purpose: signup_email
+                  email: amelia.jane@example.com
+                  signupToken: sgt_2b7c…
+                  signupTokenExpiresAt: '2026-09-27T10:45:00Z'
+              reset:
+                value:
+                  purpose: password_reset
+                  resetToken: rst_9f1a…
+                  resetTokenExpiresAt: '2026-09-27T10:30:00Z'
+              phone:
+                value:
+                  purpose: phone_verification
+                  phoneNumber: '+14155550123'
+                  verifiedAt: '2026-09-27T10:16:00Z'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '410': { $ref: '../components/responses.yaml#/Gone' }
+      '422':
+        description: Wrong or malformed code.
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/code-incorrect
+              title: That code isn't right
+              status: 422
+              code: CODE_INCORRECT
+              requestId: req_01J8Z3K5QH
+              meta:
+                attemptsRemaining: 3
+      '423': { $ref: '../components/responses.yaml#/Locked' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+signupComplete:
+  post:
+    operationId: completeSignup
+    tags: [Auth]
+    summary: Create the account (set password) and sign in
+    description: |
+      Create password screen (Figma 1261:31642). Creates the user with the
+      verified email and returns a session. The `signupToken` is single-use.
+
+      **Guest upgrade:** when called with a guest access token in
+      `Authorization`, the guest's date of birth, language, interests and
+      consents move to the new account and the guest session ends.
+
+      Errors: `SIGNUP_TOKEN_INVALID`, `SIGNUP_TOKEN_EXPIRED` (401),
+      `EMAIL_TAKEN` (409, someone finished sign-up for this email first),
+      `PASSWORD_POLICY_VIOLATION` (422, `errors[0].meta.unmetRules`),
+      `PASSWORD_COMPROMISED`, `LANGUAGE_UNSUPPORTED` (422).
+    security:
+      - {}
+      - bearerAuth: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/SignupCompleteRequest'
+    responses:
+      '201':
+        description: Account created and signed in. `user.onboarding.nextStep` is `phone_verified`.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Session'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+login:
+  post:
+    operationId: login
+    tags: [Auth]
+    summary: Sign in with email and password
+    description: |
+      Enter email → Enter password screens (Figma 1261:31330, 1372:27858).
+
+      - Wrong email and wrong password give the **same** error and timing
+        (`INVALID_CREDENTIALS`), so an attacker cannot learn which emails exist.
+      - An account that only uses Apple/Google/Facebook has no password and
+        also gets `INVALID_CREDENTIALS`.
+      - Lockout: 5 failures in 15 minutes lock password login for 15
+        minutes (`ACCOUNT_LOCKED`, 423 + `Retry-After`). A password reset
+        clears the lock. Limits are per account **and** per IP, so one
+        attacker cannot lock out every user.
+      - Signing in while `pending_deletion` cancels the deletion.
+
+      Errors: `INVALID_CREDENTIALS` (401), `ACCOUNT_SUSPENDED` (403),
+      `ACCOUNT_LOCKED` (423), `RATE_LIMITED` (429).
+    security: []
+    x-rate-limit:
+      - { key: account, limit: 5, window: 15m }
+      - { key: ip, limit: 50, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/LoginRequest'
+    responses:
+      '200':
+        description: Signed in.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Session'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '423': { $ref: '../components/responses.yaml#/Locked' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+social:
+  post:
+    operationId: socialLogin
+    tags: [Auth]
+    summary: Sign in or sign up with Apple, Google or Facebook
+    description: |
+      The app runs the provider's native SDK and sends the result here; the
+      server verifies it with the provider (signature, audience, expiry,
+      nonce) and issues our own session. No Firebase involved.
+
+      Account rules:
+      1. Provider account already linked → sign in.
+      2. Not linked, and no Bondfire account has that email → create one
+         (`isNewUser: true`, `201`). Onboarding continues at date of birth.
+      3. Not linked, but a password account has the same **verified** email
+         → `409 ACCOUNT_LINK_REQUIRED`. `meta.linkToken` (10 min) lets the
+         user sign in with their password and then call
+         `POST /me/identities` to link. Never auto-link silently.
+      4. Provider gives no email (Apple "Hide My Email" relay is fine;
+         Facebook may give none) → account without email; the user can add
+         one later.
+      5. Provider says the email is unverified → `SOCIAL_EMAIL_UNVERIFIED`.
+
+      Apple only sends the name on first authorisation; the app forwards
+      `givenName`/`familyName` once. On account deletion the server revokes
+      the Apple token (App Store requirement).
+
+      Errors: `SOCIAL_TOKEN_INVALID`, `SOCIAL_NONCE_MISMATCH` (401),
+      `ACCOUNT_SUSPENDED` (403), `ACCOUNT_LINK_REQUIRED` (409),
+      `SOCIAL_PROVIDER_UNSUPPORTED`, `SOCIAL_EMAIL_UNVERIFIED` (422),
+      `SERVICE_UNAVAILABLE` (503, provider down).
+    security: []
+    x-rate-limit:
+      - { key: ip, limit: 30, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/SocialLoginRequest'
+    responses:
+      '200':
+        description: Signed in to an existing account.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Session'
+      '201':
+        description: New account created.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Session'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '409':
+        description: An account with this email exists and must be linked first.
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/account-link-required
+              title: You already have an account
+              status: 409
+              code: ACCOUNT_LINK_REQUIRED
+              detail: Sign in with your password to connect Google.
+              requestId: req_01J8Z3K5QH
+              meta:
+                linkToken: lnk_7d2e…
+                email: a•••••e@example.com
+                existingLoginMethods: [password]
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
+guest:
+  post:
+    operationId: startGuestSession
+    tags: [Auth]
+    summary: Continue as a guest
+    description: |
+      Continue as a guest → birthday (Figma 1261:31699, 1261:31730). The
+      Figma note makes the birthday mandatory for guests too.
+
+      - Idempotent per install: the same `installationId` gets back its
+        existing guest account (`200`) instead of a new one (`201`).
+      - Guest tokens get `accountType: guest` and can browse, pick
+        interests and register for push. Account-only endpoints return
+        `403 GUEST_NOT_ALLOWED`; the app then offers sign-up, which carries
+        the guest's data over (see `POST /auth/signup/complete`).
+      - Guest accounts unused for 180 days are deleted.
+
+      Errors: `FORBIDDEN` (403, guest mode switched off in `/config`),
+      `DATE_OF_BIRTH_INVALID`, `AGE_REQUIREMENT_NOT_MET`,
+      `LANGUAGE_UNSUPPORTED` (422).
+    security: []
+    x-rate-limit:
+      - { key: ip, limit: 20, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/GuestSessionRequest'
+    responses:
+      '200':
+        description: Existing guest for this install, signed in again.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Session'
+      '201':
+        description: New guest created.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Session'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+tokenRefresh:
+  post:
+    operationId: refreshTokens
+    tags: [Auth]
+    summary: Swap a refresh token for a new token pair
+    description: |
+      Called when an access token expires (`401 TOKEN_EXPIRED`) or shortly
+      before. Refresh tokens rotate: each one works **once**.
+
+      - **Reuse detection:** presenting an already-used refresh token
+        revokes that whole session (`REFRESH_TOKEN_REUSED`) because it may
+        have been stolen.
+      - **Grace window:** two refreshes racing from the same install within
+        30 seconds both get the same new pair, so parallel requests after
+        waking from background do not log the user out.
+      - The app must serialise refreshes (one in flight at a time).
+
+      Errors: `REFRESH_TOKEN_INVALID`, `REFRESH_TOKEN_REUSED`,
+      `SESSION_REVOKED` (401), `ACCOUNT_SUSPENDED` (403).
+    security: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/RefreshRequest'
+    responses:
+      '200':
+        description: New tokens. Replace both stored tokens.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/TokenPair'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+logout:
+  post:
+    operationId: logout
+    tags: [Auth]
+    summary: Sign out this session
+    description: |
+      Revokes the current session. Always returns `204`, even if the tokens
+      were already expired or revoked, so the app can clear local state
+      unconditionally. The app also unregisters its push token.
+    security:
+      - {}
+      - bearerAuth: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+    requestBody:
+      required: false
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/LogoutRequest'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+passwordResetStart:
+  post:
+    operationId: startPasswordReset
+    tags: [Auth]
+    summary: Send a password-reset code
+    description: |
+      "Reset password" on the password screen. **Always returns `202`** with
+      a challenge, whether or not the email has an account, so this cannot
+      be used to discover accounts. For unknown emails no mail is sent and
+      every code is rejected as `CODE_INCORRECT`.
+
+      Accounts without a password (social-only) receive an email explaining
+      how they sign in instead of a code.
+
+      Errors: `EMAIL_INVALID` (422), `SEND_LIMIT_REACHED` (429),
+      `EMAIL_DELIVERY_FAILED` (503).
+    security: []
+    x-rate-limit:
+      - { key: email, limit: 5, window: 24h }
+      - { key: ip, limit: 20, window: 1h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/EmailRequest'
+    responses:
+      '202':
+        description: If the account exists, a code was sent.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Challenge'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
+
+passwordResetComplete:
+  post:
+    operationId: completePasswordReset
+    tags: [Auth]
+    summary: Set a new password and sign in
+    description: |
+      Create password screen in the reset flow (Figma 1372:27665), then Home.
+
+      - Revokes **every** other session of the account and clears any login lock.
+      - Sends a "your password was changed" email.
+      - The new password must differ from the current one (`PASSWORD_REUSED`).
+
+      Errors: `RESET_TOKEN_INVALID`, `RESET_TOKEN_EXPIRED` (401),
+      `PASSWORD_POLICY_VIOLATION`, `PASSWORD_COMPROMISED`,
+      `PASSWORD_REUSED` (422).
+    security: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/PasswordResetCompleteRequest'
+    responses:
+      '200':
+        description: Password changed; signed in on this device.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Session'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+reauthenticate:
+  post:
+    operationId: reauthenticate
+    tags: [Auth]
+    summary: Confirm identity before a sensitive action
+    description: |
+      Returns a 5-minute `reauthToken` for sensitive calls (delete account,
+      unlink a login method, set a first password). Social-only users
+      re-confirm with a fresh provider credential.
+
+      Wrong password is `422 PASSWORD_INCORRECT` (not 401, which would sign
+      the user out). 5 failures lock it like login (`ACCOUNT_LOCKED`, 423).
+    security:
+      - bearerAuth: []
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ReauthenticateRequest'
+    responses:
+      '200':
+        description: Re-authenticated.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/ReauthToken'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '423': { $ref: '../components/responses.yaml#/Locked' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }

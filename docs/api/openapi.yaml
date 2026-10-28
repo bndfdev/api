@@ -1,0 +1,173 @@
+openapi: 3.1.0
+info:
+  title: Bondfire API
+  version: 1.0.0-draft.1
+  summary: Accounts, onboarding, profile and catalog for the Bondfire app.
+  description: |
+    **Status: draft for review.** Contract between the Bondfire app and the
+    `api` server for everything the onboarding flow needs. Design notes,
+    edge cases and the migration from today's endpoints are in
+    `docs/api/README.md`.
+
+    ## Conventions (apply to every endpoint)
+
+    - **Base URL** `https://api.bondfire.app/v1`. Breaking changes ship as
+      `/v2`; additive changes (new fields, new error codes, new enum values)
+      do not, so clients must ignore unknown fields and handle unknown enum
+      values.
+    - **JSON only**, UTF-8, `camelCase` fields. Timestamps are RFC 3339 UTC;
+      calendar dates (date of birth) are `YYYY-MM-DD`. Absent and `null`
+      mean "not set".
+    - **Headers on every request:** `X-Client-Platform`, `X-Client-Version`
+      and `X-Installation-Id` (the install's random UUID). Builds below the
+      minimum version get `426 UPGRADE_REQUIRED`. `Accept-Language` picks
+      the language of human-readable messages.
+    - **Auth:** `Authorization: Bearer <accessToken>` (15-minute JWT). Get
+      new tokens with `POST /auth/token/refresh` (refresh tokens rotate and
+      are single-use). Guests use the same scheme with limited rights.
+    - **Errors** are RFC 9457 problem details (`application/problem+json`)
+      with a stable `code`. Branch on `code`, never on text.
+    - **Retries:** send `Idempotency-Key` (UUID) on calls that send codes,
+      create accounts or upload, and reuse it when retrying the same action.
+    - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
+      operation are listed under `x-rate-limit`.
+    - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
+      `page.hasMore`).
+    - **Every response** carries `X-Request-Id`; errors repeat it as
+      `requestId`.
+    - **Transport:** HTTPS only (HSTS). Tokens, codes and passwords are
+      never logged.
+  contact:
+    name: Bondfire engineering
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+
+servers:
+  - url: https://api.bondfire.app/v1
+    description: Production
+  - url: https://staging-api.bondfire.app/v1
+    description: Staging
+  - url: http://localhost:3000/v1
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Meta
+    description: Health, app configuration.
+  - name: Auth
+    description: Sign-up, one-time codes, login, social login, guest, tokens, password reset.
+  - name: Account
+    description: The signed-in user's profile, password, phone and deletion.
+  - name: Onboarding
+    description: Server-side onboarding progress so the flow resumes on any device.
+  - name: Legal
+    description: Terms and privacy documents and the user's acceptance.
+  - name: Interests
+    description: The interest catalog and the user's selection.
+  - name: Catalog
+    description: Reference data (countries).
+  - name: Media
+    description: Profile photo and banner.
+  - name: Sessions
+    description: Signed-in devices and linked sign-in methods.
+  - name: Devices
+    description: Push notification registration.
+
+paths:
+  # Meta and catalog
+  /health:
+    $ref: './paths/catalog.yaml#/health'
+  /health/ready:
+    $ref: './paths/catalog.yaml#/ready'
+  /config:
+    $ref: './paths/catalog.yaml#/config'
+  /legal/{documentType}:
+    $ref: './paths/catalog.yaml#/legalDocument'
+  /countries:
+    $ref: './paths/catalog.yaml#/countries'
+  /interests/featured:
+    $ref: './paths/catalog.yaml#/interestsFeatured'
+  /interests/search:
+    $ref: './paths/catalog.yaml#/interestsSearch'
+  /interests/{interestId}:
+    $ref: './paths/catalog.yaml#/interest'
+
+  # Auth
+  /auth/email/availability:
+    $ref: './paths/auth.yaml#/emailAvailability'
+  /auth/signup/email:
+    $ref: './paths/auth.yaml#/signupEmail'
+  /auth/signup/complete:
+    $ref: './paths/auth.yaml#/signupComplete'
+  /auth/challenges/{challengeId}:
+    $ref: './paths/auth.yaml#/challenge'
+  /auth/challenges/{challengeId}/resend:
+    $ref: './paths/auth.yaml#/challengeResend'
+  /auth/challenges/{challengeId}/verify:
+    $ref: './paths/auth.yaml#/challengeVerify'
+  /auth/login:
+    $ref: './paths/auth.yaml#/login'
+  /auth/social:
+    $ref: './paths/auth.yaml#/social'
+  /auth/guest:
+    $ref: './paths/auth.yaml#/guest'
+  /auth/token/refresh:
+    $ref: './paths/auth.yaml#/tokenRefresh'
+  /auth/logout:
+    $ref: './paths/auth.yaml#/logout'
+  /auth/password-reset:
+    $ref: './paths/auth.yaml#/passwordResetStart'
+  /auth/password-reset/complete:
+    $ref: './paths/auth.yaml#/passwordResetComplete'
+  /auth/reauthenticate:
+    $ref: './paths/auth.yaml#/reauthenticate'
+
+  # The signed-in account
+  /me:
+    $ref: './paths/me.yaml#/me'
+  /me/password:
+    $ref: './paths/me.yaml#/mePassword'
+  /me/phone:
+    $ref: './paths/me.yaml#/mePhone'
+  /me/phone/verification:
+    $ref: './paths/me.yaml#/mePhoneVerification'
+  /me/onboarding:
+    $ref: './paths/me.yaml#/meOnboarding'
+  /me/onboarding/steps/{step}:
+    $ref: './paths/me.yaml#/meOnboardingStep'
+  /me/consents:
+    $ref: './paths/me.yaml#/meConsents'
+  /me/interests:
+    $ref: './paths/me.yaml#/meInterests'
+  /me/interests/{interestId}:
+    $ref: './paths/me.yaml#/meInterest'
+  /me/media/uploads:
+    $ref: './paths/me.yaml#/meMediaUploads'
+  /me/avatar:
+    $ref: './paths/me.yaml#/meAvatar'
+  /me/banner:
+    $ref: './paths/me.yaml#/meBanner'
+  /me/sessions:
+    $ref: './paths/me.yaml#/meSessions'
+  /me/sessions/{sessionId}:
+    $ref: './paths/me.yaml#/meSession'
+  /me/identities:
+    $ref: './paths/me.yaml#/meIdentities'
+  /me/identities/{provider}:
+    $ref: './paths/me.yaml#/meIdentity'
+  /me/devices/{installationId}:
+    $ref: './paths/me.yaml#/meDevice'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Access token from any sign-in call. JWT signed with ES256; claims:
+        `sub` (user id), `sid` (session id), `acct` (`user` | `guest`),
+        `iat`, `exp` (15 minutes), `iss`, `aud`. Clients treat it as opaque.

@@ -1,0 +1,151 @@
+# Reusable parameters. Referenced as '../components/parameters.yaml#/<Name>'.
+
+IdempotencyKey:
+  name: Idempotency-Key
+  in: header
+  required: false
+  description: |
+    Random UUID per user action (reuse it when retrying that same action).
+    The server stores the first response for 24 hours and replays it for
+    retries with the same key, so a flaky network never sends two codes,
+    creates two accounts or uploads twice. The same key with a different
+    body returns `422 IDEMPOTENCY_KEY_REUSED`; a retry while the first call
+    is still running returns `409 IDEMPOTENCY_IN_PROGRESS`.
+  schema:
+    type: string
+    format: uuid
+
+AcceptLanguage:
+  name: Accept-Language
+  in: header
+  required: false
+  description: Language for error titles, legal summaries and country names. Falls back to English.
+  schema:
+    type: string
+    examples: ['hi-IN, en;q=0.8']
+
+ClientPlatform:
+  name: X-Client-Platform
+  in: header
+  required: true
+  description: Sent on every request. Used for minimum-version checks and analytics.
+  schema:
+    $ref: './schemas.yaml#/Platform'
+
+ClientVersion:
+  name: X-Client-Version
+  in: header
+  required: true
+  description: App version (semver). Builds below `minimumSupportedVersion` get `426 UPGRADE_REQUIRED`.
+  schema:
+    type: string
+    examples: ['1.4.0']
+
+ClientInstallation:
+  name: X-Installation-Id
+  in: header
+  required: true
+  description: |
+    The install's random UUID (same as `device.installationId`). Challenges
+    are bound to it: a code can only be verified or resent from the install
+    that requested it.
+  schema:
+    type: string
+    format: uuid
+
+ReauthToken:
+  name: X-Reauth-Token
+  in: header
+  required: true
+  description: From `POST /auth/reauthenticate`, valid 5 minutes. Proves the user just re-entered their password.
+  schema:
+    type: string
+
+IfNoneMatch:
+  name: If-None-Match
+  in: header
+  required: false
+  description: ETag from a previous response. The server answers `304 Not Modified` when nothing changed.
+  schema:
+    type: string
+
+IfMatch:
+  name: If-Match
+  in: header
+  required: false
+  description: |
+    ETag of the profile the client last read. When sent and stale, the
+    update is rejected with `412` so one device cannot silently overwrite
+    another's edit.
+  schema:
+    type: string
+
+ChallengeId:
+  name: challengeId
+  in: path
+  required: true
+  schema:
+    $ref: './schemas.yaml#/Id'
+
+SessionId:
+  name: sessionId
+  in: path
+  required: true
+  schema:
+    $ref: './schemas.yaml#/Id'
+
+InterestId:
+  name: interestId
+  in: path
+  required: true
+  schema:
+    $ref: './schemas.yaml#/Id'
+
+InstallationId:
+  name: installationId
+  in: path
+  required: true
+  schema:
+    type: string
+    format: uuid
+
+Provider:
+  name: provider
+  in: path
+  required: true
+  schema:
+    $ref: './schemas.yaml#/SocialProvider'
+
+LegalDocumentType:
+  name: documentType
+  in: path
+  required: true
+  schema:
+    $ref: './schemas.yaml#/LegalDocumentType'
+
+OnboardingStep:
+  name: step
+  in: path
+  required: true
+  schema:
+    $ref: './schemas.yaml#/OnboardingStepName'
+
+Cursor:
+  name: cursor
+  in: query
+  required: false
+  description: '`page.nextCursor` from the previous page. Omit for the first page.'
+  schema:
+    type: string
+    maxLength: 512
+
+Limit:
+  name: limit
+  in: query
+  required: false
+  description: Page size.
+  schema:
+    type: integer
+    minimum: 1
+    maximum: 50
+    default: 20
