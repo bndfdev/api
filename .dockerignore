@@ -1,0 +1,22 @@
+# Install from package-lock.json inside the image, never copy local deps.
+node_modules
+npm-debug.log*
+
+# Secrets and local config — passed as env vars / secrets at runtime.
+.env
+.env.*
+!.env.example
+
+# Git and editor/CI metadata.
+.git
+.gitignore
+.github
+.vscode
+.DS_Store
+
+# Not needed at runtime.
+test
+coverage
+*.md
+docs/*.docx
+docs/*.md

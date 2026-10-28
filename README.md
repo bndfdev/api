@@ -31,6 +31,33 @@ This is a Node.js Express API for the Bondfire mobile app.
 - Flesh out endpoint logic
 - Integrate with the mobile app
 
+## Run with Docker
+
+`Dockerfile` builds a production image on `node:22-bookworm-slim`, installs only
+production dependencies, and runs as the unprivileged `node` user.
+
+```bash
+docker build -t bondfire-api:local .
+docker run --rm -p 3000:3000 --env-file .env bondfire-api:local
+```
+
+Migrations are not run on boot. Apply them once per deploy as a separate one-off:
+
+```bash
+docker run --rm --env-file .env bondfire-api:local npm run migrate
+```
+
+Notes:
+
+- All configuration comes from environment variables (`MONGODB_URI`,
+  `JWT_PRIVATE_KEY`, `TOKEN_ENC_KEY`, …). See `.env.example`; `.env` is ignored
+  by `.dockerignore` and must not be baked into the image.
+- `GET /health` is used as the container healthcheck. Point the load balancer or
+  ECS health check at `GET /health/ready` so it also verifies MongoDB.
+- Uploaded files are written to `public/uploads`, which is ephemeral inside a
+  container. Mount a volume there or move uploads to S3/EFS before relying on
+  them in production.
+
 ## Deployment (GitHub Actions + AWS OIDC)
 
 We use GitHub Actions to assume an AWS IAM role via OIDC and perform CI/CD deploys.
@@ -52,9 +79,26 @@ Steps to enable deploys for the team:
    gh secret set AWS_REGION --org YOUR_ORG --body "us-east-1"
    ```
 
-2. The repository includes a sample workflow at `.github/workflows/deploy.yml` that assumes the role and runs deploy steps. Customize the deploy commands to match your pipeline (build, ECR push, S3 sync, CloudFormation/Terraform, etc.).
+2. Add the repository **variables** (Settings → Secrets and variables → Actions → Variables) the workflow uses:
 
-3. Configure the IAM role trust policy to allow this repository's GitHub OIDC tokens. The `sub` values must include every event and branch that can deploy:
+   | Variable | Required | Default | Purpose |
+   | --- | --- | --- | --- |
+   | `ECR_REPOSITORY` | no | `bondfire-api` | ECR repository name the image is pushed to. |
+   | `ECS_CLUSTER` | yes | — | ECS cluster to deploy into. |
+   | `ECS_SERVICE` | yes | — | ECS service **and** task definition family name (e.g. `bondfire-api`). |
+   | `ECS_CONTAINER_NAME` | no | `api` | Container name inside the task definition that gets the new image. |
+
+   ```bash
+   gh variable set ECR_REPOSITORY --org YOUR_ORG --body "bondfire-api"
+   gh variable set ECS_CLUSTER    --org YOUR_ORG --body "bondfire-prod"
+   gh variable set ECS_SERVICE    --org YOUR_ORG --body "bondfire-api"
+   ```
+
+3. The IAM role needs `ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`, plus `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`, `ecs:UpdateService`, `ecs:DescribeServices` and `iam:PassRole` (for the task execution/task roles).
+
+4. On every push to `main`, `dev`, `stage` or `feature/cicd_integration`, the workflow at `.github/workflows/deploy.yml` builds the `Dockerfile`, pushes `:<sha>` and `:latest` to ECR, re-registers the task definition with the new image and waits for the service to stabilise.
+
+5. Configure the IAM role trust policy to allow this repository's GitHub OIDC tokens. The `sub` values must include every event and branch that can deploy:
 
 ```json
 {
@@ -87,7 +131,7 @@ Steps to enable deploys for the team:
 
 Replace `<AWS_ACCOUNT_ID>` with the account containing the role. If the repository uses GitHub's immutable OIDC subject claims, update the `sub` values with the organization and repository numeric ID suffixes shown in the token claims.
 
-4. Commands and steps to perform
+6. Commands and steps to perform
 
 Below are concrete commands to create the required GitHub secrets, trigger builds by merging a PR into `main`, `dev`, or `stage`, and manually trigger the workflow from the CLI.
 
