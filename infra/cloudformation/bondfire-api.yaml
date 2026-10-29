@@ -13,7 +13,7 @@ Parameters:
 
   BaseDomain:
     Type: String
-    Default: bondfire.com
+    Default: bondfire.ai
     AllowedPattern: '^[a-z0-9.-]+\.[a-z]{2,}$'
     Description: Apex domain. The hostname becomes api.<domain> for prod, api-<env>.<domain> otherwise.
 

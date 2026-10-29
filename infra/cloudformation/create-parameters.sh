@@ -10,7 +10,7 @@
 #   export AWS_REGION=ap-south-1
 #   export MONGODB_URI='mongodb+srv://...'
 #   export SMTP_HOST='email-smtp.ap-south-1.amazonaws.com'
-#   export SMTP_FROM='Bondfire <no-reply@bondfire.com>'
+#   export SMTP_FROM='Bondfire <no-reply@bondfire.ai>'
 #   export SMTP_USER='...' SMTP_PASS='...'
 #   ./create-parameters.sh dev
 #
@@ -29,7 +29,7 @@ fi
 
 : "${MONGODB_URI:?export MONGODB_URI=mongodb+srv://...}"
 : "${SMTP_HOST:?export SMTP_HOST=...}"
-: "${SMTP_FROM:?export SMTP_FROM='Bondfire <no-reply@bondfire.com>'}"
+: "${SMTP_FROM:?export SMTP_FROM='Bondfire <no-reply@bondfire.ai>'}"
 
 SMTP_PORT="${SMTP_PORT:-587}"
 SMTP_AUTH="${SMTP_AUTH:-true}"

@@ -57,37 +57,42 @@ aws ecr create-repository \
 If it already exists, skip. The image URI becomes
 `<account>.dkr.ecr.<region>.amazonaws.com/bondfire-api:latest`.
 
-## Step 2 — Route 53 hosted zone
+## Step 2 — DNS: keep bondfire.ai where it is
+
+`bondfire.ai` is authoritative on **GoDaddy** (`ns71/ns72.domaincontrol.com`)
+and its mail runs on **Microsoft 365**. Do **not** move the nameservers to Route
+53: you would have to recreate MX, SPF, DKIM and autodiscover records, or
+silently lose email.
+
+So there is no hosted zone and no delegation. You add exactly two CNAME records
+in GoDaddy, both covered below:
+
+| Type | Name | Value | Added in |
+| --- | --- | --- | --- |
+| CNAME | ACM validation name | ACM validation target | Step 3 |
+| CNAME | `api-dev` | ALB DNS name (stack output) | Step 7 |
+
+Deploy with `HostedZoneId=` (empty) so CloudFormation does not touch DNS.
+
+If you already created a Route 53 zone for the wrong domain (`bondfire.com`),
+delete it once it only contains the auto-created NS/SOA records:
 
 ```bash
-export ZONE_ID=$(aws route53 list-hosted-zones-by-name \
-  --dns-name bondfire.com \
-  --query 'HostedZones[0].Id' --output text | sed 's|/hostedzone/||')
-echo "zone: $ZONE_ID"
+aws route53 delete-hosted-zone --id Z09041113OCYWQ0AIDQAV
 ```
-
-- If that prints an ID, you're set.
-- If it prints `None`, create the zone with `aws route53 create-hosted-zone --name bondfire.com --caller-reference "$(date +%s)"`
-  and copy the four `NS` records it returns into your registrar's DNS settings
-  for `bondfire.com`. Wait for propagation (`dig NS bondfire.com +short`).
-
-If your DNS is hosted elsewhere and you'd rather not move it, you can skip DNS
-entirely: deploy with `HostedZoneId=` (empty) and create a CNAME from
-`api-dev.bondfire.com` to the stack's `LoadBalancerDns` output yourself. The
-certificate still needs DNS validation through whoever hosts the zone.
 
 ## Step 3 — ACM certificate (must be in the same region as the ALB)
 
 ```bash
 export CERT_ARN=$(aws acm request-certificate \
-  --domain-name "api-$ENV.bondfire.com" \
+  --domain-name "api-$ENV.bondfire.ai" \
   --validation-method DNS \
   --region "$AWS_REGION" \
   --query CertificateArn --output text)
 echo "cert: $CERT_ARN"
 ```
 
-Create the DNS validation record automatically:
+Read the validation record:
 
 ```bash
 read -r VAL_NAME VAL_TYPE VAL_VALUE <<< "$(aws acm describe-certificate \
@@ -95,11 +100,16 @@ read -r VAL_NAME VAL_TYPE VAL_VALUE <<< "$(aws acm describe-certificate \
   --query 'Certificate.DomainValidationOptions[0].ResourceRecord.[Name,Type,Value]' \
   --output text)"
 
-aws route53 change-resource-record-sets --hosted-zone-id "$ZONE_ID" \
-  --change-batch "{\"Changes\":[{\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"$VAL_NAME\",\"Type\":\"$VAL_TYPE\",\"TTL\":300,\"ResourceRecords\":[{\"Value\":\"$VAL_VALUE\"}]}}]}"
+echo "Type:  $VAL_TYPE"
+echo "Name:  ${VAL_NAME%.bondfire.ai.}"
+echo "Value: $VAL_VALUE"
 ```
 
-Wait until issued (usually 2–10 minutes, occasionally longer):
+Add that in GoDaddy: **My Products → Domains → bondfire.ai → DNS → Add New
+Record**, type `CNAME`, TTL `600`, Name as printed above (GoDaddy appends
+`.bondfire.ai`, so do not paste the full name), Value as printed.
+
+Wait until issued (usually 2–10 minutes once the record propagates):
 
 ```bash
 before=""
@@ -112,9 +122,10 @@ done
 echo "certificate issued"
 ```
 
-> Reusing one certificate: a wildcard `*.bondfire.com` covers `api-dev`, `api-qa`
-> and `api` in a single region. Request it once (`--domain-name '*.bondfire.com'`)
-> and pass the same `CertificateArn` to every stack.
+> Reusing one certificate: a wildcard `*.bondfire.ai` covers `api-dev`, `api-qa`
+> and `api` in one region. Request it once (`--domain-name '*.bondfire.ai'`) and
+> pass the same `CertificateArn` to every stack. The validation CNAME is also a
+> single record in that case.
 
 ## Step 4 — Runtime secrets in SSM
 
@@ -134,7 +145,7 @@ you ask:
 ```bash
 export MONGODB_URI='mongodb+srv://user:pass@cluster.mongodb.net/bondfire?retryWrites=true'
 export SMTP_HOST='email-smtp.ap-south-1.amazonaws.com'
-export SMTP_FROM='Bondfire <no-reply@bondfire.com>'
+export SMTP_FROM='Bondfire <no-reply@bondfire.ai>'
 export SMTP_USER='...'
 export SMTP_PASS='...'
 
@@ -172,8 +183,8 @@ aws cloudformation deploy \
   --region "$AWS_REGION" \
   --parameter-overrides \
     Environment="$ENV" \
-    BaseDomain=bondfire.com \
-    HostedZoneId="$ZONE_ID" \
+    BaseDomain=bondfire.ai \
+    HostedZoneId= \
     CertificateArn="$CERT_ARN" \
     ImageUri="$ECR_URI:latest" \
     VpcCidr=10.42.0.0/16
@@ -186,12 +197,26 @@ aws cloudformation describe-stacks --stack-name "bondfire-api-$ENV" --region "$A
   --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table
 ```
 
-## Step 7 — Verify
+## Step 7 — Point api-dev at the ALB, then verify
+
+The stack's `LoadBalancerDns` output is the hostname to target:
 
 ```bash
-dig +short api-dev.bondfire.com
-curl -s https://api-dev.bondfire.com/health
-curl -s https://api-dev.bondfire.com/health/ready
+LB_DNS=$(aws cloudformation describe-stacks --stack-name "bondfire-api-$ENV" --region "$AWS_REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerDns'].OutputValue" --output text)
+echo "$LB_DNS"
+```
+
+In GoDaddy: **My Products → Domains → bondfire.ai → DNS → Add New Record**,
+type `CNAME`, Name `api-dev`, Value `$LB_DNS`, TTL `600`. There is no existing
+`api-dev` record (it currently returns NXDOMAIN), so nothing is overwritten.
+
+Then:
+
+```bash
+dig +short api-dev.bondfire.ai
+curl -s https://api-dev.bondfire.ai/health
+curl -s https://api-dev.bondfire.ai/health/ready
 
 aws logs tail "/ecs/bondfire-api-$ENV" --follow --region "$AWS_REGION"
 ```
@@ -315,7 +340,7 @@ Same steps, different values:
 | --- | --- | --- | --- |
 | `ENV` | `dev` | `qa` | `prod` |
 | stack name | `bondfire-api-dev` | `bondfire-api-qa` | `bondfire-api-prod` |
-| hostname | `api-dev.bondfire.com` | `api-qa.bondfire.com` | `api.bondfire.com` |
+| hostname | `api-dev.bondfire.ai` | `api-qa.bondfire.ai` | `api.bondfire.ai` |
 | `VpcCidr` | `10.42.0.0/16` | `10.43.0.0/16` | `10.44.0.0/16` |
 | SSM prefix | `/bondfire/dev/*` | `/bondfire/qa/*` | `/bondfire/prod/*` |
 
@@ -347,19 +372,28 @@ aws ssm get-parameters-by-path --path "/bondfire/$ENV" --recursive --region "$AW
 
 ## Gotchas
 
-1. **CloudFormation vs CI task definitions.** The stack creates the first task
+1. **Never move `bondfire.ai`'s nameservers for this.** DNS is on GoDaddy and
+   mail on Microsoft 365. Switching the zone to Route 53 means recreating MX,
+   SPF, DKIM and autodiscover records; getting one wrong silently drops email.
+   Two CNAMEs in GoDaddy are enough, which is why the stack is deployed with
+   `HostedZoneId=` empty.
+2. **GoDaddy CNAME Name field is a prefix.** For a validation record named
+   `_abc123.api-dev.bondfire.ai`, enter `_abc123.api-dev`; GoDaddy appends the
+   domain. Pasted in full, it becomes
+   `_abc123.api-dev.bondfire.ai.bondfire.ai` and validation never completes.
+3. **CloudFormation vs CI task definitions.** The stack creates the first task
    definition; CI then registers new revisions. A later `cloudformation deploy`
    re-registers from the template's `ImageUri`. Keep that value at
    `...:latest` (which CI also pushes) so a stack update never pins old code.
-2. **MongoDB Atlas allowlist.** Tasks use public IPs that change on every
+4. **MongoDB Atlas allowlist.** Tasks use public IPs that change on every
    deployment. For dev/QA, allow `0.0.0.0/0` (or the region's AWS ranges); for
    prod, add a NAT gateway with an Elastic IP and allowlist that single IP.
-3. **SMTP is not optional in production.** See Step 4.
-4. **Certificate region.** ACM certificates are regional and only usable by an
+5. **SMTP is not optional in production.** See Step 4.
+6. **Certificate region.** ACM certificates are regional and only usable by an
    ALB in the same region. A `us-east-1` certificate cannot front an
    `ap-south-1` ALB.
-5. **One ALB per environment is the main fixed cost.** If dev/QA hosting cost
+7. **One ALB per environment is the main fixed cost.** If dev/QA hosting cost
    matters more than isolation, they can share an ALB with host-based listener
    rules; that is a different template.
-6. **Health check path** is `/health/ready` (checks MongoDB). `/health` is the
+8. **Health check path** is `/health/ready` (checks MongoDB). `/health` is the
    container-level liveness check only.
