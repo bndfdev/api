@@ -475,6 +475,10 @@ Outputs:
     Description: ALB DNS name (use as a CNAME target when HostedZoneId is empty).
     Value: !GetAtt LoadBalancer.DNSName
 
+  TargetGroupArn:
+    Description: Use with `aws elbv2 describe-target-health` when the API is unreachable.
+    Value: !Ref TargetGroup
+
   ClusterName:
     Description: Value for the ECS_CLUSTER GitHub variable.
     Value: !Ref Cluster
