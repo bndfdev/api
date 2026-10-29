@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Bondfire API - ECS Fargate service behind an Internet-facing ALB, with its own
-  VPC, HTTPS, optional Route 53 record and optional nightly scale-to-zero.
+  VPC, HTTPS and an optional Route 53 record.
   One stack per environment (dev, qa, prod).
 
 Parameters:
@@ -15,7 +15,15 @@ Parameters:
     Type: String
     Default: bondfire.ai
     AllowedPattern: '^[a-z0-9.-]+\.[a-z]{2,}$'
-    Description: Apex domain. The hostname becomes api.<domain> for prod, api-<env>.<domain> otherwise.
+    Description: Apex domain used when Hostname is empty (default hostname is <env>.<domain>).
+
+  Hostname:
+    Type: String
+    Default: ''
+    AllowedPattern: '^([a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+)?$'
+    Description: >-
+      Full hostname for this environment, e.g. dev.bondfire.ai or api.bondfire.ai.
+      Leave empty to use <Environment>.<BaseDomain>.
 
   HostedZoneId:
     Type: String
@@ -96,8 +104,8 @@ Parameters:
 
 Conditions:
   HasDns: !Not [!Equals [!Ref HostedZoneId, '']]
-  IsProd: !Equals [!Ref Environment, prod]
   HasCors: !Not [!Equals [!Ref CorsOrigins, '']]
+  HasHostname: !Not [!Equals [!Ref Hostname, '']]
   SmtpAuthEnabled: !Equals [!Ref SmtpAuth, 'true']
 
 Resources:
@@ -446,9 +454,9 @@ Resources:
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !If
-        - IsProd
-        - !Sub 'api.${BaseDomain}'
-        - !Sub 'api-${Environment}.${BaseDomain}'
+        - HasHostname
+        - !Ref Hostname
+        - !Sub '${Environment}.${BaseDomain}'
       Type: A
       AliasTarget:
         DNSName: !GetAtt LoadBalancer.DNSName
@@ -459,9 +467,9 @@ Outputs:
   Hostname:
     Description: Public hostname this stack is served on.
     Value: !If
-      - IsProd
-      - !Sub 'api.${BaseDomain}'
-      - !Sub 'api-${Environment}.${BaseDomain}'
+      - HasHostname
+      - !Ref Hostname
+      - !Sub '${Environment}.${BaseDomain}'
 
   LoadBalancerDns:
     Description: ALB DNS name (use as a CNAME target when HostedZoneId is empty).
@@ -489,6 +497,6 @@ Outputs:
   Url:
     Description: Once DNS and the certificate are in place.
     Value: !If
-      - IsProd
-      - !Sub 'https://api.${BaseDomain}'
-      - !Sub 'https://api-${Environment}.${BaseDomain}'
+      - HasHostname
+      - !Sub 'https://${Hostname}'
+      - !Sub 'https://${Environment}.${BaseDomain}'
