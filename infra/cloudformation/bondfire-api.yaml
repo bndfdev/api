@@ -1,0 +1,494 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Bondfire API - ECS Fargate service behind an Internet-facing ALB, with its own
+  VPC, HTTPS, optional Route 53 record and optional nightly scale-to-zero.
+  One stack per environment (dev, qa, prod).
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, qa, prod]
+    Default: dev
+    Description: Environment name. Used in resource names, SSM paths and the default hostname.
+
+  BaseDomain:
+    Type: String
+    Default: bondfire.com
+    AllowedPattern: '^[a-z0-9.-]+\.[a-z]{2,}$'
+    Description: Apex domain. The hostname becomes api.<domain> for prod, api-<env>.<domain> otherwise.
+
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: >-
+      Route 53 hosted zone for BaseDomain. Leave empty to skip the DNS record and
+      point a CNAME at the ALB yourself.
+
+  CertificateArn:
+    Type: String
+    AllowedPattern: '^arn:aws[a-z-]*:acm:[a-z0-9-]+:\d{12}:certificate/.+$'
+    Description: >-
+      ACM certificate covering the hostname, in the SAME region as this stack.
+      Request it separately (see README) - certificates are not created here.
+
+  ImageUri:
+    Type: String
+    AllowedPattern: '^\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/.+:.+$'
+    Description: ECR image URI to run, e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/bondfire-api:latest
+
+  SecretsPrefix:
+    Type: String
+    Default: /bondfire
+    AllowedPattern: '^/[a-zA-Z0-9_.-]+$'
+    Description: SSM parameter prefix. Parameters live at <prefix>/<env>/<NAME>.
+
+  JwtKeyId:
+    Type: String
+    Default: dev-key-1
+    AllowedPattern: '^[A-Za-z0-9._-]+$'
+    Description: JWT_KEY_ID for the key pair stored in SSM.
+
+  CorsOrigins:
+    Type: String
+    Default: ''
+    Description: Comma-separated browser origins. Empty means no CORS (fine for the mobile app).
+
+  LogLevel:
+    Type: String
+    AllowedValues: [trace, debug, info, warn, error, fatal]
+    Default: info
+
+  SmtpAuth:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: >-
+      Set to false only if your SMTP relay needs no username/password; then the
+      SMTP_USER/SMTP_PASS SSM parameters are not required.
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 10
+    Description: Tasks to run at deploy time. Nightly shutdown (if enabled) changes this later.
+
+  TaskCpu:
+    Type: String
+    AllowedValues: ['256', '512', '1024']
+    Default: '256'
+
+  TaskMemory:
+    Type: String
+    AllowedValues: ['512', '1024', '2048', '3072']
+    Default: '512'
+
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    AllowedPattern: '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$'
+    Description: Use a distinct CIDR per environment (dev 10.42, qa 10.43, prod 10.44).
+
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90]
+
+Conditions:
+  HasDns: !Not [!Equals [!Ref HostedZoneId, '']]
+  IsProd: !Equals [!Ref Environment, prod]
+  HasCors: !Not [!Equals [!Ref CorsOrigins, '']]
+  SmtpAuthEnabled: !Equals [!Ref SmtpAuth, 'true']
+
+Resources:
+  # ---------------------------------------------------------------- network ---
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'bondfire-${Environment}'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub 'bondfire-${Environment}'
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Select [0, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'bondfire-${Environment}-public-a'
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Select [1, !Cidr [!GetAtt Vpc.CidrBlock, 4, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'bondfire-${Environment}-public-b'
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref RouteTable
+
+  SubnetRouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref RouteTable
+
+  # ------------------------------------------------------------ security ---
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Bondfire ${Environment} ALB'
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Bondfire ${Environment} API tasks'
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+
+  # ------------------------------------------------------------- load balancer ---
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      TargetType: ip
+      Protocol: HTTP
+      Port: 3000
+      HealthCheckEnabled: true
+      HealthCheckPath: /health/ready
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'
+
+  ListenerHttps:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTPS
+      Port: 443
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  ListenerHttp:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            StatusCode: HTTP_301
+
+  # ------------------------------------------------------------------- ecs ---
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub 'bondfire-${Environment}'
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/bondfire-api-${Environment}'
+      RetentionInDays: !Ref LogRetentionDays
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+      Policies:
+        - PolicyName: read-runtime-secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Description: Permissions the API itself has at runtime (none yet).
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub 'bondfire-api-${Environment}'
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3000
+              Protocol: tcp
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: PORT
+              Value: '3000'
+            # Exactly one hop in front of the app: the ALB.
+            - Name: TRUST_PROXY
+              Value: '1'
+            - Name: JWT_KEY_ID
+              Value: !Ref JwtKeyId
+            - Name: LOG_LEVEL
+              Value: !Ref LogLevel
+            - Name: CORS_ORIGINS
+              Value: !If [HasCors, !Ref CorsOrigins, '']
+          Secrets:
+            - Name: MONGODB_URI
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/MONGODB_URI'
+            - Name: JWT_PRIVATE_KEY
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/JWT_PRIVATE_KEY'
+            - Name: JWT_PUBLIC_KEY
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/JWT_PUBLIC_KEY'
+            - Name: TOKEN_ENC_KEY
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/TOKEN_ENC_KEY'
+            - Name: CODE_HMAC_KEY
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/CODE_HMAC_KEY'
+            - Name: SMTP_HOST
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_HOST'
+            - Name: SMTP_PORT
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_PORT'
+            - !If
+              - SmtpAuthEnabled
+              - Name: SMTP_USER
+                ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_USER'
+              - !Ref AWS::NoValue
+            - !If
+              - SmtpAuthEnabled
+              - Name: SMTP_PASS
+                ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_PASS'
+              - !Ref AWS::NoValue
+            - Name: SMTP_FROM
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_FROM'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - ListenerHttps
+      - ListenerHttp
+    Properties:
+      ServiceName: !Sub 'bondfire-api-${Environment}'
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      DesiredCount: !Ref DesiredCount
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !Ref PublicSubnetA
+            - !Ref PublicSubnetB
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 3000
+          TargetGroupArn: !Ref TargetGroup
+
+  # ------------------------------------------------------------ autoscaling ---
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    DependsOn: Service
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub 'service/${Cluster}/bondfire-api-${Environment}'
+      MinCapacity: 1
+      MaxCapacity: 3
+
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub 'bondfire-${Environment}-cpu'
+      PolicyType: TargetTrackingScaling
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub 'service/${Cluster}/bondfire-api-${Environment}'
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 60
+        ScaleInCooldown: 300
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+
+  # ------------------------------------------------------------------- dns ---
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDns
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !If
+        - IsProd
+        - !Sub 'api.${BaseDomain}'
+        - !Sub 'api-${Environment}.${BaseDomain}'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt LoadBalancer.DNSName
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        EvaluateTargetHealth: false
+
+Outputs:
+  Hostname:
+    Description: Public hostname this stack is served on.
+    Value: !If
+      - IsProd
+      - !Sub 'api.${BaseDomain}'
+      - !Sub 'api-${Environment}.${BaseDomain}'
+
+  LoadBalancerDns:
+    Description: ALB DNS name (use as a CNAME target when HostedZoneId is empty).
+    Value: !GetAtt LoadBalancer.DNSName
+
+  ClusterName:
+    Description: Value for the ECS_CLUSTER GitHub variable.
+    Value: !Ref Cluster
+
+  ServiceName:
+    Description: Value for the ECS_SERVICE GitHub variable (also the task definition family).
+    Value: !Ref Service
+
+  TaskDefinitionFamily:
+    Value: !Sub 'bondfire-api-${Environment}'
+
+  ExecutionRoleArn:
+    Description: Task execution role, allowed for iam:PassRole by the deploy role.
+    Value: !GetAtt ExecutionRole.Arn
+
+  TaskRoleArn:
+    Description: Task role, allowed for iam:PassRole by the deploy role.
+    Value: !GetAtt TaskRole.Arn
+
+  Url:
+    Description: Once DNS and the certificate are in place.
+    Value: !If
+      - IsProd
+      - !Sub 'https://api.${BaseDomain}'
+      - !Sub 'https://api-${Environment}.${BaseDomain}'
