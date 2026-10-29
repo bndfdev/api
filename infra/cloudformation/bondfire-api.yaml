@@ -437,9 +437,7 @@ Resources:
     Properties:
       PolicyName: !Sub 'bondfire-${Environment}-cpu'
       PolicyType: TargetTrackingScaling
-      ServiceNamespace: ecs
-      ScalableDimension: ecs:service:DesiredCount
-      ResourceId: !Sub 'service/${Cluster}/bondfire-api-${Environment}'
+      ScalingTargetId: !Ref ScalableTarget
       TargetTrackingScalingPolicyConfiguration:
         TargetValue: 60
         ScaleInCooldown: 300

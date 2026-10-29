@@ -14,7 +14,7 @@ Per environment:
 - Target tracking autoscaling on CPU, 1→3 tasks
 - CloudWatch log group `/ecs/bondfire-api-<env>` (14 days)
 - IAM execution role that can read `/<prefix>/<env>/*` from SSM, and an empty task role
-- Route 53 A record `api-<env>.<domain>` (or `api.<domain>` for prod) when `HostedZoneId` is given
+- Route 53 A record `<hostname>` (default `<env>.<domain>`) when `HostedZoneId` is given
 
 No NAT gateway: tasks run in public subnets with a public IP and are reachable
 only through the ALB security group. That saves ~$32/month per environment; the
@@ -70,7 +70,7 @@ in GoDaddy, both covered below:
 | Type | Name | Value | Added in |
 | --- | --- | --- | --- |
 | CNAME | ACM validation name | ACM validation target | Step 3 |
-| CNAME | `api-dev` | ALB DNS name (stack output) | Step 7 |
+| CNAME | `dev` | ALB DNS name (stack output) | Step 7 |
 
 Deploy with `HostedZoneId=` (empty) so CloudFormation does not touch DNS.
 
@@ -85,7 +85,7 @@ aws route53 delete-hosted-zone --id Z09041113OCYWQ0AIDQAV
 
 ```bash
 export CERT_ARN=$(aws acm request-certificate \
-  --domain-name "api-$ENV.bondfire.ai" \
+  --domain-name "$ENV.bondfire.ai" \
   --validation-method DNS \
   --region "$AWS_REGION" \
   --query CertificateArn --output text)
@@ -122,7 +122,7 @@ done
 echo "certificate issued"
 ```
 
-> Reusing one certificate: a wildcard `*.bondfire.ai` covers `api-dev`, `api-qa`
+> Reusing one certificate: a wildcard `*.bondfire.ai` covers `dev`, `qa`
 > and `api` in one region. Request it once (`--domain-name '*.bondfire.ai'`) and
 > pass the same `CertificateArn` to every stack. The validation CNAME is also a
 > single record in that case.
@@ -183,7 +183,7 @@ aws cloudformation deploy \
   --region "$AWS_REGION" \
   --parameter-overrides \
     Environment="$ENV" \
-    BaseDomain=bondfire.ai \
+    Hostname="$ENV.bondfire.ai" \
     HostedZoneId= \
     CertificateArn="$CERT_ARN" \
     ImageUri="$ECR_URI:latest" \
@@ -197,7 +197,7 @@ aws cloudformation describe-stacks --stack-name "bondfire-api-$ENV" --region "$A
   --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output table
 ```
 
-## Step 7 — Point api-dev at the ALB, then verify
+## Step 7 — Point dev at the ALB, then verify
 
 The stack's `LoadBalancerDns` output is the hostname to target:
 
@@ -208,15 +208,15 @@ echo "$LB_DNS"
 ```
 
 In GoDaddy: **My Products → Domains → bondfire.ai → DNS → Add New Record**,
-type `CNAME`, Name `api-dev`, Value `$LB_DNS`, TTL `600`. There is no existing
-`api-dev` record (it currently returns NXDOMAIN), so nothing is overwritten.
+type `CNAME`, Name `dev`, Value `$LB_DNS`, TTL `600`. There is no existing
+`dev` record (it currently returns NXDOMAIN), so nothing is overwritten.
 
 Then:
 
 ```bash
-dig +short api-dev.bondfire.ai
-curl -s https://api-dev.bondfire.ai/health
-curl -s https://api-dev.bondfire.ai/health/ready
+dig +short dev.bondfire.ai
+curl -s https://dev.bondfire.ai/health
+curl -s https://dev.bondfire.ai/health/ready
 
 aws logs tail "/ecs/bondfire-api-$ENV" --follow --region "$AWS_REGION"
 ```
@@ -340,13 +340,17 @@ Same steps, different values:
 | --- | --- | --- | --- |
 | `ENV` | `dev` | `qa` | `prod` |
 | stack name | `bondfire-api-dev` | `bondfire-api-qa` | `bondfire-api-prod` |
-| hostname | `api-dev.bondfire.ai` | `api-qa.bondfire.ai` | `api.bondfire.ai` |
+| hostname | `dev.bondfire.ai` | `qa.bondfire.ai` | `api.bondfire.ai` |
 | `VpcCidr` | `10.42.0.0/16` | `10.43.0.0/16` | `10.44.0.0/16` |
 | SSM prefix | `/bondfire/dev/*` | `/bondfire/qa/*` | `/bondfire/prod/*` |
 
 Use separate SSM values per environment (never share `TOKEN_ENC_KEY` or the
 MongoDB database between dev and prod). Each stack creates its own VPC and ALB,
 so the three environments are fully isolated and cost ~$25/month each.
+
+Prod is the one exception to the `<env>.<domain>` default: the apex
+`bondfire.ai` serves the marketing site, so pass `Hostname=api.bondfire.ai`
+instead of `Hostname=prod.bondfire.ai`.
 
 Right now all branches share one set of repository variables, so only one
 environment can receive CI deploys. To route `main`→prod, `stage`→qa,
@@ -378,9 +382,9 @@ aws ssm get-parameters-by-path --path "/bondfire/$ENV" --recursive --region "$AW
    Two CNAMEs in GoDaddy are enough, which is why the stack is deployed with
    `HostedZoneId=` empty.
 2. **GoDaddy CNAME Name field is a prefix.** For a validation record named
-   `_abc123.api-dev.bondfire.ai`, enter `_abc123.api-dev`; GoDaddy appends the
+   `_abc123.dev.bondfire.ai`, enter `_abc123.dev`; GoDaddy appends the
    domain. Pasted in full, it becomes
-   `_abc123.api-dev.bondfire.ai.bondfire.ai` and validation never completes.
+   `_abc123.dev.bondfire.ai.bondfire.ai` and validation never completes.
 3. **CloudFormation vs CI task definitions.** The stack creates the first task
    definition; CI then registers new revisions. A later `cloudformation deploy`
    re-registers from the template's `ImageUri`. Keep that value at
