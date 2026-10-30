@@ -5,13 +5,13 @@ const mongoose = require('mongoose');
 // resend keeps the document and replaces the hash. See
 // src/modules/challenges/service.js for the rules.
 const challengeSchema = new mongoose.Schema({
-  purpose: { type: String, required: true, enum: ['signup_email', 'password_reset', 'phone_verification'] },
+  purpose: { type: String, required: true, enum: ['signup_email', 'password_reset', 'phone_verification', 'change_email'] },
   channel: { type: String, required: true, enum: ['email', 'sms'] },
   // Normalised (see src/lib/destination.js). Stored in full because a resend needs it; masked in every response.
   destination: { type: String, required: true },
   // A code can only be verified or resent from the install that asked for it.
   installationId: { type: String, required: true },
-  // Set for challenges that belong to a signed-in user (phone verification).
+  // Set for challenges that belong to a signed-in user (phone verification, email change).
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   // HMAC-SHA256 of "<challenge id>:<code>" with CODE_HMAC_KEY.
   codeHash: { type: String, required: true },

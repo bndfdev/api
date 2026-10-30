@@ -162,6 +162,40 @@ async function setPassword(userId, { hash, algo, at }) {
   return result.matchedCount === 1;
 }
 
+/**
+ * Change the password (PUT /me/password), but only if the stored `password` is still `oldHash` (null for an
+ * account that has none), so of two changes made from the same password only one is saved. Clears the
+ * password-login lock like `setPassword`.
+ * @returns {Promise<boolean>} false when the password changed in the meantime, or there is no such user
+ */
+async function changePassword(userId, { oldHash, hash, algo, at }) {
+  const result = await User.updateOne(
+    { _id: userId, password: oldHash ?? null },
+    { $set: { password: hash, passwordAlgo: algo, loginFailedCount: 0, loginFailedSince: null, loginLockedUntil: null, updatedAt: new Date(at) } },
+  );
+  return result.matchedCount === 1;
+}
+
+/**
+ * Make `email` (normalised) the user's verified email, but only if the stored email is still `from`, so a change
+ * made at the same time elsewhere is never overwritten (and its old address is the one that gets the notice).
+ * @returns {Promise<'saved' | 'taken' | 'stale' | 'missing'>} 'taken' when the unique index on `email` refuses it;
+ *   'stale' when the email is no longer `from`
+ */
+async function setEmail(userId, { from, email, at }) {
+  try {
+    const result = await User.updateOne(
+      { _id: userId, email: from },
+      { $set: { email, emailVerified: true, updatedAt: new Date(at) } },
+    );
+    if (result.matchedCount === 1) return 'saved';
+    return (await User.exists({ _id: userId })) ? 'stale' : 'missing';
+  } catch (err) {
+    if (err && err.code === DUPLICATE_KEY) return 'taken';
+    throw err;
+  }
+}
+
 /** The account that has this E.164 number in `phone` (verified or not), or null. */
 function findByPhone(e164) {
   return User.findOne({ phone: e164 }).select('_id phone phoneVerifiedAt').lean();
@@ -239,4 +273,59 @@ async function markOnboardingStep(userId, step, status, at) {
   );
 }
 
-module.exports = { findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/**
+ * Set the avatar or banner, in one atomic update.
+ * @param {'avatar' | 'banner'} kind
+ * @returns {Promise<{found: boolean, previous: object | null}>} the image it replaced, so its files can be deleted
+ */
+async function setImage(userId, kind, image, at) {
+  const before = await User.findOneAndUpdate(
+    { _id: userId },
+    { $set: { [kind]: image, updatedAt: new Date(at) } },
+    { projection: { [kind]: 1 }, new: false },
+  ).lean();
+  return { found: Boolean(before), previous: (before && before[kind]) || null };
+}
+
+/**
+ * Remove the avatar or banner (idempotent: an account without one is not written to).
+ * @returns {Promise<object | null>} the image removed, or null when there was none
+ */
+async function removeImage(userId, kind, at) {
+  const before = await User.findOneAndUpdate(
+    { _id: userId, [kind]: { $exists: true } },
+    { $unset: { [kind]: '' }, $set: { updatedAt: new Date(at) } },
+    { projection: { [kind]: 1 }, new: false },
+  ).lean();
+  return (before && before[kind]) || null;
+}
+
+/**
+ * Accounts whose avatar or banner has no palette of this version yet (scripts/backfill-image-palette.js), in `_id`
+ * order, one page at a time: pass the last `_id` seen as `after`.
+ * @param {number} version the current colour rules version
+ * @param {{after?: object | null, limit?: number}} [page]
+ * @returns {Promise<Array<{_id: object, avatar?: object, banner?: object}>>} only `_id`, `avatar` and `banner`
+ */
+async function findImagesWithoutPalette(version, { after = null, limit = 100 } = {}) {
+  const missing = (kind) => ({ [`${kind}.path`]: { $type: 'string' }, [`${kind}.palette.version`]: { $ne: version } });
+  const filter = { $or: [missing('avatar'), missing('banner')] };
+  if (after) filter._id = { $gt: after };
+  return User.find(filter, { avatar: 1, banner: 1 }).sort({ _id: 1 }).limit(limit).lean();
+}
+
+/**
+ * Save an image's palette and BlurHash, only while it is still the same upload (`<kind>.path` unchanged), so a
+ * photo replaced in the meantime keeps its own. `updatedAt` is left alone: the profile itself did not change.
+ * @param {'avatar' | 'banner'} kind
+ * @returns {Promise<boolean>} whether it was saved
+ */
+async function setImageLook(userId, kind, path, { palette, blurhash }) {
+  const result = await User.updateOne(
+    { _id: userId, [`${kind}.path`]: path },
+    { $set: { [`${kind}.palette`]: palette, [`${kind}.blurhash`]: blurhash } },
+  );
+  return result.matchedCount === 1;
+}
+
+module.exports = { findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

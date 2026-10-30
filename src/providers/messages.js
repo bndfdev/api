@@ -9,12 +9,14 @@ const INTRO = Object.freeze({
   signup_email: 'Use this code to finish creating your Bondfire account.',
   password_reset: 'Use this code to reset your Bondfire password.',
   phone_verification: 'Use this code to verify your phone number on Bondfire.',
+  change_email: 'Use this code to make this the email address of your Bondfire account.',
 });
 
 const EMAIL_SUBJECT = Object.freeze({
   signup_email: 'Your Bondfire verification code',
   password_reset: 'Your Bondfire password reset code',
   phone_verification: 'Your Bondfire verification code',
+  change_email: 'Your Bondfire verification code',
 });
 
 const CODE_PATTERN = /^[0-9]{6}$/;
@@ -46,10 +48,22 @@ const NOTICES = Object.freeze({
   password_changed: {
     subject: 'Your Bondfire password was changed',
     text: [
-      'The password for your Bondfire account was just changed, and every device was signed out.',
+      // Sent after a reset (every device signed out) and after a change in the app (that device stays signed in,
+      // and the others may too), so it does not say which devices were signed out.
+      'The password for your Bondfire account was just changed.',
       '',
       'If this was you, there is nothing else to do.',
       'If it was not, reset your password straight away from the app ("Reset password" on the sign-in screen).',
+    ].join('\n'),
+  },
+  // Sent to the old address. The new one is not named: nothing a user typed goes into a message.
+  email_changed: {
+    subject: 'The email address of your Bondfire account was changed',
+    text: [
+      'The email address of your Bondfire account was just changed, so this address no longer signs in to it.',
+      '',
+      'If this was you, there is nothing else to do.',
+      'If it was not, contact Bondfire support straight away from this address.',
     ].join('\n'),
   },
 });

@@ -18,11 +18,12 @@
  *   3. completePasswordReset  sets the new password, signs out every device and signs in this one.
  *
  * Guests (startGuestSession): one limited account per app install, with a date of birth. Completing
- * sign-up with a guest's access token moves its date of birth and language to the new account, ends the
+ * sign-up with a guest's access token moves its date of birth, language and interests to the new account, ends the
  * guest's sessions and deletes the guest.
  *
  * A phone code (sent by the phone module) is checked here too, with its owner's access token; a correct
- * one makes the number the account's verified number.
+ * one makes the number the account's verified number. An email-change code (sent by the email module) likewise
+ * makes the new address the account's email.
  *
  * Social login is not here yet.
  *
@@ -50,6 +51,7 @@ const defaultLegal = require('../legal/service');
 const defaultGuests = require('../guests/repo');
 const { checkDateOfBirth } = require('../../lib/dateOfBirth');
 const { createPhoneService } = require('../phone/service');
+const { createEmailChangeService } = require('../email/service');
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -118,7 +120,7 @@ function assertSameInstall(device, installationId) {
 /**
  * @param {{now?: () => number, users?: object, guests?: object, challenges?: object, phone?: object, signupTokens?: object,
  *   resetTokens?: object, sessions?: object, passwords?: object, emailProvider?: object, profiles?: object,
- *   legal?: object, config?: object, logger?: object}} [deps]
+ *   legal?: object, config?: object, logger?: object, emailChange?: object}} [deps]
  *   `now` returns epoch ms and is shared with the challenge and sign-up token services unless those are given.
  *   `users` is the users repo; `sessions` needs `createSession`; `passwords` is lib/passwords.js; `profiles` builds the
  *   `User` in every `Session` (the me service); `legal` moves a guest's consents.
@@ -138,6 +140,7 @@ function createAuthService({
   legal = defaultLegal,
   config = defaultConfig,
   logger = defaultLogger,
+  emailChange = createEmailChangeService({ users, challenges, emailProvider, now, logger }),
 } = {}) {
   // Account notices (no code) go through the email provider; built on first use, like the challenge service's.
   let mailer = emailProvider;
@@ -198,14 +201,15 @@ function createAuthService({
    * Check a code. A correct code uses the challenge up and returns what it unlocks:
    * - sign-up: the one-time sign-up token;
    * - password reset: the one-time reset token (a decoy challenge never gets here: no code matches it);
-   * - phone: the number becomes the account's verified number (`PhoneVerified`). Only the owner's token
-   *   reaches a phone challenge: for anyone else it "does not exist".
+   * - phone: the number becomes the account's verified number (`PhoneVerified`);
+   * - email change: the new address becomes the account's email, and the old one gets a notice (`EmailChanged`).
+   * Only the owner's token reaches a phone or email-change challenge: for anyone else it "does not exist".
    * @param {{challengeId: string, code: string, installationId: string, userId?: string}} input
    * @returns {Promise<object>} `ChallengeVerification`
    */
   async function verifyChallenge({ challengeId, code, installationId, userId }) {
     const verified = await challenges.verify({
-      challengeId, code, installationId, userId, allowedPurposes: ['signup_email', 'password_reset', 'phone_verification'],
+      challengeId, code, installationId, userId, allowedPurposes: ['signup_email', 'password_reset', 'phone_verification', 'change_email'],
     });
     // Every purpose allowed above is handled here; a new purpose must be added here before it is added to that list.
     if (verified.purpose === 'signup_email') {
@@ -223,6 +227,9 @@ function createAuthService({
     }
     if (verified.purpose === 'phone_verification') {
       return issueOrGiveBack(verified, () => phone.applyVerified({ userId: verified.userId, phoneNumber: verified.destination }));
+    }
+    if (verified.purpose === 'change_email') {
+      return issueOrGiveBack(verified, () => emailChange.applyVerified({ userId: verified.userId, email: verified.destination }));
     }
     throw challengeNotFound();
   }
@@ -245,9 +252,8 @@ function createAuthService({
    * Create the account for a verified email and sign in. The password is checked first, so a weak one
    * can be fixed and sent again with the same token. The token works once.
    * With a guest's access token (`auth.accountType === 'guest'`) the guest becomes the account: its date of
-   * birth, language and accepted legal documents move over (a language in the request wins), then its sessions
-   * end and the guest is deleted.
-   * TODO(interests PR): the guest's interests move over too.
+   * birth, language, chosen interests and accepted legal documents move over (a language in the request wins),
+   * then its sessions end and the guest is deleted.
    * @param {{signupToken: string, password: string, device: object, preferredLanguage?: string, installationId: string,
    *   auth?: {userId: string, accountType: string}}} input `auth` is the caller's verified access token, if any
    * @returns {Promise<object>} `Session`, with `isNewUser: true`
@@ -276,7 +282,9 @@ function createAuthService({
         passwordAlgo: 'argon2id',
         ...(language ? { preferredLanguage: language } : {}),
         ...(guest ? { dateOfBirth: guest.dateOfBirth, dateOfBirthSetAt: new Date(at), dateOfBirthChanges: 0 } : {}),
-        createdAt: new Date(at),
+        ...(guest && Array.isArray(guest.interests) && guest.interests.length > 0
+          ? { interests: guest.interests, interestsUpdatedAt: guest.interestsUpdatedAt || new Date(at) }
+          : {}),        createdAt: new Date(at),
         updatedAt: new Date(at),
       });
       // Two requests for the same address at once: the unique index lets only one create it.
@@ -495,4 +503,4 @@ function createAuthService({
   };
 }
 
-module.exports = { createAuthService, LOGIN_RULES };
+module.exports = { createAuthService, LOGIN_RULES, accountLocked };

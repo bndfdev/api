@@ -1,7 +1,7 @@
 /**
  * One-time codes ("challenges"): sending, resending and checking a 6-digit code
  * sent to an email address or phone number. The same rules serve sign-up,
- * password reset and phone verification. No HTTP and no database access: it
+ * password reset, phone verification and email change. No HTTP and no database access: it
  * works through `repo`, and the clock, config, providers and logger are injected.
  *
  * What it guarantees:
@@ -13,7 +13,7 @@
  *   (and gives fresh attempts) only once the new one has been sent, so a failed
  *   or refused resend can never give anyone more guesses;
  * - a challenge only answers to the install that asked for it (and, for
- *   phone challenges, to the user it belongs to), otherwise it "does not exist";
+ *   phone and email-change challenges, to the user it belongs to), otherwise it "does not exist";
  * - at most `sendLimit` codes go to one address per rolling 24 hours, test mode
  *   included, and a code that could not be delivered does not count.
  *
@@ -58,7 +58,9 @@ const LATENCY_WEIGHT = 0.3;
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const CODE_PATTERN = /^[0-9]{6}$/;
 /** Each purpose is sent over one channel. */
-const PURPOSE_CHANNEL = Object.freeze({ signup_email: 'email', password_reset: 'email', phone_verification: 'sms' });
+const PURPOSE_CHANNEL = Object.freeze({ signup_email: 'email', password_reset: 'email', phone_verification: 'sms', change_email: 'email' });
+/** The purposes whose challenge belongs to a signed-in user: only that user's token reaches it. */
+const USER_PURPOSES = Object.freeze(['phone_verification', 'change_email']);
 
 /** RFC 3339 UTC without milliseconds. */
 const iso = (date) => new Date(date).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -294,15 +296,15 @@ function createChallengeService({
    * account could not before. A new request works once it expires (10 minutes).
    * @param {{purpose: string, channel: 'email' | 'sms', destination: string, installationId: string,
    *   userId?: string, deliver?: boolean}} input
-   *   `userId` is required for `phone_verification` and not allowed for the other purposes.
+   *   `userId` is required for `phone_verification` and `change_email`, and not allowed for the other purposes.
    * @returns {Promise<object>} `Challenge`
    */
   async function start({ purpose, channel, destination, installationId, userId = null, deliver = true }) {
     if (!Object.hasOwn(PURPOSE_CHANNEL, purpose)) throw new TypeError('Unknown challenge purpose');
     if (!CHANNELS.includes(channel)) throw new TypeError('Unknown challenge channel');
     if (PURPOSE_CHANNEL[purpose] !== channel) throw new TypeError(`${purpose} is sent by ${PURPOSE_CHANNEL[purpose]}, not ${channel}`);
-    if (purpose === 'phone_verification') {
-      if (!OBJECT_ID.test(String(userId))) throw new TypeError('phone_verification needs the userId it belongs to');
+    if (USER_PURPOSES.includes(purpose)) {
+      if (!OBJECT_ID.test(String(userId))) throw new TypeError(`${purpose} needs the userId it belongs to`);
     } else if (userId) {
       throw new TypeError(`${purpose} does not belong to a user`);
     }

@@ -234,6 +234,7 @@ ErrorCode:
     - DATE_OF_BIRTH_INVALID
     - DATE_OF_BIRTH_LOCKED
     - LANGUAGE_UNSUPPORTED
+    - LOCATION_INVALID
     # legal
     - LEGAL_DOCUMENT_NOT_FOUND
     - LEGAL_VERSION_OUTDATED
@@ -246,6 +247,9 @@ ErrorCode:
     - INTEREST_LIMIT_EXCEEDED
     - SEARCH_QUERY_INVALID
     - CURSOR_INVALID
+    # the user's own content
+    - CONTENT_NOT_FOUND
+    - HAND_PICKED_INVALID
     # media
     - UPLOAD_NOT_FOUND
     - UPLOAD_EXPIRED
@@ -415,8 +419,13 @@ PasswordPolicy:
 
 ChallengePurpose:
   type: string
-  description: What a verified code unlocks.
-  enum: [signup_email, password_reset, phone_verification]
+  description: |
+    What a verified code unlocks:
+    - `signup_email`: a `signupToken` for `POST /auth/signup/complete`.
+    - `password_reset`: a `resetToken` for `POST /auth/password-reset/complete`.
+    - `phone_verification`: the number becomes the account's verified phone (`POST /me/phone/verification`).
+    - `change_email`: the address becomes the account's verified email (`POST /me/email/verification`).
+  enum: [signup_email, password_reset, phone_verification, change_email]
 
 Challenge:
   type: object
@@ -466,12 +475,14 @@ ChallengeVerification:
     - $ref: '#/SignupEmailVerified'
     - $ref: '#/PasswordResetVerified'
     - $ref: '#/PhoneVerified'
+    - $ref: '#/EmailChanged'
   discriminator:
     propertyName: purpose
     mapping:
       signup_email: '#/SignupEmailVerified'
       password_reset: '#/PasswordResetVerified'
       phone_verification: '#/PhoneVerified'
+      change_email: '#/EmailChanged'
 
 SignupEmailVerified:
   type: object
@@ -510,6 +521,19 @@ PhoneVerified:
       const: phone_verification
     phoneNumber:
       $ref: '#/PhoneNumber'
+    verifiedAt:
+      $ref: '#/Timestamp'
+
+EmailChanged:
+  type: object
+  description: The account's email is now `email` (verified); the previous address was sent a security notice.
+  required: [purpose, email, verifiedAt]
+  properties:
+    purpose:
+      type: string
+      const: change_email
+    email:
+      $ref: '#/Email'
     verifiedAt:
       $ref: '#/Timestamp'
 
@@ -825,7 +849,7 @@ AccountType:
 User:
   type: object
   description: The signed-in account as its owner sees it (private view).
-  required: [id, accountType, status, onboarding, consents, createdAt, updatedAt]
+  required: [id, accountType, status, storyTranslation, location, accountPrivacy, locationSharing, onboarding, consents, createdAt, updatedAt]
   properties:
     id:
       $ref: '#/Id'
@@ -840,6 +864,7 @@ User:
         - $ref: '#/Timestamp'
         - type: 'null'
     email:
+      description: Changed only through `POST /me/email/verification` (not `PATCH /me`).
       oneOf:
         - $ref: '#/Email'
         - type: 'null'
@@ -863,9 +888,23 @@ User:
         - $ref: '#/Gender'
         - type: 'null'
     preferredLanguage:
+      description: The app and stories language (Settings > Stories Language).
       oneOf:
         - $ref: '#/LanguageTag'
         - type: 'null'
+    storyTranslation:
+      type: boolean
+      description: Account Information > Story Translation. `false` until the user turns it on (always `false` for guests).
+    location:
+      type: [string, 'null']
+      minLength: 1
+      maxLength: 100
+      description: The free-text location on the Location screen, as saved (trimmed). `null` when not set.
+      examples: ['Seattle, WA']
+    accountPrivacy:
+      $ref: '#/AccountPrivacy'
+    locationSharing:
+      $ref: '#/LocationSharing'
     avatar:
       oneOf:
         - $ref: '#/Image'
@@ -914,6 +953,36 @@ UserUpdate:
         - type: 'null'
     preferredLanguage:
       $ref: '#/LanguageTag'
+    storyTranslation:
+      type: boolean
+    location:
+      type: [string, 'null']
+      maxLength: 200
+      description: |
+        Trimmed and inner whitespace collapsed; then 1 to 100 characters.
+        Empty after trimming, longer, or holding control or zero-width
+        characters is `LOCATION_INVALID`. `null` clears it.
+    accountPrivacy:
+      $ref: '#/AccountPrivacy'
+    locationSharing:
+      $ref: '#/LocationSharing'
+
+AccountPrivacy:
+  type: string
+  description: |
+    Privacy > Account Privacy. `followers` is the "Restrict to Followers"
+    toggle turned on; `public` (the default) is off.
+  enum: [public, followers]
+
+LocationSharing:
+  type: string
+  description: |
+    Account > Location Sharing, chosen on the Location Services screen
+    (Figma 1627:73609): `always` is "Always allow", `while_using` is "Only
+    when app is open", `never` (the default) is "Never". It records the
+    user's choice only; the device's own location permission is asked for
+    by the app.
+  enum: [always, while_using, never]
 
 AccountDeletionRequest:
   type: object
@@ -1118,6 +1187,19 @@ InterestPage:
     page:
       $ref: '#/PageInfo'
 
+UserInterest:
+  description: An interest the user follows, with when they followed it.
+  allOf:
+    - $ref: '#/Interest'
+    - type: object
+      required: [followedAt]
+      properties:
+        followedAt:
+          description: When the user first followed it (kept when the selection is replaced). `null` for selections saved before this was recorded.
+          oneOf:
+            - $ref: '#/Timestamp'
+            - type: 'null'
+
 UserInterests:
   type: object
   required: [data, updatedAt]
@@ -1125,7 +1207,7 @@ UserInterests:
     data:
       type: array
       items:
-        $ref: '#/Interest'
+        $ref: '#/UserInterest'
     updatedAt:
       oneOf:
         - $ref: '#/Timestamp'
@@ -1189,12 +1271,155 @@ CountryList:
 
 PageInfo:
   type: object
-  required: [hasMore]
+  required: [hasMore, total]
   properties:
     nextCursor:
       type: [string, 'null']
       description: Pass as `cursor` to get the next page. Opaque; expires after 24 hours (`CURSOR_INVALID`).
     hasMore:
+      type: boolean
+    total:
+      type: integer
+      minimum: 0
+      description: How many items match the request across all pages (the "All (2846)" count), not just this page.
+
+# ---------------------------------------------------------------------------
+# Notification settings
+# ---------------------------------------------------------------------------
+
+NotificationSettings:
+  type: object
+  description: |
+    Settings > Notifications. One switch per row; a user who never saved
+    them gets every switch `true`.
+  required: [likesAndComments, followRequests, profileEngagement, contributorMetrics, yourEngagement, newOrTrendingContent]
+  additionalProperties: false
+  properties:
+    likesAndComments: { type: boolean }
+    followRequests: { type: boolean }
+    profileEngagement: { type: boolean }
+    contributorMetrics: { type: boolean }
+    yourEngagement: { type: boolean }
+    newOrTrendingContent: { type: boolean }
+
+NotificationSettingsUpdate:
+  type: object
+  description: Any subset of the switches; the others keep their value.
+  minProperties: 1
+  additionalProperties: false
+  properties:
+    likesAndComments: { type: boolean }
+    followRequests: { type: boolean }
+    profileEngagement: { type: boolean }
+    contributorMetrics: { type: boolean }
+    yourEngagement: { type: boolean }
+    newOrTrendingContent: { type: boolean }
+
+# ---------------------------------------------------------------------------
+# The user's own content (Profile tabs, Popular Releases, Privacy)
+# ---------------------------------------------------------------------------
+
+ContentType:
+  type: string
+  enum: [playlist, album, song, story]
+
+ContentBadge:
+  type: string
+  description: Label drawn on the artwork.
+  enum: [trending, top10]
+
+Content:
+  type: object
+  description: One playlist, album, song or story the user published.
+  required: [id, type, title, image, year, songCount, durationSec, listens, badge, hidden, followersOnly, createdAt]
+  properties:
+    id:
+      $ref: '#/Id'
+    type:
+      $ref: '#/ContentType'
+    title:
+      type: string
+      examples: ['Late Night Drive']
+    image:
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    year:
+      type: [integer, 'null']
+      description: Release year.
+      examples: [2024]
+    songCount:
+      type: [integer, 'null']
+      minimum: 0
+      description: Number of songs; playlists and albums only (`null` for songs and stories).
+    durationSec:
+      type: integer
+      minimum: 0
+      description: Total length in seconds.
+    listens:
+      type: integer
+      minimum: 0
+    badge:
+      oneOf:
+        - $ref: '#/ContentBadge'
+        - type: 'null'
+    hidden:
+      type: boolean
+      description: Privacy > Hide Content. Still listed to the owner unless `GET /me/content` is called with `hidden=false`.
+    followersOnly:
+      type: boolean
+      description: Privacy > Restrict Content (only followers can play it).
+    createdAt:
+      $ref: '#/Timestamp'
+
+ContentPage:
+  type: object
+  required: [data, page]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Content'
+    page:
+      $ref: '#/PageInfo'
+
+HandPicked:
+  type: object
+  description: |
+    The Profile's "Hand-picked by <name>" section: up to 3 of the user's own
+    items, in the order the user chose (never computed). Items that no
+    longer exist are left out; hidden and followers-only items are included
+    with their flags (the owner's view).
+  required: [items]
+  properties:
+    items:
+      type: array
+      maxItems: 3
+      items:
+        $ref: '#/Content'
+
+HandPickedReplace:
+  type: object
+  required: [contentIds]
+  additionalProperties: false
+  properties:
+    contentIds:
+      type: array
+      description: |
+        The whole new list, in the order to show: ids of the user's own
+        content (`Content.id`), each at most once. `[]` clears it.
+      maxItems: 3
+      items:
+        $ref: '#/Id'
+
+ContentUpdate:
+  type: object
+  minProperties: 1
+  additionalProperties: false
+  properties:
+    hidden:
+      type: boolean
+    followersOnly:
       type: boolean
 
 # ---------------------------------------------------------------------------
@@ -1219,7 +1444,20 @@ Image:
       description: '`processing` right after upload while variants and moderation run; poll `GET /me` or wait for the next fetch.'
     blurhash:
       type: [string, 'null']
-      description: Tiny placeholder to paint while the image loads.
+      description: |
+        Tiny placeholder to paint while the image loads: a BlurHash with 4x3 components (28 characters) of the
+        picture as shown, worked out at upload. Filled for avatars and banners; `null` for ones stored before
+        this was added, until the backfill has run, and for other images (artwork) for now.
+      examples: ['L*J3}y{@OGOHspn~a}a}fQfQfQfQ']
+    palette:
+      oneOf:
+        - $ref: '#/ImagePalette'
+        - type: 'null'
+      description: |
+        The picture's colours, worked out at upload by colour rules v1 (see `ImagePalette`). Filled for avatars
+        and banners; `null` (or absent) for ones stored before this was added, until the backfill has run, and
+        for other images (artwork) for now. When it is `null` the app works the colours out itself with the same
+        rules.
     variants:
       type: object
       description: Resized copies keyed by width in pixels.
@@ -1227,6 +1465,41 @@ Image:
         type: string
         format: uri
       examples: [{ '128': 'https://cdn.bondfire.app/a/128.jpg', '512': 'https://cdn.bondfire.app/a/512.jpg' }]
+
+ImagePalette:
+  type: object
+  description: |
+    The colours of an avatar or banner, worked out once at upload by colour rules v1 from the picture exactly
+    as shown (the crop, with transparency flattened onto black). The app takes its personal colour from the
+    banner's palette: `accent` on primary buttons, selected tags and switches. The rules group the picture's
+    colours (Material colour utilities), pick the main colour family that covers at least 5% of the picture,
+    and adjust its tone, keeping its hue, so that white text on it reads at 4.5:1 and it stands out 3:1 from
+    the page background (black at 80% over the blurred banner). A yellow that would turn olive at that tone
+    becomes a deep gold instead (for `#FFE600`, `#976F00`). A picture with no real colour (white, black,
+    grey, or a colour on less than 5% of it) is `neutral`: its accent is a grey with a faint tint of the photo.
+    The app runs the same rules only when this is `null`.
+  required: [version, seed, accent, neutral]
+  properties:
+    version:
+      type: integer
+      minimum: 1
+      description: Which version of the colour rules made it (now 1). A later version can recompute older ones.
+    seed:
+      type: string
+      pattern: '^#[0-9A-F]{6}$'
+      description: The picture's main colour, unadjusted (for a neutral picture, its average colour). `#RRGGBB`, upper case.
+      examples: ['#D02020']
+    accent:
+      type: string
+      pattern: '^#[0-9A-F]{6}$'
+      description: The colour to use for buttons, selected tags and switches, already readable with white text. `#RRGGBB`, upper case.
+      examples: ['#D02020']
+    neutral:
+      type: boolean
+      description: True when the picture has no real colour; the accent is then a grey taken from it.
+  examples:
+    - { version: 1, seed: '#D02020', accent: '#D02020', neutral: false }
+    - { version: 1, seed: '#FFFFFF', accent: '#747676', neutral: true }
 
 ImagePurpose:
   type: string

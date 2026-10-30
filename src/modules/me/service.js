@@ -15,8 +15,12 @@
  *   DATE_OF_BIRTH_LOCKED (support can change it).
  * - gender: one of the spec's four, or `null`.
  * - language: one of the supported languages (LANGUAGE_UNSUPPORTED).
+ * - settings: `storyTranslation` (a boolean), `accountPrivacy` (`public` or `followers`) and `locationSharing`
+ *   (`always`, `while_using` or `never`); the validator checks all three. `location` is trimmed with inner whitespace collapsed, Unicode NFC, then 1 to 100 characters with no
+ *   control or invisible characters (LOCATION_INVALID, see FORBIDDEN_IN_LOCATION); `null` removes it.
  * - `If-Match` with the ETag from GET or PATCH /me refuses the change with 412 if the profile (name, date of
- *   birth, gender, language) changed since. Other changes (terms, onboarding steps, phone) do not count.
+ *   birth, gender, language and the settings above) changed since. Other changes (terms, onboarding steps,
+ *   phone) do not count.
  *
  * Every saved profile change moves `profileRevision` on, and is only saved if the revision is still the one it
  * was worked out from. Otherwise it is worked out again from what is stored now; with `If-Match` the client's
@@ -30,7 +34,7 @@ const { userEtagOf, profileMatches } = require('../../lib/etag');
 const defaultUsers = require('../users/repo');
 const defaultGuests = require('../guests/repo');
 const defaultLegal = require('../legal/service');
-const { toUserResponse, toGuestResponse, NAME_MAX_LENGTH } = require('../users/service');
+const { toUserResponse, toGuestResponse, NAME_MAX_LENGTH, LOCATION_MAX_LENGTH } = require('../users/service');
 
 const DAY = 24 * 60 * 60 * 1000;
 /** "Once set, date of birth can be changed only once (typo fix) within 30 days" (updateMe). */
@@ -49,6 +53,10 @@ const ALLOWED_INVISIBLE = /[\t\n\v\f\r\u200D]/gu;
 const EMOJI_TAG_SEQUENCE = /\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu;
 /** A name needs at least one letter, digit or emoji. */
 const VISIBLE = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
+// Refused anywhere in a location: every control character (tabs and line breaks too; the Location screen is one
+// line), every invisible format character (the zero-width joiner included), lone surrogates, and the blank-looking
+// letters refused in names.
+const FORBIDDEN_IN_LOCATION = /[\p{Cc}\p{Cf}\p{Cs}\u115F\u1160\u3164\uFFA0\u2800]/u;
 const OPTIONAL_STEPS = Object.freeze(['interests', 'profile']);
 /** How often a profile change is worked out again when other changes keep landing first. */
 const MAX_UPDATE_TRIES = 3;
@@ -64,6 +72,10 @@ const guestNotAllowed = () => new ApiError({
 const nameInvalid = () => new ApiError({
   status: 422, code: 'NAME_INVALID', title: 'Name invalid', detail: `Use 1 to ${NAME_MAX_LENGTH} visible characters.`,
   errors: [{ field: '/name', code: 'NAME_INVALID', message: `Use 1 to ${NAME_MAX_LENGTH} visible characters.` }],
+});
+const locationInvalid = () => new ApiError({
+  status: 422, code: 'LOCATION_INVALID', title: 'Location invalid', detail: `Use 1 to ${LOCATION_MAX_LENGTH} visible characters.`,
+  errors: [{ field: '/location', code: 'LOCATION_INVALID', message: `Use 1 to ${LOCATION_MAX_LENGTH} visible characters.` }],
 });
 const dobLocked = () => new ApiError({
   status: 409, code: 'DATE_OF_BIRTH_LOCKED', title: 'Date of birth can no longer be changed',
@@ -92,6 +104,15 @@ function cleanName(value) {
   const cleaned = value.normalize('NFC').trim().replace(/\s+/g, ' ');
   const length = [...cleaned].length;
   if (length < 1 || length > NAME_MAX_LENGTH || !VISIBLE.test(cleaned)) throw nameInvalid();
+  return cleaned;
+}
+
+/** The location to store, or throws LOCATION_INVALID. */
+function cleanLocation(value) {
+  if (typeof value !== 'string' || FORBIDDEN_IN_LOCATION.test(value)) throw locationInvalid();
+  const cleaned = value.normalize('NFC').trim().replace(/\s+/g, ' ');
+  const length = [...cleaned].length;
+  if (length < 1 || length > LOCATION_MAX_LENGTH) throw locationInvalid();
   return cleaned;
 }
 
@@ -148,6 +169,13 @@ function createMeService({
       else set.name = cleanName(patch.name);
     }
     if (Object.hasOwn(patch, 'gender')) set.gender = patch.gender;
+    if (Object.hasOwn(patch, 'storyTranslation')) set.storyTranslation = patch.storyTranslation;
+    if (Object.hasOwn(patch, 'accountPrivacy')) set.accountPrivacy = patch.accountPrivacy;
+    if (Object.hasOwn(patch, 'locationSharing')) set.locationSharing = patch.locationSharing;
+    if (Object.hasOwn(patch, 'location')) {
+      if (patch.location === null) unset.push('location');
+      else set.location = cleanLocation(patch.location);
+    }
     if (Object.hasOwn(patch, 'preferredLanguage')) {
       assertSupportedLanguage(patch.preferredLanguage);
       set.preferredLanguage = patch.preferredLanguage;
@@ -237,4 +265,4 @@ function createMeService({
   return { getMe, updateMe, getOnboarding, updateOnboardingStep, userView, guestView };
 }
 
-module.exports = { createMeService, cleanName, ...createMeService() };
+module.exports = { createMeService, cleanName, cleanLocation, ...createMeService() };

@@ -262,6 +262,31 @@ test('signing up with a guest token moves the guest over and retires it', async 
   assert.equal((await get(client, '/v1/me/sessions', bearer(done.body.tokens.accessToken))).status, 200, 'the new account works');
 });
 
+test('the guest\'s chosen interests move to the account, and complete its interests step', async () => {
+  const client = newClient();
+  const guest = (await startGuest(client)).body;
+  const chosen = [{ id: 'genre_6650f1c2a4b7e9d3c1f00a12', addedAt: new Date(clock.t - DAY) }, { id: 'place_6650f1c2a4b7e9d3c1f00a13', addedAt: new Date(clock.t) }];
+  await GuestAccount.updateOne({ _id: guest.user.id }, { $set: { interests: chosen, interestsUpdatedAt: new Date(clock.t) } });
+  const done = await post(client, '/v1/auth/signup/complete',
+    { signupToken: await signupToken(client, 'picky.guest@example.com'), password: PASSWORD, device: client.device },
+    bearer(guest.tokens.accessToken));
+  assert.equal(done.status, 201, done.text);
+  assertMatchesSpec('Session', done.body);
+  const user = await User.findById(done.body.user.id).lean();
+  assert.deepEqual(user.interests, chosen);
+  assert.deepEqual(user.interestsUpdatedAt, new Date(clock.t));
+  assert.equal(done.body.user.onboarding.steps.find((s) => s.step === 'interests').status, 'completed');
+
+  // A guest who chose nothing gives the account no interests field at all.
+  const other = newClient();
+  const plain = (await startGuest(other)).body;
+  const second = await post(other, '/v1/auth/signup/complete',
+    { signupToken: await signupToken(other, 'plain.guest@example.com'), password: PASSWORD, device: other.device },
+    bearer(plain.tokens.accessToken));
+  assert.equal(second.status, 201, second.text);
+  assert.equal(Object.hasOwn(await User.findById(second.body.user.id).lean(), 'interests'), false);
+});
+
 test('an expired guest token at sign-up is refused before anything happens; refreshed, the guest moves over', async () => {
   const client = newClient();
   const guest = (await startGuest(client, { preferredLanguage: 'hi' })).body;

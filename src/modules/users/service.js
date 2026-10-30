@@ -7,6 +7,7 @@
  * spec promises (an old free-text language, say), is reported as null rather than passed on.
  */
 const { iso } = require('../../lib/time');
+const { storage: defaultStorage } = require('../../providers/storage');
 
 /** Onboarding steps, in the Figma order (the spec's `OnboardingStepName`). */
 const ONBOARDING_STEPS = Object.freeze([
@@ -28,13 +29,64 @@ const NAME_MAX_LENGTH = 50;
 // The old API stored 'other'; the spec offers non_binary and prefer_not_to_say instead.
 const GENDERS = Object.freeze({ female: 'female', male: 'male', non_binary: 'non_binary', prefer_not_to_say: 'prefer_not_to_say', other: 'prefer_not_to_say' });
 
+/** The longest location, in characters (code points): PATCH /me and the `User` view. */
+const LOCATION_MAX_LENGTH = 100;
+const ACCOUNT_PRIVACY = Object.freeze(['public', 'followers']);
+const LOCATION_SHARING = Object.freeze(['always', 'while_using', 'never']);
+
 const orNull = (value, pattern) => (typeof value === 'string' && pattern.test(value) ? value : null);
+/** The stored location as the spec's `User.location`: a non-empty string of at most 100 characters, or null. */
+const locationOrNull = (value) => (typeof value === 'string' && value.trim() !== '' && [...value].length <= LOCATION_MAX_LENGTH ? value : null);
+/** Settings every `User` carries, with their defaults for a value that is missing or not in the spec's shape. */
+const settingsOf = (doc) => ({
+  storyTranslation: doc.storyTranslation === true,
+  location: locationOrNull(doc.location),
+  accountPrivacy: ACCOUNT_PRIVACY.includes(doc.accountPrivacy) ? doc.accountPrivacy : 'public',
+  locationSharing: LOCATION_SHARING.includes(doc.locationSharing) ? doc.locationSharing : 'never',
+});
 /**
  * Whether the number was proved with a code accepted by this API (`phoneVerifiedAt`). The old API's
  * `mobileNumberVerified` is not enough: it set it after a fixed code.
  */
 const phoneProved = (user) => typeof user.phone === 'string' && user.phoneVerifiedAt instanceof Date;
 const timeOrNull = (value) => (value instanceof Date && !Number.isNaN(value.getTime()) ? iso(value) : null);
+
+const HEX_COLOUR = /^#[0-9A-F]{6}$/;
+// BlurHash's base-83 alphabet; 4x3 components make 28 characters.
+const BLURHASH = /^[0-9A-Za-z#$%*+,\-.:;=?@[\]^_{|}~]{6,100}$/;
+
+/** The stored palette as the spec's `ImagePalette`, or null when it is missing or not in that shape. */
+function paletteOrNull(palette) {
+  if (!palette || typeof palette !== 'object') return null;
+  const { version, seed, accent, neutral } = palette;
+  if (!Number.isInteger(version) || version < 1 || typeof seed !== 'string' || !HEX_COLOUR.test(seed) ||
+      typeof accent !== 'string' || !HEX_COLOUR.test(accent) || typeof neutral !== 'boolean') return null;
+  return { version, seed, accent, neutral };
+}
+
+/**
+ * The spec's `Image` for a stored avatar or banner (`users.avatar` / `users.banner`), or null. Processing happens
+ * before the upload answers, so a stored image is always `ready`. `palette` and `blurhash` are null for images
+ * stored before they were worked out at upload (until the backfill fills them in), or stored in another shape.
+ * @param {object | undefined} stored
+ * @param {(key: string) => string} urlFor storage key to the address the app loads it from
+ */
+function toImage(stored, urlFor) {
+  if (!stored || typeof stored.path !== 'string' || !Number.isInteger(stored.width) || !Number.isInteger(stored.height)) return null;
+  const variants = {};
+  for (const v of stored.variants || []) {
+    if (Number.isInteger(v.width)) variants[String(v.width)] = urlFor(`${stored.path}/${v.width}.jpg`);
+  }
+  return {
+    url: urlFor(`${stored.path}/${stored.width}.jpg`),
+    width: stored.width,
+    height: stored.height,
+    status: 'ready',
+    blurhash: typeof stored.blurhash === 'string' && BLURHASH.test(stored.blurhash) ? stored.blurhash : null,
+    palette: paletteOrNull(stored.palette),
+    variants,
+  };
+}
 
 /** Nothing accepted yet (the app shows the Terms screen). */
 const NO_CONSENTS = Object.freeze({ termsAcceptedVersion: null, termsUpToDate: false, privacyAcceptedVersion: null, privacyUpToDate: false });
@@ -48,9 +100,9 @@ const stored = (user, step) => {
 /**
  * Progress through the onboarding flow (the spec's `Onboarding`). Data steps are done when their data is
  * stored; terms when the live terms version was accepted; `interests` and `profile` when the user marked
- * them (completed or skipped), and `profile` also once a name is set. When the phone is not required
+ * them (completed or skipped), `interests` also while at least one interest is chosen (`users.interests`;
+ * PUT /me/interests marks it completed), and `profile` also once a name is set. When the phone is not required
  * (`features.phoneVerificationRequired` off) an unverified phone step is skipped.
- * TODO(interests PR): `interests` also completes when interests are chosen.
  * @param {object} user a lean `users` document
  * @param {{termsUpToDate?: boolean, phoneVerificationRequired?: boolean}} [context]
  * @returns {object} `Onboarding`
@@ -63,12 +115,13 @@ function buildOnboarding(user, { termsUpToDate = false, phoneVerificationRequire
     date_of_birth: orNull(user.dateOfBirth, DATE_ONLY) !== null,
     terms_accepted: termsUpToDate === true,
     gender: Object.hasOwn(GENDERS, user.gender),
-    interests: false,
+    interests: Array.isArray(user.interests) && user.interests.length > 0,
     profile: typeof user.name === 'string' && user.name.trim() !== '',
   };
   const when = {
     phone_verified: timeOrNull(user.phoneVerifiedAt),
     date_of_birth: timeOrNull(user.dateOfBirthSetAt),
+    interests: timeOrNull(user.interestsUpdatedAt),
   };
   const steps = ONBOARDING_STEPS.map(({ step, skippable }) => {
     const mark = stored(user, step);
@@ -87,11 +140,12 @@ function buildOnboarding(user, { termsUpToDate = false, phoneVerificationRequire
 
 /**
  * @param {object} user a lean `users` document
- * @param {{consents?: object, phoneVerificationRequired?: boolean}} [context] `consents` is the account's
- *   `ConsentStatus` (legal service); without it nothing counts as accepted
+ * @param {{consents?: object, phoneVerificationRequired?: boolean, storage?: object}} [context] `consents` is the
+ *   account's `ConsentStatus` (legal service); without it nothing counts as accepted. `storage` gives the photos'
+ *   addresses.
  * @returns {object} `User`
  */
-function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequired = true } = {}) {
+function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequired = true, storage = defaultStorage } = {}) {
   const name = typeof user.name === 'string' && user.name.trim() !== '' ? [...user.name.trim()].slice(0, NAME_MAX_LENGTH).join('') : null;
   const createdAt = user.createdAt || new Date(0);
   return {
@@ -107,9 +161,10 @@ function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequire
     dateOfBirth: orNull(user.dateOfBirth, DATE_ONLY),
     gender: GENDERS[user.gender] || null,
     preferredLanguage: orNull(user.preferredLanguage, LANGUAGE_TAG),
-    // TODO(media PR): avatar and banner as `Image` objects once uploads exist (only an old file path is stored now).
-    avatar: null,
-    banner: null,
+    ...settingsOf(user),
+    // Photos set through v1 only; the old API's `profileImage` / `profileBanner` paths are not `Image`s.
+    avatar: toImage(user.avatar, (key) => storage.publicUrl(key)),
+    banner: toImage(user.banner, (key) => storage.publicUrl(key)),
     loginMethods: typeof user.password === 'string' && user.password !== '' ? ['password'] : [],
     onboarding: buildOnboarding(user, { termsUpToDate: consents.termsUpToDate, phoneVerificationRequired }),
     consents: { ...consents },
@@ -139,6 +194,8 @@ function toGuestResponse(guest, { consents = NO_CONSENTS } = {}) {
     dateOfBirth: orNull(guest.dateOfBirth, DATE_ONLY),
     gender: null,
     preferredLanguage: orNull(guest.preferredLanguage, LANGUAGE_TAG),
+    // A guest cannot change these, so it always has the defaults.
+    ...settingsOf({}),
     avatar: null,
     banner: null,
     loginMethods: [],
@@ -158,4 +215,7 @@ function isSuspended(user, at) {
   return user.isBlocked === true && (!user.blockedUntil || new Date(user.blockedUntil).getTime() > at);
 }
 
-module.exports = { toUserResponse, toGuestResponse, buildOnboarding, isSuspended, ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH };
+module.exports = {
+  toImage, toUserResponse, toGuestResponse, buildOnboarding, isSuspended,
+  ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH, LOCATION_MAX_LENGTH, ACCOUNT_PRIVACY, LOCATION_SHARING,
+};

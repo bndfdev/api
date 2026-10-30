@@ -32,7 +32,7 @@ info:
     - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
       operation are listed under `x-rate-limit`.
     - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
-      `page.hasMore`).
+      `page.hasMore`; `page.total` counts every match).
     - **Every response** carries `X-Request-Id`; errors repeat it as
       `requestId`.
     - **Transport:** HTTPS only (HSTS). Tokens, codes and passwords are
@@ -57,13 +57,15 @@ tags:
   - name: Auth
     description: Sign-up, one-time codes, login, social login, guest, tokens, password reset.
   - name: Account
-    description: The signed-in user's profile, password, phone and deletion.
+    description: The signed-in user's profile, email, password, phone and deletion.
   - name: Onboarding
     description: Server-side onboarding progress so the flow resumes on any device.
   - name: Legal
     description: Terms and privacy documents and the user's acceptance.
   - name: Interests
     description: The interest catalog and the user's selection.
+  - name: Content
+    description: The user's own playlists, albums, songs and stories.
   - name: Catalog
     description: Reference data (countries).
   - name: Media
@@ -342,6 +344,19 @@ paths:
           and cancels stale requests.
         - Results are paginated with a cursor; a cursor from a different
           query or older than 24 hours is `CURSOR_INVALID`.
+        - `page.total` counts every match across all pages (the "All (2846)"
+          count on Settings > Your Interests).
+        - Sorts: `suggested` (the default) and `relevance` are the same order:
+          best match first, then most popular (most popular first when `q` is
+          empty). `popular`, `recent` (newest in the catalog first) and
+          `alphabetical` (A to Z). For Settings > Your Interests:
+          `recently_followed` puts the interests the user follows first, the
+          most recently followed first, then the rest in `suggested` order;
+          `following` puts them first A to Z, then the rest A to Z.
+          `recently_played` has no play data yet and is the same as
+          `suggested`.
+        - The Your Interests filter pills map to `kind`: `artist`, `genre`,
+          `story` (the Topics pill) and `place` (countries and places).
 
         Errors: `SEARCH_QUERY_INVALID`, `CURSOR_INVALID` (422).
       security:
@@ -375,11 +390,15 @@ paths:
           schema:
             type: string
             enum:
+              - suggested
               - relevance
               - popular
               - recent
               - alphabetical
-            default: relevance
+              - recently_followed
+              - following
+              - recently_played
+            default: suggested
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/ClientPlatform'
@@ -407,6 +426,7 @@ paths:
                 page:
                   nextCursor: eyJvIjoyMH0
                   hasMore: true
+                  total: 2846
         '401':
           $ref: '#/components/responses/Unauthorized'
         '422':
@@ -655,7 +675,8 @@ paths:
       description: |
         Lets the code screen restore its countdown and attempts after the app
         was killed or the phone rotated. Public for sign-up and reset
-        challenges; phone challenges need the owner's access token.
+        challenges; phone and email-change challenges need the owner's
+        access token.
 
         Errors: `CHALLENGE_NOT_FOUND` (404, also when called from another
         install), `CHALLENGE_EXPIRED` (410).
@@ -747,7 +768,8 @@ paths:
       description: |
         The code screens auto-submit at 6 digits. A correct code consumes the
         challenge and returns what it unlocks (see `ChallengeVerification`):
-        a `signupToken`, a `resetToken`, or a verified phone number.
+        a `signupToken`, a `resetToken`, a verified phone number, or the
+        account's new email.
 
         - Codes are compared in constant time; only a hash is stored.
         - After 5 wrong codes the challenge locks (`CHALLENGE_LOCKED`); the
@@ -756,11 +778,19 @@ paths:
           `CODE_FORMAT_INVALID` and does **not** use up an attempt.
         - Phone challenges need the owner's access token. If another account
           verified the same number in the meantime, this returns `PHONE_TAKEN`.
+        - `change_email` challenges also need the owner's access token. On
+          success the account's email becomes the new address (`EmailChanged`),
+          `emailVerified` stays `true`, password login uses the new address
+          from then on, and a security notice goes to the **old** address. If
+          another account took the address in the meantime, this returns
+          `EMAIL_TAKEN`.
+        - Without the owner's token, a phone or `change_email` challenge
+          returns `CHALLENGE_NOT_FOUND`.
 
         Errors: `CHALLENGE_NOT_FOUND` (404), `CHALLENGE_ALREADY_USED`,
-        `PHONE_TAKEN` (409), `CHALLENGE_EXPIRED` (410), `CODE_INCORRECT`
-        (422, `meta.attemptsRemaining`), `CODE_FORMAT_INVALID` (422),
-        `CHALLENGE_LOCKED` (423).
+        `PHONE_TAKEN`, `EMAIL_TAKEN` (409), `CHALLENGE_EXPIRED` (410),
+        `CODE_INCORRECT` (422, `meta.attemptsRemaining`),
+        `CODE_FORMAT_INVALID` (422), `CHALLENGE_LOCKED` (423).
       security:
         - {}
         - bearerAuth: []
@@ -805,6 +835,11 @@ paths:
                   value:
                     purpose: phone_verification
                     phoneNumber: '+14155550123'
+                    verifiedAt: '2026-09-27T10:16:00Z'
+                emailChange:
+                  value:
+                    purpose: change_email
+                    email: amelia.new@example.com
                     verifiedAt: '2026-09-27T10:16:00Z'
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -1251,8 +1286,8 @@ paths:
       summary: Confirm identity before a sensitive action
       description: |
         Returns a 5-minute `reauthToken` for sensitive calls (delete account,
-        unlink a login method, set a first password). Social-only users
-        re-confirm with a fresh provider credential.
+        change the email, unlink a login method, set a first password).
+        Social-only users re-confirm with a fresh provider credential.
 
         Wrong password is `422 PASSWORD_INCORRECT` (not 401, which would sign
         the user out). 5 failures lock it like login (`ACCOUNT_LOCKED`, 423).
@@ -1331,10 +1366,13 @@ paths:
       operationId: updateMe
       tags:
         - Account
-      summary: Update name, date of birth, gender or language
+      summary: Update the profile and account settings
       description: |
-        Used by the birthday, gender and Your Profile (name) screens. Saving a
-        field completes its onboarding step automatically.
+        Used by the birthday, gender and Your Profile (name) screens, and by
+        Settings: Account Information (Story Translation), Location, Stories
+        Language (`preferredLanguage`), Privacy > Account Privacy and Location
+        Services (`locationSharing`). Saving a field completes its onboarding
+        step automatically.
 
         - **Age gate:** a date of birth under `minimumAge` (13) is rejected
           with `AGE_REQUIREMENT_NOT_MET`; the account is flagged and the app
@@ -1345,10 +1383,13 @@ paths:
           1 March in non-leap years.
         - Once set, date of birth can be changed only once (typo fix) within
           30 days; after that `DATE_OF_BIRTH_LOCKED` (support can change it).
+        - `location` is trimmed (inner whitespace collapsed) and must then be
+          1 to 100 characters with no control or zero-width characters
+          (`LOCATION_INVALID`); `null` clears it.
         - Guests can set `preferredLanguage` only.
 
         Errors: stale `If-Match` (412), `DATE_OF_BIRTH_LOCKED` (409), `NAME_INVALID`, `DATE_OF_BIRTH_INVALID`,
-        `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED` (422),
+        `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED`, `LOCATION_INVALID` (422),
         `GUEST_NOT_ALLOWED` (403).
       parameters:
         - $ref: '#/components/parameters/ClientPlatform'
@@ -1371,6 +1412,15 @@ paths:
               name:
                 value:
                   name: Amelia Jane
+              location:
+                value:
+                  location: Seattle, WA
+              privacy:
+                value:
+                  accountPrivacy: followers
+              locationSharing:
+                value:
+                  locationSharing: while_using
           application/json:
             schema:
               $ref: '#/components/schemas/UserUpdate'
@@ -1497,6 +1547,121 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+  /me/email/verification:
+    post:
+      operationId: startEmailChange
+      tags:
+        - Account
+      summary: Send a code to a new email address to change the account's email
+      description: |
+        Change email in settings: confirm the password (`POST
+        /auth/reauthenticate`), enter the new address, then enter the code
+        sent to it. Verify with `POST /auth/challenges/{id}/verify` (purpose
+        `change_email`, owner's access token).
+
+        - Needs a fresh `X-Reauth-Token` (5 minutes). It is checked here only;
+          resending or verifying the code does not need it.
+        - The code goes to the **new** address. The account keeps its current
+          email (and signs in with it) until the code is accepted; then the
+          new address replaces it, stays verified, and the old address gets a
+          security notice.
+        - The address is normalised like at sign-up (trimmed, domain
+          lowercased) and compared case-insensitively.
+        - The address is not reserved while the code is pending: if another
+          account takes it first, verifying returns `EMAIL_TAKEN`.
+        - The account's current email returns `409 CONFLICT`, as the same
+          number does for phone.
+        - Calling again for the same address and install returns the **same
+          challenge** (no new code) until it expires.
+
+        Errors: `REAUTH_REQUIRED` (401, header missing, invalid or expired),
+        `GUEST_NOT_ALLOWED` (403), `EMAIL_TAKEN`, `CONFLICT` (409),
+        `EMAIL_INVALID`, `EMAIL_DOMAIN_NOT_ALLOWED` (422),
+        `SEND_LIMIT_REACHED` (429, 5 codes per address per 24 h),
+        `RATE_LIMITED` (429, 10 per account per 24 h),
+        `EMAIL_DELIVERY_FAILED` (503).
+      x-rate-limit:
+        - key: email
+          limit: 5
+          window: 24h
+        - key: account
+          limit: 10
+          window: 24h
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/ClientInstallation'
+        - $ref: '#/components/parameters/AcceptLanguage'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - name: X-Reauth-Token
+          in: header
+          required: false
+          description: |
+            From `POST /auth/reauthenticate`, valid 5 minutes. Always needed
+            here; declared optional so a missing token is `401
+            REAUTH_REQUIRED` (the app asks for the password) rather than
+            `400 MALFORMED_REQUEST`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailRequest'
+            example:
+              email: amelia.new@example.com
+      responses:
+        '202':
+          description: Code sent to the new address (or an unexpired one already exists).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Challenge'
+              example:
+                id: chl_01J8Z9C2
+                purpose: change_email
+                channel: email
+                destination: a•••••w@example.com
+                codeLength: 6
+                expiresAt: '2026-09-27T10:25:00Z'
+                resendAvailableAt: '2026-09-27T10:15:30Z'
+                attemptsRemaining: 5
+                sendsRemaining: 4
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Missing or expired access token, or no valid reauth token.
+          headers:
+            WWW-Authenticate:
+              description: '`Bearer error="invalid_token"` when a token was sent.'
+              schema:
+                type: string
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/reauth-required
+                title: Confirm your password
+                status: 401
+                code: REAUTH_REQUIRED
+                detail: Enter your password again to change your email.
+                requestId: req_01J8Z3K5QH
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /me/phone:
     delete:
       operationId: removePhone
@@ -1745,6 +1910,11 @@ paths:
       tags:
         - Interests
       summary: Get the user's selected interests
+      description: |
+        In the order chosen. Each item carries `followedAt`, when it was first
+        followed (`null` for selections saved before that was recorded). For
+        Settings > Your Interests sorted by follow time, use
+        `GET /interests/search?sort=recently_followed`.
       parameters:
         - $ref: '#/components/parameters/ClientPlatform'
         - $ref: '#/components/parameters/ClientVersion'
@@ -1849,6 +2019,345 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+  /me/notification-settings:
+    get:
+      operationId: getNotificationSettings
+      tags:
+        - Account
+      summary: Get the notification switches
+      description: |
+        Settings > Notifications. A user who never saved them gets every
+        switch `true`. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The switches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+              example:
+                likesAndComments: true
+                followRequests: true
+                profileEngagement: true
+                contributorMetrics: true
+                yourEngagement: true
+                newOrTrendingContent: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateNotificationSettings
+      tags:
+        - Account
+      summary: Change some notification switches
+      description: |
+        Send only the switches that change; the others keep their value.
+        Returns every switch. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationSettingsUpdate'
+            example:
+              followRequests: false
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/NotificationSettingsUpdate'
+      responses:
+        '200':
+          description: Every switch, after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/content:
+    get:
+      operationId: listMyContent
+      tags:
+        - Content
+      summary: List the user's own content
+      description: |
+        Profile tabs (All, Playlists, Albums, Songs, Stories) and Popular
+        Releases (`sort=popular&limit=3`), both with `hidden=false`, and
+        Privacy > Hide Content / Restrict Content (no `hidden`). This is the
+        owner's view: unless `hidden` filters them, hidden and followers-only
+        items are included, with their flags.
+
+        - `type`: `all` (default) or one content type.
+        - `sort`: `recent` (default; newest first), `popular` (most listens
+          first) or `title` (A to Z, ignoring case and accents). Ties keep a
+          stable order.
+        - `hidden`: `false` lists only items that are not hidden (the Profile
+          page: Popular Releases and the tabs), `true` only hidden ones;
+          absent lists both (the Privacy lists).
+        - `page.total` counts every item that matches `type` and `hidden`.
+        - A cursor only works for the same `type`, `hidden` and `sort` and for
+          24 hours (`CURSOR_INVALID`).
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - all
+              - playlist
+              - album
+              - song
+              - story
+            default: all
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - recent
+              - popular
+              - title
+            default: recent
+        - name: hidden
+          in: query
+          required: false
+          description: '`false`: only items that are not hidden; `true`: only hidden ones; absent: both.'
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: A page of the user's content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentPage'
+              example:
+                data:
+                  - id: 6650f1c2a4b7e9d3c1f00b01
+                    type: album
+                    title: Late Night Drive
+                    image:
+                      url: https://cdn.bondfire.app/c/late-night-drive.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: null
+                    year: 2024
+                    songCount: 12
+                    durationSec: 2710
+                    listens: 48210
+                    badge: top10
+                    hidden: false
+                    followersOnly: false
+                    createdAt: '2026-09-27T10:15:00Z'
+                page:
+                  nextCursor: null
+                  hasMore: false
+                  total: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/content/{contentId}:
+    patch:
+      operationId: updateMyContent
+      tags:
+        - Content
+      summary: Hide or restrict one of the user's items
+      description: |
+        Privacy > Hide Content (`hidden`) and Restrict Content
+        (`followersOnly`). Send either or both.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+        another user's content).
+      parameters:
+        - $ref: '#/components/parameters/ContentId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentUpdate'
+            example:
+              hidden: true
+          application/merge-patch+json:
+            schema:
+              $ref: '#/components/schemas/ContentUpdate'
+      responses:
+        '200':
+          description: The item after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Content'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/hand-picked:
+    get:
+      operationId: getMyHandPicked
+      tags:
+        - Content
+      summary: Get the user's hand-picked items
+      description: |
+        The Profile's "Hand-picked by <name>" section (Figma 1576:22233,
+        1671:81081): up to 3 of the user's own playlists, songs, stories and
+        albums, in the order the user chose. The list is only ever the user's
+        choice, never computed. Items that no longer exist are left out. This
+        is the owner's view, so hidden and followers-only items are included,
+        with their flags. A user who never picked anything gets an empty list.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The hand-picked items, in the saved order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandPicked'
+              example:
+                items:
+                  - id: 6650f1c2a4b7e9d3c1f00b01
+                    type: album
+                    title: Late Night Drive
+                    image:
+                      url: https://cdn.bondfire.app/c/late-night-drive.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: null
+                    year: 2024
+                    songCount: 12
+                    durationSec: 2710
+                    listens: 48210
+                    badge: top10
+                    hidden: false
+                    followersOnly: false
+                    createdAt: '2026-09-27T10:15:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: replaceMyHandPicked
+      tags:
+        - Content
+      summary: Replace the hand-picked items
+      description: |
+        Adding or removing an item (the menu on a content row) and dragging
+        to reorder all send the whole new list: 0 to 3 ids of the user's own
+        content, in the order to show. It replaces the saved list and answers
+        like `GET`. Sending the same list again changes nothing; `[]` clears
+        it. Hidden and followers-only items may be picked.
+
+        Errors: `GUEST_NOT_ALLOWED` (403); `HAND_PICKED_INVALID` (422) when an
+        id is not one of the user's own items (unknown, deleted or someone
+        else's, all answered alike) or is sent twice, with one `errors[]`
+        entry per such id (`field` `/contentIds/<index>`). More than 3 ids, or
+        a body in another shape, is `VALIDATION_FAILED` (422). Nothing is
+        saved when the request fails.
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HandPickedReplace'
+            example:
+              contentIds:
+                - 6650f1c2a4b7e9d3c1f00b01
+                - 6650f1c2a4b7e9d3c1f00b07
+      responses:
+        '200':
+          description: The saved list, as `GET` returns it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandPicked'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /me/media/uploads:
     post:
       operationId: createUploadIntent
@@ -1922,6 +2431,10 @@ paths:
         resized to 128/256/512/1024 px; moderation. `status` is `processing`
         until done; a rejected image is removed and `IMAGE_REJECTED` is
         reported on the next `GET /me` as `avatar: null`.
+
+        The picture's `palette` (colour rules v1, see `ImagePalette`) and
+        `blurhash` are worked out from the crop as shown (transparency on
+        black) and returned in this answer and in every later `Image` of it.
 
         Errors: `GUEST_NOT_ALLOWED` (403), `UPLOAD_NOT_FOUND` (404),
         `UPLOAD_EXPIRED` (410), `PAYLOAD_TOO_LARGE` (413),
@@ -2006,6 +2519,7 @@ paths:
         Save on Your profile banner (Figma 1261:32324). Same rules as
         `PUT /me/avatar`, except the crop uses the banner ratio 393:264
         (±2%), minimum 786×528 px after crop, resized to 786/1179/1572 px wide.
+        The banner's `palette` gives the app its personal colour.
       parameters:
         - $ref: '#/components/parameters/ClientPlatform'
         - $ref: '#/components/parameters/ClientVersion'
@@ -2590,6 +3104,7 @@ components:
         - DATE_OF_BIRTH_INVALID
         - DATE_OF_BIRTH_LOCKED
         - LANGUAGE_UNSUPPORTED
+        - LOCATION_INVALID
         - LEGAL_DOCUMENT_NOT_FOUND
         - LEGAL_VERSION_OUTDATED
         - CONSENT_REQUIRED
@@ -2599,6 +3114,8 @@ components:
         - INTEREST_LIMIT_EXCEEDED
         - SEARCH_QUERY_INVALID
         - CURSOR_INVALID
+        - CONTENT_NOT_FOUND
+        - HAND_PICKED_INVALID
         - UPLOAD_NOT_FOUND
         - UPLOAD_EXPIRED
         - UPLOAD_INCOMPLETE
@@ -2806,6 +3323,52 @@ components:
         - story
         - playlist
         - favorite
+    ImagePalette:
+      type: object
+      description: |
+        The colours of an avatar or banner, worked out once at upload by colour rules v1 from the picture exactly
+        as shown (the crop, with transparency flattened onto black). The app takes its personal colour from the
+        banner's palette: `accent` on primary buttons, selected tags and switches. The rules group the picture's
+        colours (Material colour utilities), pick the main colour family that covers at least 5% of the picture,
+        and adjust its tone, keeping its hue, so that white text on it reads at 4.5:1 and it stands out 3:1 from
+        the page background (black at 80% over the blurred banner). A yellow that would turn olive at that tone
+        becomes a deep gold instead (for `#FFE600`, `#976F00`). A picture with no real colour (white, black,
+        grey, or a colour on less than 5% of it) is `neutral`: its accent is a grey with a faint tint of the photo.
+        The app runs the same rules only when this is `null`.
+      required:
+        - version
+        - seed
+        - accent
+        - neutral
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: Which version of the colour rules made it (now 1). A later version can recompute older ones.
+        seed:
+          type: string
+          pattern: ^#[0-9A-F]{6}$
+          description: The picture's main colour, unadjusted (for a neutral picture, its average colour). `#RRGGBB`, upper case.
+          examples:
+            - '#D02020'
+        accent:
+          type: string
+          pattern: ^#[0-9A-F]{6}$
+          description: The colour to use for buttons, selected tags and switches, already readable with white text. `#RRGGBB`, upper case.
+          examples:
+            - '#D02020'
+        neutral:
+          type: boolean
+          description: True when the picture has no real colour; the accent is then a grey taken from it.
+      examples:
+        - version: 1
+          seed: '#D02020'
+          accent: '#D02020'
+          neutral: false
+        - version: 1
+          seed: '#FFFFFF'
+          accent: '#747676'
+          neutral: true
     Image:
       type: object
       required:
@@ -2833,7 +3396,21 @@ components:
           type:
             - string
             - 'null'
-          description: Tiny placeholder to paint while the image loads.
+          description: |
+            Tiny placeholder to paint while the image loads: a BlurHash with 4x3 components (28 characters) of the
+            picture as shown, worked out at upload. Filled for avatars and banners; `null` for ones stored before
+            this was added, until the backfill has run, and for other images (artwork) for now.
+          examples:
+            - L*J3}y{@OGOHspn~a}a}fQfQfQfQ
+        palette:
+          oneOf:
+            - $ref: '#/components/schemas/ImagePalette'
+            - type: 'null'
+          description: |
+            The picture's colours, worked out at upload by colour rules v1 (see `ImagePalette`). Filled for avatars
+            and banners; `null` (or absent) for ones stored before this was added, until the backfill has run, and
+            for other images (artwork) for now. When it is `null` the app works the colours out itself with the same
+            rules.
         variants:
           type: object
           description: Resized copies keyed by width in pixels.
@@ -2882,6 +3459,7 @@ components:
       type: object
       required:
         - hasMore
+        - total
       properties:
         nextCursor:
           type:
@@ -2890,6 +3468,10 @@ components:
           description: Pass as `cursor` to get the next page. Opaque; expires after 24 hours (`CURSOR_INVALID`).
         hasMore:
           type: boolean
+        total:
+          type: integer
+          minimum: 0
+          description: How many items match the request across all pages (the "All (2846)" count), not just this page.
     InterestPage:
       type: object
       required:
@@ -2941,11 +3523,17 @@ components:
             - amelia.jane@gmail.com
     ChallengePurpose:
       type: string
-      description: What a verified code unlocks.
+      description: |
+        What a verified code unlocks:
+        - `signup_email`: a `signupToken` for `POST /auth/signup/complete`.
+        - `password_reset`: a `resetToken` for `POST /auth/password-reset/complete`.
+        - `phone_verification`: the number becomes the account's verified phone (`POST /me/phone/verification`).
+        - `change_email`: the address becomes the account's verified email (`POST /me/email/verification`).
       enum:
         - signup_email
         - password_reset
         - phone_verification
+        - change_email
     MaskedDestination:
       type: string
       description: Where a code was sent, partly hidden for display (never the full value).
@@ -3162,6 +3750,26 @@ components:
         - male
         - non_binary
         - prefer_not_to_say
+    AccountPrivacy:
+      type: string
+      description: |
+        Privacy > Account Privacy. `followers` is the "Restrict to Followers"
+        toggle turned on; `public` (the default) is off.
+      enum:
+        - public
+        - followers
+    LocationSharing:
+      type: string
+      description: |
+        Account > Location Sharing, chosen on the Location Services screen
+        (Figma 1627:73609): `always` is "Always allow", `while_using` is "Only
+        when app is open", `never` (the default) is "Never". It records the
+        user's choice only; the device's own location permission is asked for
+        by the app.
+      enum:
+        - always
+        - while_using
+        - never
     OnboardingStepName:
       type: string
       description: Steps of the Figma onboarding flow, in order.
@@ -3245,6 +3853,10 @@ components:
         - id
         - accountType
         - status
+        - storyTranslation
+        - location
+        - accountPrivacy
+        - locationSharing
         - onboarding
         - consents
         - createdAt
@@ -3265,6 +3877,7 @@ components:
             - $ref: '#/components/schemas/Timestamp'
             - type: 'null'
         email:
+          description: Changed only through `POST /me/email/verification` (not `PATCH /me`).
           oneOf:
             - $ref: '#/components/schemas/Email'
             - type: 'null'
@@ -3290,9 +3903,26 @@ components:
             - $ref: '#/components/schemas/Gender'
             - type: 'null'
         preferredLanguage:
+          description: The app and stories language (Settings > Stories Language).
           oneOf:
             - $ref: '#/components/schemas/LanguageTag'
             - type: 'null'
+        storyTranslation:
+          type: boolean
+          description: Account Information > Story Translation. `false` until the user turns it on (always `false` for guests).
+        location:
+          type:
+            - string
+            - 'null'
+          minLength: 1
+          maxLength: 100
+          description: The free-text location on the Location screen, as saved (trimmed). `null` when not set.
+          examples:
+            - Seattle, WA
+        accountPrivacy:
+          $ref: '#/components/schemas/AccountPrivacy'
+        locationSharing:
+          $ref: '#/components/schemas/LocationSharing'
         avatar:
           oneOf:
             - $ref: '#/components/schemas/Image'
@@ -3406,18 +4036,35 @@ components:
           $ref: '#/components/schemas/PhoneNumber'
         verifiedAt:
           $ref: '#/components/schemas/Timestamp'
+    EmailChanged:
+      type: object
+      description: The account's email is now `email` (verified); the previous address was sent a security notice.
+      required:
+        - purpose
+        - email
+        - verifiedAt
+      properties:
+        purpose:
+          type: string
+          const: change_email
+        email:
+          $ref: '#/components/schemas/Email'
+        verifiedAt:
+          $ref: '#/components/schemas/Timestamp'
     ChallengeVerification:
       description: Result of a correct code. Shape depends on the challenge purpose.
       oneOf:
         - $ref: '#/components/schemas/SignupEmailVerified'
         - $ref: '#/components/schemas/PasswordResetVerified'
         - $ref: '#/components/schemas/PhoneVerified'
+        - $ref: '#/components/schemas/EmailChanged'
       discriminator:
         propertyName: purpose
         mapping:
           signup_email: '#/components/schemas/SignupEmailVerified'
           password_reset: '#/components/schemas/PasswordResetVerified'
           phone_verification: '#/components/schemas/PhoneVerified'
+          change_email: '#/components/schemas/EmailChanged'
     LoginRequest:
       type: object
       required:
@@ -3597,6 +4244,21 @@ components:
             - type: 'null'
         preferredLanguage:
           $ref: '#/components/schemas/LanguageTag'
+        storyTranslation:
+          type: boolean
+        location:
+          type:
+            - string
+            - 'null'
+          maxLength: 200
+          description: |
+            Trimmed and inner whitespace collapsed; then 1 to 100 characters.
+            Empty after trimming, longer, or holding control or zero-width
+            characters is `LOCATION_INVALID`. `null` clears it.
+        accountPrivacy:
+          $ref: '#/components/schemas/AccountPrivacy'
+        locationSharing:
+          $ref: '#/components/schemas/LocationSharing'
     PasswordChangeRequest:
       type: object
       required:
@@ -3664,6 +4326,19 @@ components:
           type: boolean
           const: true
           description: Declining is not recorded; the app signs the user out instead.
+    UserInterest:
+      description: An interest the user follows, with when they followed it.
+      allOf:
+        - $ref: '#/components/schemas/Interest'
+        - type: object
+          required:
+            - followedAt
+          properties:
+            followedAt:
+              description: When the user first followed it (kept when the selection is replaced). `null` for selections saved before this was recorded.
+              oneOf:
+                - $ref: '#/components/schemas/Timestamp'
+                - type: 'null'
     UserInterests:
       type: object
       required:
@@ -3673,7 +4348,7 @@ components:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/Interest'
+            $ref: '#/components/schemas/UserInterest'
         updatedAt:
           oneOf:
             - $ref: '#/components/schemas/Timestamp'
@@ -3688,6 +4363,174 @@ components:
           type: array
           description: The full new selection. Duplicates are ignored; an empty list clears it (Figma lets the user continue with nothing selected).
           maxItems: 100
+          items:
+            $ref: '#/components/schemas/Id'
+    NotificationSettings:
+      type: object
+      description: |
+        Settings > Notifications. One switch per row; a user who never saved
+        them gets every switch `true`.
+      required:
+        - likesAndComments
+        - followRequests
+        - profileEngagement
+        - contributorMetrics
+        - yourEngagement
+        - newOrTrendingContent
+      additionalProperties: false
+      properties:
+        likesAndComments:
+          type: boolean
+        followRequests:
+          type: boolean
+        profileEngagement:
+          type: boolean
+        contributorMetrics:
+          type: boolean
+        yourEngagement:
+          type: boolean
+        newOrTrendingContent:
+          type: boolean
+    NotificationSettingsUpdate:
+      type: object
+      description: Any subset of the switches; the others keep their value.
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        likesAndComments:
+          type: boolean
+        followRequests:
+          type: boolean
+        profileEngagement:
+          type: boolean
+        contributorMetrics:
+          type: boolean
+        yourEngagement:
+          type: boolean
+        newOrTrendingContent:
+          type: boolean
+    ContentType:
+      type: string
+      enum:
+        - playlist
+        - album
+        - song
+        - story
+    ContentBadge:
+      type: string
+      description: Label drawn on the artwork.
+      enum:
+        - trending
+        - top10
+    Content:
+      type: object
+      description: One playlist, album, song or story the user published.
+      required:
+        - id
+        - type
+        - title
+        - image
+        - year
+        - songCount
+        - durationSec
+        - listens
+        - badge
+        - hidden
+        - followersOnly
+        - createdAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        type:
+          $ref: '#/components/schemas/ContentType'
+        title:
+          type: string
+          examples:
+            - Late Night Drive
+        image:
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        year:
+          type:
+            - integer
+            - 'null'
+          description: Release year.
+          examples:
+            - 2024
+        songCount:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+          description: Number of songs; playlists and albums only (`null` for songs and stories).
+        durationSec:
+          type: integer
+          minimum: 0
+          description: Total length in seconds.
+        listens:
+          type: integer
+          minimum: 0
+        badge:
+          oneOf:
+            - $ref: '#/components/schemas/ContentBadge'
+            - type: 'null'
+        hidden:
+          type: boolean
+          description: Privacy > Hide Content. Still listed to the owner unless `GET /me/content` is called with `hidden=false`.
+        followersOnly:
+          type: boolean
+          description: Privacy > Restrict Content (only followers can play it).
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+    ContentPage:
+      type: object
+      required:
+        - data
+        - page
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Content'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    ContentUpdate:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        hidden:
+          type: boolean
+        followersOnly:
+          type: boolean
+    HandPicked:
+      type: object
+      description: |
+        The Profile's "Hand-picked by <name>" section: up to 3 of the user's own
+        items, in the order the user chose (never computed). Items that no
+        longer exist are left out; hidden and followers-only items are included
+        with their flags (the owner's view).
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/Content'
+    HandPickedReplace:
+      type: object
+      required:
+        - contentIds
+      additionalProperties: false
+      properties:
+        contentIds:
+          type: array
+          description: |
+            The whole new list, in the order to show: ids of the user's own
+            content (`Content.id`), each at most once. `[]` clears it.
+          maxItems: 3
           items:
             $ref: '#/components/schemas/Id'
     ImagePurpose:
@@ -4002,6 +4845,12 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/OnboardingStepName'
+    ContentId:
+      name: contentId
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Id'
     SessionId:
       name: sessionId
       in: path
@@ -4118,7 +4967,9 @@ components:
     Unauthorized:
       description: |
         Missing, invalid or expired credentials. On `TOKEN_EXPIRED` the app
-        refreshes once and retries; on any other 401 it signs the user out.
+        refreshes once and retries; on `REAUTH_REQUIRED` it asks for the
+        password again (`POST /auth/reauthenticate`) and retries; on any other
+        401 it signs the user out.
       headers:
         WWW-Authenticate:
           description: '`Bearer error="invalid_token"` when a token was sent.'

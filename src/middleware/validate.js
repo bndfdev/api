@@ -2,6 +2,9 @@ const path = require('node:path');
 const OpenApiValidator = require('express-openapi-validator');
 
 const SPEC_PATH = path.join(__dirname, '..', '..', 'docs', 'api', 'dist', 'openapi.yaml');
+// Multipart bodies (the profile photos) are parsed here, in memory: one file of at most 10 MB (the spec's limit,
+// GET /config's avatarMaxBytes) and a few small fields. Anything bigger is 413 PAYLOAD_TOO_LARGE.
+const UPLOAD_LIMITS = Object.freeze({ fileSize: 10 * 1024 * 1024, files: 1, fields: 4, fieldSize: 4 * 1024, parts: 5 });
 
 /**
  * Request validation against the bundled OpenAPI 3.1 spec, for /v1 only.
@@ -22,9 +25,10 @@ function openApiValidator(config) {
     validateSecurity: false,
     validateApiSpec: false,
     ignoreUndocumented: false,
+    fileUploader: { limits: { ...UPLOAD_LIMITS } },
     // Health is unversioned: the spec lists it at the server root, not under /v1.
     ignorePaths: /^(\/v1)?\/health(\/ready)?\/?$/,
   });
 }
 
-module.exports = { openApiValidator, SPEC_PATH };
+module.exports = { openApiValidator, SPEC_PATH, UPLOAD_LIMITS };

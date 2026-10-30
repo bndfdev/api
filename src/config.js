@@ -1,4 +1,5 @@
 const crypto = require('node:crypto');
+const path = require('node:path');
 const { isSupportedCountry } = require('libphonenumber-js');
 const { normalizeDestination } = require('./lib/destination');
 require('dotenv').config();
@@ -324,6 +325,18 @@ function loadConfig(env = process.env, { validate = true } = {}) {
   const smsProvider = (env.SMS_PROVIDER || '').trim().toLowerCase() || 'console';
   if (smsProvider !== 'console') invalid.push('SMS_PROVIDER (only console is available for now)');
 
+  // --- Profile photos (avatar and banner) ---
+  // Where the processed images are kept. Only `local` (a folder on this server, served at /media) exists for now;
+  // object storage (S3 or similar) is a later driver behind the same interface (src/providers/storage).
+  const mediaStorage = (env.MEDIA_STORAGE || '').trim().toLowerCase() || 'local';
+  if (mediaStorage !== 'local') invalid.push('MEDIA_STORAGE (only local is available for now)');
+  const mediaDir = env.MEDIA_DIR ? path.resolve(env.MEDIA_DIR) : path.join(__dirname, '..', 'public', 'media');
+  // The address the app loads images from: where /media is reachable from outside (behind a proxy or tunnel,
+  // its public address). Defaults to API_BASE_URL, else this server on localhost.
+  const mediaPublicUrl = (env.MEDIA_PUBLIC_URL || `${(env.API_BASE_URL || `http://localhost:${port}`).replace(/\/+$/, '')}/media`)
+    .trim().replace(/\/+$/, '');
+  if (!/^https?:\/\/[^\s/]+/.test(mediaPublicUrl)) invalid.push('MEDIA_PUBLIC_URL (must be an http or https address)');
+
   // --- Phone numbers ---
   // Which countries' numbers may be verified (ISO 3166 codes), until GET /countries says so per country.
   // Empty means every country.
@@ -414,6 +427,7 @@ function loadConfig(env = process.env, { validate = true } = {}) {
     app: Object.freeze({ minimumVersions: Object.freeze(minimumVersions), latestVersions: Object.freeze(latestVersions) }),
     features: Object.freeze({ guestMode, phoneVerificationRequired }),
     countries: Object.freeze({ contentRegions: Object.freeze(contentRegions), defaultCountry }),
+    media: Object.freeze({ storage: mediaStorage, dir: mediaDir, publicUrl: mediaPublicUrl }),
   });
 }
 

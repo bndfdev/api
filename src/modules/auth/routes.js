@@ -65,7 +65,7 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
     }),
   );
 
-  // GET /auth/challenges/{challengeId}: public for sign-up and reset codes; a phone code needs its owner's token.
+  // GET /auth/challenges/{challengeId}: public for sign-up and reset codes; a phone or email-change code needs its owner's token.
   router.get(
     '/auth/challenges/:challengeId',
     optionalAuth,

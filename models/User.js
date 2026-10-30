@@ -1,5 +1,28 @@
 const mongoose = require('mongoose');
 
+/** A processed profile image (see `avatar` and `banner` below). */
+function imageSchema() {
+  return new mongoose.Schema({
+    path: { type: String, required: true },
+    width: { type: Number, required: true },
+    height: { type: Number, required: true },
+    variants: { type: [new mongoose.Schema({ width: Number, height: Number }, { _id: false })], default: undefined },
+    updatedAt: { type: Date, required: true },
+    // The picture's colours (colour rules v1, src/lib/palette.js) and BlurHash, worked out at upload. Absent on
+    // images stored before they existed, until scripts/backfill-image-palette.js has run.
+    palette: {
+      type: new mongoose.Schema({
+        version: { type: Number, required: true },
+        seed: { type: String, required: true },
+        accent: { type: String, required: true },
+        neutral: { type: Boolean, required: true },
+      }, { _id: false }),
+      default: undefined,
+    },
+    blurhash: { type: String },
+  }, { _id: false });
+}
+
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
@@ -53,6 +76,47 @@ const userSchema = new mongoose.Schema({
   // Moves on with every profile change through v1 (PATCH /me), so two changes worked out from the same state
   // cannot both be saved.
   profileRevision: { type: Number },
+  // The interests the user chose (v1, /me/interests): catalog ids (`genre_<id>`, `artist_<id>`, `place_<id>`) in
+  // the order chosen, each with when it was added; at most GET /config's maxInterests (100). Absent until the
+  // user chooses (no default, so documents created through this model do not get an empty list).
+  interests: { type: [{ _id: false, id: { type: String, required: true }, addedAt: { type: Date, required: true } }], default: undefined },
+  // When the selection last changed.
+  interestsUpdatedAt: { type: Date },
+  // Profile photos set through v1 (PUT /me/avatar, PUT /me/banner): where the processed files are in storage
+  // (`path`, a folder per upload holding `<width>.jpg`), the size of the default one, every size made, and when.
+  // Separate from `profileImage` / `profileBanner` above, which the old API and admin panel keep using.
+  avatar: { type: imageSchema(), default: undefined },
+  banner: { type: imageSchema(), default: undefined },
+  // Settings (v1, PATCH /me). Absent means the default: Story Translation off, no location, a public account,
+  // location never shared.
+  storyTranslation: { type: Boolean },
+  // The free-text location from the Location screen, trimmed, 1 to 100 characters.
+  location: { type: String },
+  accountPrivacy: { type: String, enum: ['public', 'followers'] },
+  // The Location Services choice: "Always allow", "Only when app is open" or "Never".
+  locationSharing: { type: String, enum: ['always', 'while_using', 'never'] },
+  // The notification switches (v1, /me/notification-settings). Only the switches the user changed are stored; a
+  // missing one is on. No default, so documents created through this model do not get an empty object.
+  notificationSettings: {
+    type: new mongoose.Schema({
+      likesAndComments: Boolean,
+      followRequests: Boolean,
+      profileEngagement: Boolean,
+      contributorMetrics: Boolean,
+      yourEngagement: Boolean,
+      newOrTrendingContent: Boolean,
+      updatedAt: Date,
+    }, { _id: false }),
+    default: undefined,
+  },
+  // The Profile's "Hand-picked by <name>" (v1, /me/hand-picked): ids of the user's own `contents`, in the order the
+  // user chose, at most 3. No default, so documents created through this model do not get an empty list; `[]` once
+  // the user clears it.
+  handPicked: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Content' }],
+    default: undefined,
+    validate: { validator: (ids) => ids == null || ids.length <= 3, message: 'At most 3 hand-picked items.' },
+  },
 });
 
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:

@@ -16,6 +16,9 @@ const guestAccountSchema = new mongoose.Schema({
   // MongoDB deletes the guest then: 180 days after it was last active (the spec: "Guest accounts
   // unused for 180 days are deleted"). Moved forward on every sign-in and refresh.
   purgeAt: { type: Date, required: true },
+  // The interests the guest chose, as on `users` (see models/User.js). They move to the account at sign-up.
+  interests: { type: [{ _id: false, id: { type: String, required: true }, addedAt: { type: Date, required: true } }], default: undefined },
+  interestsUpdatedAt: { type: Date },
 }, { collection: 'guest_accounts' });
 
 guestAccountSchema.index({ purgeAt: 1 }, { expireAfterSeconds: 0 });
