@@ -109,6 +109,14 @@ const userSchema = new mongoose.Schema({
     }, { _id: false }),
     default: undefined,
   },
+  // The Profile's "Hand-picked by <name>" (v1, /me/hand-picked): ids of the user's own `contents`, in the order the
+  // user chose, at most 3. No default, so documents created through this model do not get an empty list; `[]` once
+  // the user clears it.
+  handPicked: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Content' }],
+    default: undefined,
+    validate: { validator: (ids) => ids == null || ids.length <= 3, message: 'At most 3 hand-picked items.' },
+  },
 });
 
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:

@@ -8,6 +8,28 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-30: Hand-picked items on the Profile
+
+**Existing data affected:** none. The new code only adds the field below. No migration, no edit of existing documents.
+
+**`users`: new optional field** (absent until the user first saves a list)
+
+| Field | Purpose |
+| --- | --- |
+| `handPicked` | Array of ObjectIds (`contents._id`), at most 3, in the order the user chose: the Profile's "Hand-picked by <name>" (`GET`/`PUT /v1/me/hand-picked`). Written only by `PUT`, which replaces the whole array in one `$set` after checking that every id is one of the user's own `contents` and that none repeats. `[]` once the user clears it. The model refuses more than 3 (`runValidators` on the update). Absent, or not an array, reads as an empty list. |
+
+Items deleted later stay in the array and are left out when it is read; the array is not cleaned up on read. Nothing deletes a user's content yet (see the `contents` entry below), so whatever does that later may also remove the id from its owner's `handPicked`, though reads already skip it.
+
+**No new collections. No index changes:** the items are read by `_id` (`{_id: {$in: [...]}, ownerId}`), which the existing `_id` index serves.
+
+**Rollback:**
+- Stop the new code.
+- The field can stay (the old API and the admin panel ignore it), or be removed with `db.users.updateMany({}, { $unset: { handPicked: '' } })`.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-29: Image palette and blur preview (avatar and banner)
 
 **Existing data affected:**

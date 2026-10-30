@@ -154,6 +154,8 @@ paths:
     $ref: './paths/me.yaml#/meContent'
   /me/content/{contentId}:
     $ref: './paths/me.yaml#/meContentItem'
+  /me/hand-picked:
+    $ref: './paths/me.yaml#/meHandPicked'
   /me/media/uploads:
     $ref: './paths/me.yaml#/meMediaUploads'
   /me/avatar:

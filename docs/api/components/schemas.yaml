@@ -249,6 +249,7 @@ ErrorCode:
     - CURSOR_INVALID
     # the user's own content
     - CONTENT_NOT_FOUND
+    - HAND_PICKED_INVALID
     # media
     - UPLOAD_NOT_FOUND
     - UPLOAD_EXPIRED
@@ -1381,6 +1382,35 @@ ContentPage:
         $ref: '#/Content'
     page:
       $ref: '#/PageInfo'
+
+HandPicked:
+  type: object
+  description: |
+    The Profile's "Hand-picked by <name>" section: up to 3 of the user's own
+    items, in the order the user chose (never computed). Items that no
+    longer exist are left out; hidden and followers-only items are included
+    with their flags (the owner's view).
+  required: [items]
+  properties:
+    items:
+      type: array
+      maxItems: 3
+      items:
+        $ref: '#/Content'
+
+HandPickedReplace:
+  type: object
+  required: [contentIds]
+  additionalProperties: false
+  properties:
+    contentIds:
+      type: array
+      description: |
+        The whole new list, in the order to show: ids of the user's own
+        content (`Content.id`), each at most once. `[]` clears it.
+      maxItems: 3
+      items:
+        $ref: '#/Id'
 
 ContentUpdate:
   type: object

@@ -65,4 +65,16 @@ function updateFlags({ ownerId, contentId, set }) {
   return Content.findOneAndUpdate({ _id: contentId, ownerId }, { $set: set }, { returnDocument: 'after' }).lean();
 }
 
-module.exports = { page, count, updateFlags, SORTS };
+/**
+ * The owner's items among these ids (the Profile's hand-picked items), hidden and followers-only ones included.
+ * Unknown ids, ids in no known format and other owners' items are left out.
+ * @param {{ownerId: string, ids: string[]}} input
+ * @returns {Promise<object[]>} in no particular order
+ */
+function findOwned({ ownerId, ids }) {
+  const wanted = ids.filter((id) => OBJECT_ID.test(String(id)));
+  if (!OBJECT_ID.test(String(ownerId)) || wanted.length === 0) return Promise.resolve([]);
+  return Content.find({ _id: { $in: wanted }, ownerId }).lean();
+}
+
+module.exports = { page, count, updateFlags, findOwned, SORTS };

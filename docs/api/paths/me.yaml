@@ -772,6 +772,91 @@ meContentItem:
       '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
       '500': { $ref: '../components/responses.yaml#/InternalError' }
 
+meHandPicked:
+  get:
+    operationId: getMyHandPicked
+    tags: [Content]
+    summary: Get the user's hand-picked items
+    description: |
+      The Profile's "Hand-picked by <name>" section (Figma 1576:22233,
+      1671:81081): up to 3 of the user's own playlists, songs, stories and
+      albums, in the order the user chose. The list is only ever the user's
+      choice, never computed. Items that no longer exist are left out. This
+      is the owner's view, so hidden and followers-only items are included,
+      with their flags. A user who never picked anything gets an empty list.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The hand-picked items, in the saved order.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/HandPicked'
+            example:
+              items:
+                - id: 6650f1c2a4b7e9d3c1f00b01
+                  type: album
+                  title: Late Night Drive
+                  image: { url: 'https://cdn.bondfire.app/c/late-night-drive.jpg', width: 512, height: 512, status: ready, blurhash: null }
+                  year: 2024
+                  songCount: 12
+                  durationSec: 2710
+                  listens: 48210
+                  badge: top10
+                  hidden: false
+                  followersOnly: false
+                  createdAt: '2026-09-27T10:15:00Z'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  put:
+    operationId: replaceMyHandPicked
+    tags: [Content]
+    summary: Replace the hand-picked items
+    description: |
+      Adding or removing an item (the menu on a content row) and dragging
+      to reorder all send the whole new list: 0 to 3 ids of the user's own
+      content, in the order to show. It replaces the saved list and answers
+      like `GET`. Sending the same list again changes nothing; `[]` clears
+      it. Hidden and followers-only items may be picked.
+
+      Errors: `GUEST_NOT_ALLOWED` (403); `HAND_PICKED_INVALID` (422) when an
+      id is not one of the user's own items (unknown, deleted or someone
+      else's, all answered alike) or is sent twice, with one `errors[]`
+      entry per such id (`field` `/contentIds/<index>`). More than 3 ids, or
+      a body in another shape, is `VALIDATION_FAILED` (422). Nothing is
+      saved when the request fails.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/HandPickedReplace'
+          example:
+            contentIds: ['6650f1c2a4b7e9d3c1f00b01', '6650f1c2a4b7e9d3c1f00b07']
+    responses:
+      '200':
+        description: The saved list, as `GET` returns it.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/HandPicked'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
 meMediaUploads:
   post:
     operationId: createUploadIntent
