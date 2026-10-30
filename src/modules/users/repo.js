@@ -300,4 +300,32 @@ async function removeImage(userId, kind, at) {
   return (before && before[kind]) || null;
 }
 
-module.exports = { setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/**
+ * Accounts whose avatar or banner has no palette of this version yet (scripts/backfill-image-palette.js), in `_id`
+ * order, one page at a time: pass the last `_id` seen as `after`.
+ * @param {number} version the current colour rules version
+ * @param {{after?: object | null, limit?: number}} [page]
+ * @returns {Promise<Array<{_id: object, avatar?: object, banner?: object}>>} only `_id`, `avatar` and `banner`
+ */
+async function findImagesWithoutPalette(version, { after = null, limit = 100 } = {}) {
+  const missing = (kind) => ({ [`${kind}.path`]: { $type: 'string' }, [`${kind}.palette.version`]: { $ne: version } });
+  const filter = { $or: [missing('avatar'), missing('banner')] };
+  if (after) filter._id = { $gt: after };
+  return User.find(filter, { avatar: 1, banner: 1 }).sort({ _id: 1 }).limit(limit).lean();
+}
+
+/**
+ * Save an image's palette and BlurHash, only while it is still the same upload (`<kind>.path` unchanged), so a
+ * photo replaced in the meantime keeps its own. `updatedAt` is left alone: the profile itself did not change.
+ * @param {'avatar' | 'banner'} kind
+ * @returns {Promise<boolean>} whether it was saved
+ */
+async function setImageLook(userId, kind, path, { palette, blurhash }) {
+  const result = await User.updateOne(
+    { _id: userId, [`${kind}.path`]: path },
+    { $set: { [`${kind}.palette`]: palette, [`${kind}.blurhash`]: blurhash } },
+  );
+  return result.matchedCount === 1;
+}
+
+module.exports = { findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

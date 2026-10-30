@@ -6,6 +6,7 @@
  *   (POST /me/media/uploads, then `uploadId`) needs object storage and is not built yet, so an `uploadId` is
  *   always UPLOAD_NOT_FOUND.
  * - Processing finishes before the answer, so the image is `ready` at once. No moderation yet.
+ * - The picture's palette (colour rules v1) and BlurHash are worked out at upload and stored with it.
  * - Each upload gets its own folder, so its addresses never change and can be cached forever. The photo it
  *   replaces is deleted after the new one is saved; if that deletion fails, the old files are left behind (logged),
  *   never the account without a photo.
@@ -80,6 +81,9 @@ function createMediaService({
       variants: processed.variants.map(({ width, height }) => ({ width, height })),
       updatedAt: new Date(now()),
     };
+    // Left out when they could not be worked out, so the backfill script finds the image and fills them in.
+    if (processed.palette) image.palette = processed.palette;
+    if (processed.blurhash) image.blurhash = processed.blurhash;
     let saved;
     try {
       saved = await users.setImage(userId, kind, image, now());

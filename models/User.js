@@ -8,6 +8,18 @@ function imageSchema() {
     height: { type: Number, required: true },
     variants: { type: [new mongoose.Schema({ width: Number, height: Number }, { _id: false })], default: undefined },
     updatedAt: { type: Date, required: true },
+    // The picture's colours (colour rules v1, src/lib/palette.js) and BlurHash, worked out at upload. Absent on
+    // images stored before they existed, until scripts/backfill-image-palette.js has run.
+    palette: {
+      type: new mongoose.Schema({
+        version: { type: Number, required: true },
+        seed: { type: String, required: true },
+        accent: { type: String, required: true },
+        neutral: { type: Boolean, required: true },
+      }, { _id: false }),
+      default: undefined,
+    },
+    blurhash: { type: String },
   }, { _id: false });
 }
 

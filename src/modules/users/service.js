@@ -51,9 +51,23 @@ const settingsOf = (doc) => ({
 const phoneProved = (user) => typeof user.phone === 'string' && user.phoneVerifiedAt instanceof Date;
 const timeOrNull = (value) => (value instanceof Date && !Number.isNaN(value.getTime()) ? iso(value) : null);
 
+const HEX_COLOUR = /^#[0-9A-F]{6}$/;
+// BlurHash's base-83 alphabet; 4x3 components make 28 characters.
+const BLURHASH = /^[0-9A-Za-z#$%*+,\-.:;=?@[\]^_{|}~]{6,100}$/;
+
+/** The stored palette as the spec's `ImagePalette`, or null when it is missing or not in that shape. */
+function paletteOrNull(palette) {
+  if (!palette || typeof palette !== 'object') return null;
+  const { version, seed, accent, neutral } = palette;
+  if (!Number.isInteger(version) || version < 1 || typeof seed !== 'string' || !HEX_COLOUR.test(seed) ||
+      typeof accent !== 'string' || !HEX_COLOUR.test(accent) || typeof neutral !== 'boolean') return null;
+  return { version, seed, accent, neutral };
+}
+
 /**
  * The spec's `Image` for a stored avatar or banner (`users.avatar` / `users.banner`), or null. Processing happens
- * before the upload answers, so a stored image is always `ready`.
+ * before the upload answers, so a stored image is always `ready`. `palette` and `blurhash` are null for images
+ * stored before they were worked out at upload (until the backfill fills them in), or stored in another shape.
  * @param {object | undefined} stored
  * @param {(key: string) => string} urlFor storage key to the address the app loads it from
  */
@@ -68,6 +82,8 @@ function toImage(stored, urlFor) {
     width: stored.width,
     height: stored.height,
     status: 'ready',
+    blurhash: typeof stored.blurhash === 'string' && BLURHASH.test(stored.blurhash) ? stored.blurhash : null,
+    palette: paletteOrNull(stored.palette),
     variants,
   };
 }

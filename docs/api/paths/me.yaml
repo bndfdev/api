@@ -834,6 +834,10 @@ meAvatar:
       until done; a rejected image is removed and `IMAGE_REJECTED` is
       reported on the next `GET /me` as `avatar: null`.
 
+      The picture's `palette` (colour rules v1, see `ImagePalette`) and
+      `blurhash` are worked out from the crop as shown (transparency on
+      black) and returned in this answer and in every later `Image` of it.
+
       Errors: `GUEST_NOT_ALLOWED` (403), `UPLOAD_NOT_FOUND` (404),
       `UPLOAD_EXPIRED` (410), `PAYLOAD_TOO_LARGE` (413),
       `UNSUPPORTED_MEDIA_TYPE` (415), `UPLOAD_INCOMPLETE`,
@@ -900,6 +904,7 @@ meBanner:
       Save on Your profile banner (Figma 1261:32324). Same rules as
       `PUT /me/avatar`, except the crop uses the banner ratio 393:264
       (±2%), minimum 786×528 px after crop, resized to 786/1179/1572 px wide.
+      The banner's `palette` gives the app its personal colour.
     parameters:
       - $ref: '../components/parameters.yaml#/ClientPlatform'
       - $ref: '../components/parameters.yaml#/ClientVersion'

@@ -16,6 +16,7 @@ const { createLocalStorage } = require('../src/providers/storage/local');
 const { createMediaService } = require('../src/modules/media/service');
 const { createMediaRouter } = require('../src/modules/media/routes');
 const usersRepo = require('../src/modules/users/repo');
+const { toImage } = require('../src/modules/users/service');
 const User = require('../models/User');
 const db = require('./support/db');
 const { assertProblem, makeUser, signIn, CLIENT } = require('./support/api');
@@ -258,4 +259,98 @@ test('media config: local only, and the public address must be http(s)', () => {
   assert.equal(loadConfig({ NODE_ENV: 'test', API_BASE_URL: 'https://api.example' }).media.publicUrl, 'https://api.example/media');
   assert.throws(() => loadConfig({ NODE_ENV: 'test', MEDIA_STORAGE: 's3' }), /MEDIA_STORAGE/);
   assert.throws(() => loadConfig({ NODE_ENV: 'test', MEDIA_PUBLIC_URL: 'ftp://x' }), /MEDIA_PUBLIC_URL/);
+});
+
+// ---------------------------------------------------------------------------
+// Palette and blur preview (colour rules v1, src/lib/palette.js)
+
+const FIXTURES = path.join(__dirname, 'fixtures', 'palette');
+const expectedLook = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'expected.json'), 'utf8')).files;
+
+test('PUT /me/banner works out the palette and blurhash of the crop as shown, stores them, and GET /me shows them', async () => {
+  const who = await account();
+  // 786x528 is exactly 393:264, so the full crop is the picture itself: the upload must agree with expected.json.
+  for (const file of ['red_blue.png', 'transparent.png']) {
+    const res = await request(app).put('/v1/me/banner').set(who.headers)
+      .attach('file', fs.readFileSync(path.join(FIXTURES, file)), { filename: file, contentType: 'image/png' })
+      .field('crop', FULL);
+    assert.equal(res.status, 200, res.text);
+    assertMatchesSpec('Image', res.body);
+    assert.deepEqual(res.body.palette, expectedLook[file].palette, file);
+    assert.equal(res.body.blurhash, expectedLook[file].blurhash, file);
+
+    const stored = (await User.findById(who.user._id).lean()).banner;
+    assert.deepEqual(stored.palette, expectedLook[file].palette);
+    assert.equal(stored.blurhash, expectedLook[file].blurhash);
+    const me = await request(app).get('/v1/me').set(who.headers);
+    assert.equal(me.status, 200);
+    assert.deepEqual(me.body.banner, res.body);
+  }
+});
+
+test('the palette is the crop\'s, not the whole photo\'s (#11)', async () => {
+  const who = await account();
+  // 1600x4000: a red band at the top, exactly the banner crop (1600x1075), and blue below it (73% of the photo).
+  const band = await sharp({ create: { width: 1600, height: 1075, channels: 3, background: '#d02020' } }).png().toBuffer();
+  const tall = await sharp({ create: { width: 1600, height: 4000, channels: 3, background: '#2040d0' } })
+    .composite([{ input: band, left: 0, top: 0 }]).png().toBuffer();
+  const res = await request(app).put('/v1/me/banner').set(who.headers)
+    .attach('file', tall, { filename: 'tall.png', contentType: 'image/png' })
+    .field('crop', JSON.stringify({ x: 0, y: 0, width: 1, height: 1075 / 4000 }));
+  assert.equal(res.status, 200, res.text);
+  assert.equal(res.body.palette.seed, '#D02020');
+});
+
+test('PUT /me/avatar returns a palette and blurhash too, and a replay returns the same', async () => {
+  const who = await account();
+  const key = crypto.randomUUID();
+  const file = await photo(400, 400, '#2040d0');
+  const res = await put(who, 'avatar', file, FULL, { 'Idempotency-Key': key });
+  assert.equal(res.status, 200, res.text);
+  assertMatchesSpec('Image', res.body);
+  assert.equal(res.body.palette.version, 1);
+  assert.equal(res.body.palette.neutral, false);
+  assert.equal(res.body.blurhash.length, 28);
+  const me = await request(app).get('/v1/me').set(who.headers);
+  assert.deepEqual(me.body.avatar, res.body);
+  assert.deepEqual((await put(who, 'avatar', file, FULL, { 'Idempotency-Key': key })).body, res.body);
+});
+
+test('an image stored before palettes existed, or with one in another shape, has palette and blurhash null', async () => {
+  const who = await account();
+  const old = { path: `avatars/${who.user._id}/old`, width: 512, height: 512, variants: [{ width: 512, height: 512 }], updatedAt: new Date() };
+  const odd = {
+    ...old,
+    path: `banners/${who.user._id}/odd`,
+    palette: { version: 1, seed: '#d02020', accent: '#D02020', neutral: false },
+    blurhash: 'not a blurhash',
+  };
+  // Written straight to the collection, as an older server (or another tool) would have left them.
+  await User.collection.updateOne({ _id: who.user._id }, { $set: { avatar: old, banner: odd } });
+  const me = await request(app).get('/v1/me').set(who.headers);
+  assert.equal(me.status, 200, me.text);
+  for (const kind of ['avatar', 'banner']) {
+    assertMatchesSpec('Image', me.body[kind]);
+    assert.equal(me.body[kind].palette, null, kind);
+    assert.equal(me.body[kind].blurhash, null, kind);
+  }
+});
+
+test('toImage passes on only a palette in the spec shape', () => {
+  const urlFor = (key) => `https://cdn.example/${key}`;
+  const good = { version: 1, seed: '#D02020', accent: '#B01B1B', neutral: false };
+  const base = { path: 'banners/u/1', width: 1179, height: 792, variants: [{ width: 1179, height: 792 }] };
+  assert.deepEqual(toImage({ ...base, palette: { ...good, extra: 'x' }, blurhash: 'LmK@9_oNK7sp{cn$wHn%K7jZbHfQ' }, urlFor).palette, good);
+  assert.equal(toImage({ ...base, palette: good, blurhash: 'LmK@9_oNK7sp{cn$wHn%K7jZbHfQ' }, urlFor).blurhash, 'LmK@9_oNK7sp{cn$wHn%K7jZbHfQ');
+  for (const palette of [
+    undefined, null, 'red', [],
+    { ...good, version: '1' }, { ...good, version: 0 }, { ...good, version: 1.5 },
+    { ...good, seed: 'D02020' }, { ...good, seed: '#D0202' }, { ...good, accent: '#b01b1b' }, { ...good, accent: null },
+    { ...good, neutral: 'false' }, { version: 1, seed: '#D02020', accent: '#B01B1B' },
+  ]) {
+    assert.equal(toImage({ ...base, palette }, urlFor).palette, null, JSON.stringify(palette));
+  }
+  for (const blurhash of [undefined, null, '', 'short', 'has spaces in it', 42]) {
+    assert.equal(toImage({ ...base, blurhash }, urlFor).blurhash, null, String(blurhash));
+  }
 });

@@ -5,13 +5,16 @@
  * - the crop is a rectangle in fractions (0-1) of the oriented image: square for an avatar, 393:264 for a banner,
  *   each within 2%; at least 200x200 (avatar) or 786x528 (banner) pixels;
  * - the output is JPEG at the spec's widths (never enlarged), on black where the original was transparent, with
- *   every piece of metadata removed (EXIF, GPS, camera): sharp writes none unless asked to.
+ *   every piece of metadata removed (EXIF, GPS, camera): sharp writes none unless asked to;
+ * - the palette (colour rules v1) and BlurHash are worked out from the same crop (src/lib/palette.js).
  *
  * HEIC from iPhones is usually HEVC-coded, which the prebuilt sharp cannot decode; such a file is IMAGE_UNREADABLE.
  * The app sends JPEG.
  */
 const sharp = require('sharp');
 const { ApiError } = require('./problem');
+const { logger } = require('./logger');
+const { analyseImage } = require('./palette');
 
 const MAX_SIDE = 8000;
 const RATIO_TOLERANCE = 0.02;
@@ -85,8 +88,9 @@ function pixelCrop(crop, imageWidth, imageHeight, kind) {
  * @param {Buffer} body the file
  * @param {string | object} cropText the `crop` field
  * @param {'avatar' | 'banner'} kind
- * @returns {Promise<{variants: Array<{width: number, height: number, body: Buffer}>, width: number, height: number}>}
- *   the files to store, smallest first, and the size of the default one
+ * @returns {Promise<{variants: Array<{width: number, height: number, body: Buffer}>, width: number, height: number,
+ *   palette: object | null, blurhash: string | null}>} the files to store, smallest first, the size of the default
+ *   one, and the picture's palette and BlurHash (null when they could not be worked out)
  */
 async function processImage(body, cropText, kind) {
   const spec = KINDS[kind];
@@ -136,7 +140,16 @@ async function processImage(body, cropText, kind) {
     variants.push({ width, height, body: out });
   }
   const chosen = variants.filter((v) => v.width <= spec.defaultWidth).pop() || variants[0];
-  return { variants, width: chosen.width, height: chosen.height };
+
+  // The palette and blur preview, from the cropped, flattened picture the sizes are made from. The app can work
+  // them out itself (and the backfill script fills them in later), so a failure here never fails the upload.
+  let look = { palette: null, blurhash: null };
+  try {
+    look = await analyseImage(base.data, { raw: base.info });
+  } catch (err) {
+    logger.warn({ err }, 'could not work out the palette of a profile image');
+  }
+  return { variants, width: chosen.width, height: chosen.height, palette: look.palette, blurhash: look.blurhash };
 }
 
 module.exports = { processImage, parseCrop, KINDS, MAX_SIDE };

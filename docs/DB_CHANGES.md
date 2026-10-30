@@ -8,6 +8,33 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-10-29: Image palette and blur preview (avatar and banner)
+
+**Existing data affected:**
+- **By the server: none.** New uploads store two more fields inside the image they already store.
+- **By the backfill script, only when someone runs it by hand (and on a shared database only with the database owner's OK):** `scripts/backfill-image-palette.js` adds `palette` and `blurhash` to the existing `users.avatar` and `users.banner` sub-documents that have no palette of the current version. Each write is conditional: it only applies while that image's `path` is unchanged, so a photo replaced in the meantime is never given the old one's colours. It writes nothing else (not even `updatedAt`). Run it with `--dry-run` first to see the counts; `--limit N` does it in batches; it can be stopped and run again, and a second run changes nothing.
+
+**`users`: new optional fields inside the existing `avatar` and `banner` sub-documents**
+
+| Field | Purpose |
+| --- | --- |
+| `avatar.palette`, `banner.palette` | `{version, seed, accent, neutral}`: the version of the colour rules that made it (1), the picture's main colour and the accent the app uses (`#RRGGBB`, upper case), and whether the picture has no real colour. About 80 bytes. |
+| `avatar.blurhash`, `banner.blurhash` | The picture's BlurHash (4x3 components, 28 characters): the blurred stand-in the app paints while the image loads. |
+
+Absent on images stored before this change (the API sends `palette: null`, `blurhash: null`) until the backfill has run. Replacing a photo replaces both with the new photo's; removing it removes them with it. If they cannot be worked out at upload, the photo is saved without them (and the backfill picks it up later).
+
+**What the backfill reads:** `users` in `_id` order, 100 at a time, with the filter `{$or: [{'avatar.path': {$type: 'string'}, 'avatar.palette.version': {$ne: 1}}, {'banner.path': {$type: 'string'}, 'banner.palette.version': {$ne: 1}}]}`. No index serves this beyond `_id`, so a full run reads the collection once; no index is added for a one-off. It reads each image's default size (`<path>/<width>.jpg`) through the media storage driver, so it must run where those files are (`MEDIA_DIR` on the server that stored them, for the local driver).
+
+**No new collections; no index changes.**
+
+**Rollback:**
+- Stop the new code.
+- The fields can stay (the old API and the admin panel never read them), or be removed with `db.users.updateMany({}, { $unset: { 'avatar.palette': '', 'avatar.blurhash': '', 'banner.palette': '', 'banner.blurhash': '' } })`.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-25: Settings, notification switches and the user's own content
 
 **Existing data affected:** none. The new code only adds the fields and the collection below. No migration, no edit of existing documents.

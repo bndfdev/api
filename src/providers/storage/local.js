@@ -36,6 +36,10 @@ function createLocalStorage({ dir, publicUrl }) {
       await fs.writeFile(partial, body);
       await fs.rename(partial, file);
     },
+    /** The file saved under `key` (scripts/backfill-image-palette.js reads stored images back). */
+    async get(key) {
+      return fs.readFile(fileFor(key));
+    },
     /** Delete every file under the folder `prefix`. Missing files are fine (idempotent). */
     async removePrefix(prefix) {
       await fs.rm(fileFor(prefix), { recursive: true, force: true });
