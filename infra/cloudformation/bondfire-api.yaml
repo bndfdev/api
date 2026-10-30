@@ -48,13 +48,25 @@ Parameters:
     Type: String
     Default: /bondfire
     AllowedPattern: '^/[a-zA-Z0-9_.-]+$'
-    Description: SSM parameter prefix. Parameters live at <prefix>/<env>/<NAME>.
+    Description: >-
+      SSM prefix for non-sensitive config. Parameters live at
+      <prefix>/<env>/SMTP_HOST, SMTP_PORT and SMTP_FROM.
+
+  SecretArn:
+    Type: String
+    MinLength: 20
+    AllowedPattern: '^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:.+$'
+    Description: >-
+      ARN of the Secrets Manager secret (JSON) holding MONGODB_URI,
+      JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, TOKEN_ENC_KEY, CODE_HMAC_KEY and, when
+      SmtpAuth=true, SMTP_USER/SMTP_PASS. Create it with
+      infra/cloudformation/create-secrets.sh.
 
   JwtKeyId:
     Type: String
     Default: dev-key-1
     AllowedPattern: '^[A-Za-z0-9._-]+$'
-    Description: JWT_KEY_ID for the key pair stored in SSM.
+    Description: JWT_KEY_ID for the key pair stored in Secrets Manager.
 
   CorsOrigins:
     Type: String
@@ -310,6 +322,17 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref SecretArn
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'secretsmanager.${AWS::Region}.amazonaws.com'
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -357,29 +380,30 @@ Resources:
               Value: !If [HasCors, !Ref CorsOrigins, '']
           Secrets:
             - Name: MONGODB_URI
-              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/MONGODB_URI'
+              ValueFrom: !Sub '${SecretArn}:MONGODB_URI::'
             - Name: JWT_PRIVATE_KEY
-              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/JWT_PRIVATE_KEY'
+              ValueFrom: !Sub '${SecretArn}:JWT_PRIVATE_KEY::'
             - Name: JWT_PUBLIC_KEY
-              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/JWT_PUBLIC_KEY'
+              ValueFrom: !Sub '${SecretArn}:JWT_PUBLIC_KEY::'
             - Name: TOKEN_ENC_KEY
-              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/TOKEN_ENC_KEY'
+              ValueFrom: !Sub '${SecretArn}:TOKEN_ENC_KEY::'
             - Name: CODE_HMAC_KEY
-              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/CODE_HMAC_KEY'
-            - Name: SMTP_HOST
-              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_HOST'
-            - Name: SMTP_PORT
-              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_PORT'
+              ValueFrom: !Sub '${SecretArn}:CODE_HMAC_KEY::'
             - !If
               - SmtpAuthEnabled
               - Name: SMTP_USER
-                ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_USER'
+                ValueFrom: !Sub '${SecretArn}:SMTP_USER::'
               - !Ref AWS::NoValue
             - !If
               - SmtpAuthEnabled
               - Name: SMTP_PASS
-                ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_PASS'
+                ValueFrom: !Sub '${SecretArn}:SMTP_PASS::'
               - !Ref AWS::NoValue
+            # Non-secret SMTP config stays in SSM Parameter Store.
+            - Name: SMTP_HOST
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_HOST'
+            - Name: SMTP_PORT
+              ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_PORT'
             - Name: SMTP_FROM
               ValueFrom: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SecretsPrefix}/${Environment}/SMTP_FROM'
           LogConfiguration:

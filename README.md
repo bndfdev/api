@@ -60,6 +60,10 @@ Notes:
 
 ## Deployment (GitHub Actions + AWS OIDC)
 
+The AWS infrastructure (VPC, ALB, ECS cluster/service, HTTPS, secrets) is created
+with CloudFormation — see [`infra/cloudformation/README.md`](infra/cloudformation/README.md)
+for the step-by-step setup of the dev, QA and prod environments.
+
 We use GitHub Actions to assume an AWS IAM role via OIDC and perform CI/CD deploys.
 
 - **IAM role ARN**: arn:aws:iam::9xxx:role/github-actions-xxx-xxx

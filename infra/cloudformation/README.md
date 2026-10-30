@@ -13,7 +13,7 @@ Per environment:
 - Task definition family `bondfire-api-<env>`, container name `api`, port 3000
 - Target tracking autoscaling on CPU, 1→3 tasks
 - CloudWatch log group `/ecs/bondfire-api-<env>` (14 days)
-- IAM execution role that can read `/<prefix>/<env>/*` from SSM, and an empty task role
+- IAM execution role that can read the runtime secret from Secrets Manager and the SMTP config from SSM, plus an empty task role
 - Route 53 A record `<hostname>` (default `<env>.<domain>`) when `HostedZoneId` is given
 
 No NAT gateway: tasks run in public subnets with a public IP and are reachable
@@ -34,8 +34,9 @@ aws sts get-caller-identity  # must print an account
 ```
 
 You need permission to create VPC/EC2, ELB, ECS, IAM roles, CloudWatch logs,
-Route 53 records and SSM parameters in the target account. Pick the region
-first — everything (ECR, certificate, ALB, cluster) must be in the same one:
+Route 53 records, SSM parameters and Secrets Manager secrets in the target
+account. Pick the region first — everything (ECR, certificate, ALB, cluster,
+secret) must be in the same one:
 
 ```bash
 export AWS_REGION=ap-south-1          # Mumbai; us-east-1 also fine
@@ -127,39 +128,84 @@ echo "certificate issued"
 > pass the same `CertificateArn` to every stack. The validation CNAME is also a
 > single record in that case.
 
-## Step 4 — Runtime secrets in SSM
+## Step 4 — Runtime secrets
 
-The task definition reads these from `/<prefix>/<env>/<NAME>`:
+Two stores, one rule: **no credential is ever a plain environment variable in
+the template or the task definition.**
 
-| Parameter | Type | Notes |
-| --- | --- | --- |
-| `MONGODB_URI` | SecureString | required |
-| `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY` | SecureString | generated for you (ES256/P-256) |
-| `TOKEN_ENC_KEY`, `CODE_HMAC_KEY` | SecureString | generated for you (32 random bytes, base64) |
-| `SMTP_HOST`, `SMTP_FROM`, `SMTP_PORT` | String | **required** — production refuses to start without them |
-| `SMTP_USER`, `SMTP_PASS` | SecureString | required unless `SmtpAuth=false` |
+- **Secrets Manager** (`bondfire/<env>/runtime`, a single JSON secret):
+  `MONGODB_URI`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `TOKEN_ENC_KEY`,
+  `CODE_HMAC_KEY` and, when `SmtpAuth=true`, `SMTP_USER`/`SMTP_PASS`.
+- **SSM Parameter Store** (`/<prefix>/<env>/...`): non-sensitive SMTP config —
+  `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`.
 
-Run the helper, which generates the keys and refuses to overwrite them unless
-you ask:
+ECS injects both at container start. `describe-task-definition` shows only
+references (`<secret-arn>:KEY::`), never values.
+
+### Create it
 
 ```bash
-export MONGODB_URI='mongodb+srv://user:pass@cluster.mongodb.net/bondfire?retryWrites=true'
+export MONGODB_URI='mongodb+srv://user:pass@cluster.mongodb.net/bondfire?retryWrites=true&w=majority'
 export SMTP_HOST='email-smtp.ap-south-1.amazonaws.com'
 export SMTP_FROM='Bondfire <no-reply@bondfire.ai>'
 export SMTP_USER='...'
 export SMTP_PASS='...'
 
-infra/cloudformation/create-parameters.sh "$ENV"
+infra/cloudformation/create-secrets.sh "$ENV"
 ```
 
-Why SMTP is mandatory: `src/config.js` defaults `EMAIL_PROVIDER` to `smtp`
-outside development and validates `SMTP_HOST`/`SMTP_FROM` at boot. If they are
-missing the container exits with `Missing required environment variables` and
-ECS restarts it until the deployment circuit breaker rolls back.
+The helper:
 
-`SMTP_AUTH=false` + the stack parameter `SmtpAuth=false` is the only case where
-the username/password parameters are not needed. `ROTATE_KEYS=true` regenerates
-the key pair, which logs out every session.
+- generates an ES256 (P-256) JWT key pair and 32-byte base64
+  `TOKEN_ENC_KEY`/`CODE_HMAC_KEY` on first run;
+- merges new values into the existing secret JSON, so re-runs keep the keys
+  (`ROTATE_KEYS=true` replaces them and logs every session out);
+- writes the SMTP config to SSM and prints the secret ARN for `SecretArn`.
+
+Prefer to do it by hand? Store the values as one JSON object:
+
+```bash
+aws secretsmanager create-secret --name "bondfire/$ENV/runtime" \
+  --description "Bondfire $ENV runtime secrets" --region "$AWS_REGION" \
+  --secret-string '{"MONGODB_URI":"mongodb+srv://...","JWT_PRIVATE_KEY":"-----BEGIN PRIVATE KEY-----\n...","JWT_PUBLIC_KEY":"-----BEGIN PUBLIC KEY-----\n...","TOKEN_ENC_KEY":"...","CODE_HMAC_KEY":"...","SMTP_USER":"...","SMTP_PASS":"..."}'
+```
+
+### Updating values
+
+```bash
+export MONGODB_URI='mongodb+srv://...'
+export SMTP_PASS='...'
+infra/cloudformation/create-secrets.sh "$ENV"   # reuses the existing keys
+
+aws ecs update-service --cluster "bondfire-$ENV" --service "bondfire-api-$ENV" \
+  --force-new-deployment --region "$AWS_REGION"
+```
+
+Tasks read the secret when they start, so running tasks keep the old values
+until they are replaced.
+
+### No code changes needed
+
+`src/config.js` still reads `process.env.MONGODB_URI`, `process.env.SMTP_PASS`
+and so on. ECS populates those from Secrets Manager at container start, so the
+application is unchanged and nothing sensitive exists in CloudFormation, the
+task definition or GitHub.
+
+If you want the secret to never reach the process environment at all, the app
+must fetch it itself: add `@aws-sdk/client-secrets-manager`, load and cache the
+JSON before `src/config.js` validates the env, and grant
+`secretsmanager:GetSecretValue` to the **task role** instead of the execution
+role. That is a real code change plus a hard startup dependency on the Secrets
+Manager API, and buys little over ECS injection.
+
+### Notes
+
+- `SmtpAuth=false` means the JSON has no `SMTP_USER`/`SMTP_PASS` keys and the
+  task definition omits those entries — keep the stack parameter in sync.
+- SMTP is mandatory in production: `src/config.js` defaults `EMAIL_PROVIDER` to
+  `smtp` outside development and refuses to boot without `SMTP_HOST`/`SMTP_FROM`.
+- The IAM policy is scoped to the exact secret ARN. If you delete and recreate
+  the secret its ARN suffix changes, so update the `SecretArn` parameter too.
 
 ## Step 5 — Build and push the first image
 
@@ -187,8 +233,11 @@ aws cloudformation deploy \
     HostedZoneId= \
     CertificateArn="$CERT_ARN" \
     ImageUri="$ECR_URI:latest" \
+    SecretArn="$SECRET_ARN" \
     VpcCidr=10.42.0.0/16
 ```
+
+`SECRET_ARN` is printed by `create-secrets.sh` (Step 4) and is required.
 
 Takes about 3 minutes. Then read the outputs:
 
@@ -223,7 +272,7 @@ aws logs tail "/ecs/bondfire-api-$ENV" --follow --region "$AWS_REGION"
 
 Expected: `/health` returns `{"status":"ok",...}` and `/health/ready` returns
 `{"status":"ready","checks":{"database":"ok"}}`. If tasks are stuck, the two
-usual causes are a missing SSM parameter (`ResourceInitializationError`) and
+usual causes are a missing secret/parameter (`ResourceInitializationError`) and
 Atlas rejecting the task's IP (readiness stays 503). Check the stopped-task
 reason:
 
@@ -343,8 +392,9 @@ Same steps, different values:
 | hostname | `dev.bondfire.ai` | `qa.bondfire.ai` | `api.bondfire.ai` |
 | `VpcCidr` | `10.42.0.0/16` | `10.43.0.0/16` | `10.44.0.0/16` |
 | SSM prefix | `/bondfire/dev/*` | `/bondfire/qa/*` | `/bondfire/prod/*` |
+| secret | `bondfire/dev/runtime` | `bondfire/qa/runtime` | `bondfire/prod/runtime` |
 
-Use separate SSM values per environment (never share `TOKEN_ENC_KEY` or the
+Use separate secrets per environment (never share `TOKEN_ENC_KEY` or the
 MongoDB database between dev and prod). Each stack creates its own VPC and ALB,
 so the three environments are fully isolated and cost ~$25/month each.
 
@@ -368,6 +418,8 @@ does **not** delete resources created outside the stack:
 aws cloudformation delete-stack --stack-name "bondfire-api-$ENV" --region "$AWS_REGION"
 aws ecr delete-repository --repository-name bondfire-api --force --region "$AWS_REGION"   # deletes all images
 aws acm delete-certificate --certificate-arn "$CERT_ARN" --region "$AWS_REGION"
+aws secretsmanager delete-secret --secret-id "bondfire/$ENV/runtime" \
+  --force-delete-without-recovery --region "$AWS_REGION"
 # SSM parameters (only if you are sure):
 aws ssm get-parameters-by-path --path "/bondfire/$ENV" --recursive --region "$AWS_REGION" \
   --query 'Parameters[].Name' --output text | tr '\t' '\n' \
