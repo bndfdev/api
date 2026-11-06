@@ -11,8 +11,21 @@
  *   3. completeSignup     takes the token and a password, creates the account and signs in.
  * (checkEmailAvailability is the optional "is this address free?" check before step 1.)
  *
- * Password reset, guest sessions, phone verification and social login are not here yet:
- * a challenge for any purpose but `signup_email` cannot be verified through this service.
+ * Password reset is three steps, mirroring sign-up:
+ *   1. startPasswordReset     sends a 6-digit code, but only if the email has an account with a password
+ *                             (otherwise a decoy: the same answer and timing, nothing sent, no code works);
+ *   2. verifyChallenge        checks the code and hands back a one-time `resetToken`;
+ *   3. completePasswordReset  sets the new password, signs out every device and signs in this one.
+ *
+ * Guests (startGuestSession): one limited account per app install, with a date of birth. Completing
+ * sign-up with a guest's access token moves its date of birth, language and interests to the new account, ends the
+ * guest's sessions and deletes the guest.
+ *
+ * A phone code (sent by the phone module) is checked here too, with its owner's access token; a correct
+ * one makes the number the account's verified number. An email-change code (sent by the email module) likewise
+ * makes the new address the account's email.
+ *
+ * Social login is not here yet.
  *
  * Numbers come from docs/api (the spec): the login lockout from `login` ("5 failures in 15 minutes
  * lock password login for 15 minutes"), the password policy from `Password`.
@@ -26,9 +39,19 @@ const defaultPasswords = require('../../lib/passwords');
 const { iso } = require('../../lib/time');
 const { createChallengeService } = require('../challenges/service');
 const { createSignupTokenService } = require('../signupTokens/service');
+const { createResetTokenService } = require('../resetTokens/service');
+const { createEmailProvider } = require('../../providers/email');
 const defaultSessions = require('../sessions/service');
 const defaultUsers = require('../users/repo');
-const { toUserResponse, isSuspended } = require('../users/service');
+const { isSuspended } = require('../users/service');
+const { config: defaultConfig } = require('../../config');
+const { assertSupportedLanguage } = require('../../lib/languages');
+const defaultProfiles = require('../me/service');
+const defaultLegal = require('../legal/service');
+const defaultGuests = require('../guests/repo');
+const { checkDateOfBirth } = require('../../lib/dateOfBirth');
+const { createPhoneService } = require('../phone/service');
+const { createEmailChangeService } = require('../email/service');
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -68,6 +91,13 @@ const challengeNotFound = () => new ApiError({
   status: 404, code: 'CHALLENGE_NOT_FOUND', title: 'Code not found',
   detail: 'This code request does not exist. Start again.',
 });
+const passwordReused = () => new ApiError({
+  status: 422, code: 'VALIDATION_FAILED', title: 'Some details need fixing',
+  errors: [{ field: '/newPassword', code: 'PASSWORD_REUSED', message: 'Choose a password you have not used for this account.' }],
+});
+const guestModeOff = () => new ApiError({
+  status: 403, code: 'FORBIDDEN', title: 'Guest mode is off', detail: 'Create an account or sign in to continue.',
+});
 const deviceMismatch = () => new ApiError({
   status: 422, code: 'VALIDATION_FAILED', title: 'Some details need fixing',
   errors: [{ field: '/device/installationId', code: 'VALIDATION_FAILED', message: 'This must be the same as the X-Installation-Id header.' }],
@@ -88,29 +118,43 @@ function assertSameInstall(device, installationId) {
 }
 
 /**
- * @param {{now?: () => number, users?: object, challenges?: object, signupTokens?: object,
- *   sessions?: object, passwords?: object, logger?: object}} [deps]
+ * @param {{now?: () => number, users?: object, guests?: object, challenges?: object, phone?: object, signupTokens?: object,
+ *   resetTokens?: object, sessions?: object, passwords?: object, emailProvider?: object, profiles?: object,
+ *   legal?: object, config?: object, logger?: object, emailChange?: object}} [deps]
  *   `now` returns epoch ms and is shared with the challenge and sign-up token services unless those are given.
- *   `users` is the users repo; `sessions` needs `createSession`; `passwords` is lib/passwords.js.
+ *   `users` is the users repo; `sessions` needs `createSession`; `passwords` is lib/passwords.js; `profiles` builds the
+ *   `User` in every `Session` (the me service); `legal` moves a guest's consents.
  */
 function createAuthService({
   now = Date.now,
   users = defaultUsers,
+  guests = defaultGuests,
   challenges = createChallengeService({ now }),
+  phone = createPhoneService({ challenges, now }),
   signupTokens = createSignupTokenService({ now }),
+  resetTokens = createResetTokenService({ now }),
   sessions = defaultSessions,
   passwords = defaultPasswords,
+  emailProvider,
+  profiles = defaultProfiles,
+  legal = defaultLegal,
+  config = defaultConfig,
   logger = defaultLogger,
+  emailChange = createEmailChangeService({ users, challenges, emailProvider, now, logger }),
 } = {}) {
+  // Account notices (no code) go through the email provider; built on first use, like the challenge service's.
+  let mailer = emailProvider;
+  const notices = () => (mailer ??= createEmailProvider());
+
   /** Start a session for the user and build the `Session` response. */
-  async function signIn({ user, device, installationId, isNewUser }) {
+  async function signIn({ user, device, installationId, isNewUser, signInMethod = 'password' }) {
     const { tokens, session } = await sessions.createSession({
       userId: String(user._id),
-      signInMethod: 'password',
+      signInMethod,
       device: sessionDevice(device),
       installationId,
     });
-    return { tokens, session, user: toUserResponse(user), isNewUser };
+    return { tokens, session, user: await profiles.userView(user), isNewUser };
   }
 
   // -------------------------------------------------------------------------
@@ -154,50 +198,78 @@ function createAuthService({
   }
 
   /**
-   * Check a code. For a sign-up challenge a correct code uses it up and returns the one-time sign-up token.
-   * TODO(password reset PR): password_reset (resetToken). TODO(phone PR): phone_verification (the verified number).
-   * Until then those challenges cannot be verified here, and checking one does not use it up.
+   * Check a code. A correct code uses the challenge up and returns what it unlocks:
+   * - sign-up: the one-time sign-up token;
+   * - password reset: the one-time reset token (a decoy challenge never gets here: no code matches it);
+   * - phone: the number becomes the account's verified number (`PhoneVerified`);
+   * - email change: the new address becomes the account's email, and the old one gets a notice (`EmailChanged`).
+   * Only the owner's token reaches a phone or email-change challenge: for anyone else it "does not exist".
    * @param {{challengeId: string, code: string, installationId: string, userId?: string}} input
    * @returns {Promise<object>} `ChallengeVerification`
    */
   async function verifyChallenge({ challengeId, code, installationId, userId }) {
     const verified = await challenges.verify({
-      challengeId, code, installationId, userId, allowedPurposes: ['signup_email'],
+      challengeId, code, installationId, userId, allowedPurposes: ['signup_email', 'password_reset', 'phone_verification', 'change_email'],
     });
-    // The only purpose allowed above; a new purpose must be handled here before it is added to that list.
-    if (verified.purpose !== 'signup_email') throw challengeNotFound();
-    let issued;
+    // Every purpose allowed above is handled here; a new purpose must be added here before it is added to that list.
+    if (verified.purpose === 'signup_email') {
+      const { signupToken, expiresAt } = await issueOrGiveBack(verified, () => signupTokens.issue({ email: verified.destination, installationId }));
+      return { purpose: 'signup_email', email: verified.destination, signupToken, signupTokenExpiresAt: iso(expiresAt) };
+    }
+    if (verified.purpose === 'password_reset') {
+      const { resetToken, expiresAt } = await issueOrGiveBack(verified, async () => {
+        // The account the code was sent to. One that has gone since gets nothing: a code that "does not exist" any more.
+        const user = await users.findByEmail(verified.destination);
+        if (!user) throw challengeNotFound();
+        return resetTokens.issue({ userId: String(user._id), installationId });
+      });
+      return { purpose: 'password_reset', resetToken, resetTokenExpiresAt: iso(expiresAt) };
+    }
+    if (verified.purpose === 'phone_verification') {
+      return issueOrGiveBack(verified, () => phone.applyVerified({ userId: verified.userId, phoneNumber: verified.destination }));
+    }
+    if (verified.purpose === 'change_email') {
+      return issueOrGiveBack(verified, () => emailChange.applyVerified({ userId: verified.userId, email: verified.destination }));
+    }
+    throw challengeNotFound();
+  }
+
+  /**
+   * Hand out what a verified code unlocks. If that fails, give the code back, so the user can enter it again
+   * (a correct code must never be lost to a failure on our side).
+   */
+  async function issueOrGiveBack(verified, issue) {
     try {
-      issued = await signupTokens.issue({ email: verified.destination, installationId });
+      return await issue();
     } catch (err) {
-      // The code was right but the user got nothing for it. Give the code back, so they can enter it again.
       await challenges.reopen({ challengeId: verified.challenge.id, verifiedAt: verified.verifiedAt })
         .catch((reopenErr) => logger.warn({ err: reopenErr && reopenErr.name }, 'could not give a verified code back'));
       throw err;
     }
-    const { signupToken, expiresAt } = issued;
-    return {
-      purpose: 'signup_email',
-      email: verified.destination,
-      signupToken,
-      signupTokenExpiresAt: iso(expiresAt),
-    };
   }
 
   /**
    * Create the account for a verified email and sign in. The password is checked first, so a weak one
    * can be fixed and sent again with the same token. The token works once.
-   * TODO(guest PR): a guest access token in Authorization moves the guest's data to the new account.
-   * TODO(config PR): LANGUAGE_UNSUPPORTED once GET /config serves the supported languages (the tag's format is already checked).
-   * @param {{signupToken: string, password: string, device: object, preferredLanguage?: string, installationId: string}} input
+   * With a guest's access token (`auth.accountType === 'guest'`) the guest becomes the account: its date of
+   * birth, language, chosen interests and accepted legal documents move over (a language in the request wins),
+   * then its sessions end and the guest is deleted.
+   * @param {{signupToken: string, password: string, device: object, preferredLanguage?: string, installationId: string,
+   *   auth?: {userId: string, accountType: string}}} input `auth` is the caller's verified access token, if any
    * @returns {Promise<object>} `Session`, with `isNewUser: true`
    */
-  async function completeSignup({ signupToken, password, device, preferredLanguage, installationId }) {
+  async function completeSignup({ signupToken, password, device, preferredLanguage, installationId, auth }) {
     assertSameInstall(device, installationId);
+    assertSupportedLanguage(preferredLanguage);
     const unmet = passwords.unmetRules(password);
     if (unmet.length > 0) throw passwords.policyViolation(unmet);
 
     const { email, tokenHash } = await signupTokens.consume({ signupToken, installationId });
+    // A guest whose account has since been deleted simply signs up from scratch. A guest of another install
+    // is not this install's guest, and is left alone.
+    const found = auth && auth.accountType === 'guest' ? await guests.findById(auth.userId) : null;
+    const guest = found && found.installationId === installationId ? found : null;
+    const language = preferredLanguage || (guest && guest.preferredLanguage);
     let user;
     try {
       // Someone may have signed up with this address since the code was sent.
@@ -208,8 +280,11 @@ function createAuthService({
         emailVerified: true,
         password: await passwords.hash(password),
         passwordAlgo: 'argon2id',
-        ...(preferredLanguage ? { preferredLanguage } : {}),
-        createdAt: new Date(at),
+        ...(language ? { preferredLanguage: language } : {}),
+        ...(guest ? { dateOfBirth: guest.dateOfBirth, dateOfBirthSetAt: new Date(at), dateOfBirthChanges: 0 } : {}),
+        ...(guest && Array.isArray(guest.interests) && guest.interests.length > 0
+          ? { interests: guest.interests, interestsUpdatedAt: guest.interestsUpdatedAt || new Date(at) }
+          : {}),        createdAt: new Date(at),
         updatedAt: new Date(at),
       });
       // Two requests for the same address at once: the unique index lets only one create it.
@@ -221,7 +296,133 @@ function createAuthService({
       }
       throw err;
     }
+    if (guest) {
+      // The guest is now this account. Each step runs even if one before it failed, sessions first: a guest left
+      // behind expires on its own, and terms that did not move are simply asked for again.
+      const steps = [
+        ['end the guest sessions', () => sessions.revokeAllSessions({ userId: String(guest._id), reason: 'guest_upgraded' })],
+        ['move the guest consents', () => legal.moveToAccount(guest._id, user._id)],
+        ['delete the guest', () => guests.remove(guest._id)],
+      ];
+      for (const [what, step] of steps) {
+        try {
+          await step();
+        } catch (err) {
+          logger.warn({ err: err && err.name }, `could not ${what} after sign-up`);
+        }
+      }
+    }
     return signIn({ user, device, installationId, isNewUser: true });
+  }
+
+  // -------------------------------------------------------------------------
+  // Guests
+  // -------------------------------------------------------------------------
+
+  /**
+   * Continue as a guest. The same install always gets the same guest back (`created: false`, answered 200)
+   * instead of a new one (201). The date of birth is required (Figma) and checked against the minimum age on
+   * the person's local date (`device.timeZone`).
+   * When guest mode is switched off (GUEST_MODE=false, served as `features.guestMode`) this is 403 FORBIDDEN.
+   * @param {{device: object, dateOfBirth: string, preferredLanguage?: string, installationId: string}} input
+   * @returns {Promise<{session: object, created: boolean}>} `session` is the spec's `Session`
+   */
+  async function startGuestSession({ device, dateOfBirth, preferredLanguage, installationId }) {
+    if (!config.features.guestMode) throw guestModeOff();
+    assertSameInstall(device, installationId);
+    assertSupportedLanguage(preferredLanguage);
+    const at = now();
+    const checked = checkDateOfBirth(dateOfBirth, { at, timeZone: device.timeZone });
+
+    let guest = await guests.findByInstallation(installationId);
+    let created = false;
+    if (!guest) {
+      guest = await guests.create({ installationId, dateOfBirth: checked, preferredLanguage, at });
+      created = guest !== null;
+      // Two first requests at once: the other one created it.
+      if (!guest) guest = await guests.findByInstallation(installationId);
+      if (!guest) throw new Error('Could not create or find the guest for this install');
+    } else {
+      guest = (await guests.touch(guest._id, at)) || guest;
+    }
+
+    const { tokens, session } = await sessions.createSession({
+      userId: String(guest._id),
+      signInMethod: 'guest',
+      device: sessionDevice(device),
+      installationId,
+      accountType: 'guest',
+    });
+    return { session: { tokens, session, user: await profiles.guestView(guest), isNewUser: created }, created };
+  }
+
+  // -------------------------------------------------------------------------
+  // Password reset
+  // -------------------------------------------------------------------------
+
+  /**
+   * Send a password-reset code. The answer is always a `Challenge` (202), whether or not the address has
+   * an account, so it cannot be used to find accounts. A code is only really sent to an account that has a
+   * password and is not blocked; for anything else the challenge is a decoy (no message, no code matches it,
+   * same limits and about the same time). An account without a password (social-only) would get an email
+   * explaining how it signs in: TODO(social login PR).
+   * @param {{email: string, installationId: string}} input
+   * @returns {Promise<object>} `Challenge`
+   */
+  async function startPasswordReset({ email, installationId }) {
+    const normalised = validateDestination('email', email);
+    if (normalised === null) throw emailInvalid();
+    const user = await users.findByEmail(normalised);
+    const deliver = user !== null && passwords.identify(user.password) !== null && !isSuspended(user, now());
+    return challenges.start({ purpose: 'password_reset', channel: 'email', destination: normalised, installationId, deliver });
+  }
+
+  /**
+   * Set a new password with the reset token, sign out every device (whoever knew the old password)
+   * and sign in this one. Clears the password-login lock. The new password must meet the policy and
+   * differ from the current one; either problem leaves the token usable, so the user can try again.
+   * The devices are signed out before the password changes, so a failure in between leaves the token
+   * usable and never a changed password with the old devices still signed in. They are signed out once
+   * more afterwards, for a login with the old password that finished while the new one was being saved.
+   * The account owner gets a "your password was changed" email (best effort, not awaited).
+   * @param {{resetToken: string, newPassword: string, device: object, installationId: string}} input
+   * @returns {Promise<object>} `Session`, with `isNewUser: false`
+   */
+  async function completePasswordReset({ resetToken, newPassword, device, installationId }) {
+    assertSameInstall(device, installationId);
+    const unmet = passwords.unmetRules(newPassword);
+    if (unmet.length > 0) throw passwords.policyViolation(unmet, '/newPassword');
+
+    const { userId, tokenHash } = await resetTokens.consume({ resetToken, installationId });
+    const at = now();
+    let user;
+    try {
+      user = await users.findById(userId);
+      // Gone, or blocked since the code was sent: the token no longer leads anywhere.
+      if (!user || isSuspended(user, at)) throw resetTokens.tokenInvalid();
+      if (passwords.identify(user.password) !== null && await passwords.verify(user.password, newPassword)) throw passwordReused();
+      const hash = await passwords.hash(newPassword);
+      await sessions.revokeAllSessions({ userId, reason: 'password_reset' });
+      if (!await users.setPassword(userId, { hash, algo: 'argon2id', at })) throw resetTokens.tokenInvalid();
+    } catch (err) {
+      // The same password again, or a failure that is not the client's fault: the token keeps working.
+      const retryable = !(err instanceof ApiError) || err.errors?.[0]?.code === 'PASSWORD_REUSED';
+      if (retryable) {
+        await resetTokens.release(tokenHash).catch((releaseErr) => logger.warn({ err: releaseErr.name }, 'could not give a reset token back'));
+      }
+      throw err;
+    }
+
+    await sessions.revokeAllSessions({ userId, reason: 'password_reset' })
+      .catch((err) => logger.warn({ err: err && err.name }, 'could not repeat the sign-out after a password reset'));
+    const session = await signIn({ user, device, installationId, isNewUser: false, signInMethod: 'password_reset' });
+    if (typeof user.email === 'string' && user.email !== '') {
+      // Not awaited: a slow mail server must not hold up the sign-in.
+      Promise.resolve()
+        .then(() => notices().sendNotice({ to: normalizeEmail(user.email), notice: 'password_changed' }))
+        .catch((err) => logger.warn({ err: err && (err.code || err.name) }, 'password-changed email failed'));
+    }
+    return session;
   }
 
   // -------------------------------------------------------------------------
@@ -248,6 +449,7 @@ function createAuthService({
    *   or an account that has no password hash this API can read).
    * - Every attempt is counted before the password is checked. The fifth attempt in 15 minutes that fails locks
    *   password login for 15 minutes (ACCOUNT_LOCKED with the time left); while locked, even the right password is refused.
+   *   A completed password reset clears the lock.
    *   An email with no account is counted and locked in exactly the same way (kept in `login_attempts`, under a hash
    *   of the address), so the answers to the first six attempts are identical whether or not the account exists.
    * - An account an admin blocked is told ACCOUNT_SUSPENDED only after the password was right, so it tells
@@ -287,7 +489,18 @@ function createAuthService({
     return signIn({ user, device, installationId, isNewUser: false });
   }
 
-  return { checkEmailAvailability, startEmailSignup, getChallenge, resendChallenge, verifyChallenge, completeSignup, login };
+  return {
+    checkEmailAvailability,
+    startEmailSignup,
+    getChallenge,
+    resendChallenge,
+    verifyChallenge,
+    completeSignup,
+    login,
+    startPasswordReset,
+    completePasswordReset,
+    startGuestSession,
+  };
 }
 
-module.exports = { createAuthService, LOGIN_RULES };
+module.exports = { createAuthService, LOGIN_RULES, accountLocked };

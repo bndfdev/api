@@ -126,7 +126,6 @@ exports.unfollowArtists = async (req, res) => {
 exports.setArtists = async (req, res) => {
   debugger;
   const { verificationToken, artists } = req.body;
-  console.log('[set-artists] Body:', req.body);
   if (!verificationToken || !Array.isArray(artists) || artists.length === 0) {
     console.log('[set-artists] Missing verificationToken or artists array');
     return res.status(400).json({ error: 'Verification token and artists array are required' });
@@ -157,7 +156,7 @@ exports.setArtists = async (req, res) => {
     }
     res.json({ success: true, artists: userPref.artists });
   } catch (err) {
-    console.log('[set-artists] Error:', err);
+    console.log('[set-artists] Failed to save followed artists');
     res.status(500).json({ error: 'Failed to save followed artists' });
   }
 };
@@ -220,7 +219,7 @@ exports.setGenres = async (req, res) => {
     }));
     res.json({ success: true, genres: filteredGenres });
   } catch (err) {
-    console.error('[setGenres] Error:', err);
+    console.error('[setGenres] Failed to save genres');
     res.status(500).json({ error: 'Failed to set genres' });
   }
 };
@@ -256,7 +255,7 @@ exports.setPreferredLanguage = async (req, res) => {
     };
     res.json({ success: true, user: filteredUser });
   } catch (err) {
-    console.error('[setPreferredLanguage] Error:', err);
+    console.error('[setPreferredLanguage] Failed to save preferred language');
     res.status(500).json({ error: 'Failed to set preferred language' });
   }
 };
@@ -298,7 +297,7 @@ exports.saveGuestUser = async (req, res) => {
 
     res.json({ success: true, guest });
   } catch (err) {
-    console.error('[saveGuestUser] Error:', err);
+    console.error('[saveGuestUser] Failed to save guest user');
     res.status(500).json({ error: 'Failed to save guest user' });
   }
 };
@@ -421,8 +420,6 @@ exports.setGender = async (req, res) => {
   try {
     // Find verification token entry
     const tokenEntry = await VerificationToken.findOne({ token: verificationToken });
-    console.log('[setGender] verificationToken:', verificationToken);
-    console.log('[setGender] tokenEntry:', tokenEntry);
     if (!tokenEntry || new Date() > tokenEntry.expires) {
       console.log('[setGender] Invalid or expired verification token');
       return res.status(401).json({ error: 'Invalid or expired verification token' });
@@ -435,7 +432,6 @@ exports.setGender = async (req, res) => {
       { gender },
       { new: true }
     );
-    console.log('[setGender] user lookup result:', user);
     if (!user) {
       console.log('[setGender] User not found for email:', normalizedEmail);
       return res.status(404).json({ error: 'User not found' });
@@ -451,7 +447,7 @@ exports.setGender = async (req, res) => {
     };
     res.json({ success: true, user: filteredUser });
   } catch (err) {
-    console.error('[setGender] Error:', err);
+    console.error('[setGender] Failed to update gender');
     res.status(500).json({ error: 'Failed to update gender' });
   }
 };
@@ -893,7 +889,7 @@ exports.login = async (req, res) => {
       },
     });
   } catch (err) {
-    console.error('[login] Error:', err);
+    console.error('[login] Failed to process login');
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -908,7 +904,6 @@ exports.updateName = async (req, res) => {
     const VerificationToken = require('../models/VerificationToken');
     const User = require('../models/User');
     
-    console.log('[updateName] Received token:', verificationToken);
     console.log('[updateName] Received name:', name);
     
     const tokenEntry = await VerificationToken.findOne({ token: verificationToken });
@@ -937,7 +932,7 @@ exports.updateName = async (req, res) => {
     
     res.json({ success: true, name: savedUser.name });
   } catch (err) {
-    console.error('[updateName] Error:', err);
+    console.error('[updateName] Failed to update name');
     res.status(500).json({ error: 'Failed to update name', details: err.message });
   }
 }
@@ -945,8 +940,6 @@ exports.updateName = async (req, res) => {
 // POST /user/upload-avatar
 exports.uploadAvatar = async (req, res) => {
   console.log('\n=== [uploadAvatar] Request START ===');
-  console.log('[uploadAvatar] Body:', req.body);
-  console.log('[uploadAvatar] File:', req.file);
   
   const { verificationToken } = req.body;
   
@@ -965,7 +958,6 @@ exports.uploadAvatar = async (req, res) => {
     const User = require('../models/User');
     
     console.log('[uploadAvatar] ✓ Models loaded');
-    console.log('[uploadAvatar] Received token:', verificationToken);
     console.log('[uploadAvatar] File details:', {
       filename: req.file.filename,
       mimetype: req.file.mimetype,
@@ -973,7 +965,7 @@ exports.uploadAvatar = async (req, res) => {
     });
     
     const tokenEntry = await VerificationToken.findOne({ token: verificationToken });
-    console.log('[uploadAvatar] Token lookup result:', tokenEntry ? `✓ Found for email: ${tokenEntry.email}` : '❌ Not found');
+    console.log('[uploadAvatar] Token lookup result:', !!tokenEntry);
     
     if (!tokenEntry) {
       console.error('[uploadAvatar] ❌ Invalid verification token');
@@ -1013,9 +1005,7 @@ exports.uploadAvatar = async (req, res) => {
     res.json({ success: true, profileImage: savedUser.profileImage });
   } catch (err) {
     console.error('=== [uploadAvatar] EXCEPTION ===');
-    console.error('[uploadAvatar] Error name:', err.name);
-    console.error('[uploadAvatar] Error message:', err.message);
-    console.error('[uploadAvatar] Error stack:', err.stack);
+    console.error('[uploadAvatar] Failed to upload avatar');
     console.error('=== [uploadAvatar] FAILED ===\n');
     res.status(500).json({ success: false, error: 'Failed to upload avatar', details: err.message });
   }
@@ -1024,8 +1014,6 @@ exports.uploadAvatar = async (req, res) => {
 // POST /user/upload-banner
 exports.uploadBanner = async (req, res) => {
   console.log('\n=== [uploadBanner] Request START ===');
-  console.log('[uploadBanner] Body:', req.body);
-  console.log('[uploadBanner] File:', req.file);
   
   const { verificationToken } = req.body;
   
@@ -1044,7 +1032,6 @@ exports.uploadBanner = async (req, res) => {
     const User = require('../models/User');
     
     console.log('[uploadBanner] ✓ Models loaded');
-    console.log('[uploadBanner] Received token:', verificationToken);
     console.log('[uploadBanner] File details:', {
       filename: req.file.filename,
       mimetype: req.file.mimetype,
@@ -1052,7 +1039,7 @@ exports.uploadBanner = async (req, res) => {
     });
     
     const tokenEntry = await VerificationToken.findOne({ token: verificationToken });
-    console.log('[uploadBanner] Token lookup result:', tokenEntry ? `✓ Found for email: ${tokenEntry.email}` : '❌ Not found');
+    console.log('[uploadBanner] Token lookup result:', !!tokenEntry);
     
     if (!tokenEntry) {
       console.error('[uploadBanner] ❌ Invalid verification token');
@@ -1092,9 +1079,7 @@ exports.uploadBanner = async (req, res) => {
     res.json({ success: true, profileBanner: savedUser.profileBanner });
   } catch (err) {
     console.error('=== [uploadBanner] EXCEPTION ===');
-    console.error('[uploadBanner] Error name:', err.name);
-    console.error('[uploadBanner] Error message:', err.message);
-    console.error('[uploadBanner] Error stack:', err.stack);
+    console.error('[uploadBanner] Failed to upload banner');
     console.error('=== [uploadBanner] FAILED ===\n');
     res.status(500).json({ success: false, error: 'Failed to upload banner', details: err.message });
   }

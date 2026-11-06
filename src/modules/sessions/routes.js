@@ -2,6 +2,7 @@ const express = require('express');
 const { asyncHandler } = require('../../lib/asyncHandler');
 const { rateLimit, byIp, byInstallation } = require('../../middleware/rateLimit');
 const defaultAuth = require('../../middleware/requireAuth');
+const { accountOnly } = require('../../middleware/requireAuth');
 const defaultService = require('./service');
 
 // Only token refresh is rate limited. It is the one operation here whose spec lists a
@@ -54,9 +55,11 @@ function createSessionsRouter({ service = defaultService, auth = defaultAuth } =
   );
 
   // GET /me/sessions: the caller's devices, current first.
+  // The device list is account-only (guests get 403 GUEST_NOT_ALLOWED); logout and refresh work for guests.
   router.get(
     '/me/sessions',
     requireAuth,
+    accountOnly,
     asyncHandler(async (req, res) => {
       const list = await service.listSessions({ userId: req.auth.userId, currentSessionId: req.auth.sessionId });
       res.set('Cache-Control', 'no-store');
@@ -68,13 +71,15 @@ function createSessionsRouter({ service = defaultService, auth = defaultAuth } =
   router.delete(
     '/me/sessions',
     requireAuth,
+    accountOnly,
     asyncHandler(async (req, res) => {
       await service.revokeAllOtherSessions({ userId: req.auth.userId, keepSessionId: req.auth.sessionId });
       res.status(204).end();
     }),
   );
 
-  // DELETE /me/sessions/{sessionId}: sign out one device; 404 when it is not the caller's.
+  // DELETE /me/sessions/{sessionId}: sign out one device; 404 when it is not the caller's. Guests may use it
+  // too (the spec lists no 403 here): a guest only has its own session, so for a guest it is a logout.
   router.delete(
     '/me/sessions/:sessionId',
     requireAuth,

@@ -1,0 +1,96 @@
+{
+  "rules": "colour rules v1",
+  "generatedBy": "test/fixtures/palette/generate.js --expected (the API, src/lib/palette.js)",
+  "files": {
+    "white.png": {
+      "picture": "Plain #FFFFFF",
+      "palette": {
+        "version": 1,
+        "seed": "#FFFFFF",
+        "accent": "#747676",
+        "neutral": true
+      },
+      "blurhash": "LFTSUA?bfQ?b~qoffQoffQfQfQfQ"
+    },
+    "black.png": {
+      "picture": "Plain #000000",
+      "palette": {
+        "version": 1,
+        "seed": "#000000",
+        "accent": "#5A5A5A",
+        "neutral": true
+      },
+      "blurhash": "L00000fQfQfQfQfQfQfQfQfQfQfQ"
+    },
+    "grey_photo.png": {
+      "picture": "A left-to-right grey gradient, #000000 to #FFFFFF",
+      "palette": {
+        "version": 1,
+        "seed": "#7F7F7F",
+        "accent": "#767676",
+        "neutral": true
+      },
+      "blurhash": "LDHV9w00~qM{%MM{ofayfQfQfQfQ"
+    },
+    "yellow.png": {
+      "picture": "Plain #FFE600",
+      "palette": {
+        "version": 1,
+        "seed": "#FFE600",
+        "accent": "#976F00",
+        "neutral": false
+      },
+      "blurhash": "LFTRW_?BfQ?B~OoKfQoKfQfQfQfQ"
+    },
+    "navy.png": {
+      "picture": "Plain #0B1A4A",
+      "palette": {
+        "version": 1,
+        "seed": "#0B1A4A",
+        "accent": "#4D5A8C",
+        "neutral": false
+      },
+      "blurhash": "L01Mpmo+fQo+p3flfQflfQfQfQfQ"
+    },
+    "logo_on_grey.png": {
+      "picture": "#808080 with a centred #D02020 square covering 2% of the picture",
+      "palette": {
+        "version": 1,
+        "seed": "#827E7E",
+        "accent": "#797575",
+        "neutral": true
+      },
+      "blurhash": "L3E{a~?bC6.8~WoLX8kCC6W;:kr?"
+    },
+    "red_blue.png": {
+      "picture": "#D02020 on the left 60% (472 px), #2040D0 on the right 40%",
+      "palette": {
+        "version": 1,
+        "seed": "#D02020",
+        "accent": "#D02020",
+        "neutral": false
+      },
+      "blurhash": "L*J3}y{@OGOHspn~a}a}fQfQfQfQ"
+    },
+    "transparent.png": {
+      "picture": "A centred #20C040 circle on a transparent background (flattened onto black first)",
+      "palette": {
+        "version": 1,
+        "seed": "#20C040",
+        "accent": "#008927",
+        "neutral": false
+      },
+      "blurhash": "LF1Y[|kUUga3knfjaMf7Uhe:l$g1"
+    },
+    "figma_banner.jpg": {
+      "picture": "The Figma red and blue test banner (1572x1056 JPEG)",
+      "palette": {
+        "version": 1,
+        "seed": "#CF3533",
+        "accent": "#CF3533",
+        "neutral": false
+      },
+      "blurhash": "LmK@9_oNK7sp{cn$wHn%K7jZbHfQ"
+    }
+  }
+}

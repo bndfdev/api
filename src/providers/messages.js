@@ -9,12 +9,14 @@ const INTRO = Object.freeze({
   signup_email: 'Use this code to finish creating your Bondfire account.',
   password_reset: 'Use this code to reset your Bondfire password.',
   phone_verification: 'Use this code to verify your phone number on Bondfire.',
+  change_email: 'Use this code to make this the email address of your Bondfire account.',
 });
 
 const EMAIL_SUBJECT = Object.freeze({
   signup_email: 'Your Bondfire verification code',
   password_reset: 'Your Bondfire password reset code',
   phone_verification: 'Your Bondfire verification code',
+  change_email: 'Your Bondfire verification code',
 });
 
 const CODE_PATTERN = /^[0-9]{6}$/;
@@ -41,10 +43,41 @@ function emailMessage(input) {
   };
 }
 
+// Account notices: emails that carry no code. Fixed text only, like the code messages.
+const NOTICES = Object.freeze({
+  password_changed: {
+    subject: 'Your Bondfire password was changed',
+    text: [
+      // Sent after a reset (every device signed out) and after a change in the app (that device stays signed in,
+      // and the others may too), so it does not say which devices were signed out.
+      'The password for your Bondfire account was just changed.',
+      '',
+      'If this was you, there is nothing else to do.',
+      'If it was not, reset your password straight away from the app ("Reset password" on the sign-in screen).',
+    ].join('\n'),
+  },
+  // Sent to the old address. The new one is not named: nothing a user typed goes into a message.
+  email_changed: {
+    subject: 'The email address of your Bondfire account was changed',
+    text: [
+      'The email address of your Bondfire account was just changed, so this address no longer signs in to it.',
+      '',
+      'If this was you, there is nothing else to do.',
+      'If it was not, contact Bondfire support straight away from this address.',
+    ].join('\n'),
+  },
+});
+
+/** @param {string} notice a key of NOTICES @returns {{subject: string, text: string}} */
+function noticeEmail(notice) {
+  if (!Object.hasOwn(NOTICES, notice)) throw new Error('Unknown notice');
+  return { ...NOTICES[notice] };
+}
+
 /** @returns {string} */
 function smsMessage(input) {
   check(input);
   return `Bondfire: your code is ${input.code}. It expires in ${input.expiresInMinutes} minutes.`;
 }
 
-module.exports = { emailMessage, smsMessage };
+module.exports = { emailMessage, noticeEmail, smsMessage, NOTICES };

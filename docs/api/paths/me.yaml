@@ -34,10 +34,13 @@ me:
   patch:
     operationId: updateMe
     tags: [Account]
-    summary: Update name, date of birth, gender or language
+    summary: Update the profile and account settings
     description: |
-      Used by the birthday, gender and Your Profile (name) screens. Saving a
-      field completes its onboarding step automatically.
+      Used by the birthday, gender and Your Profile (name) screens, and by
+      Settings: Account Information (Story Translation), Location, Stories
+      Language (`preferredLanguage`), Privacy > Account Privacy and Location
+      Services (`locationSharing`). Saving a field completes its onboarding
+      step automatically.
 
       - **Age gate:** a date of birth under `minimumAge` (13) is rejected
         with `AGE_REQUIREMENT_NOT_MET`; the account is flagged and the app
@@ -48,10 +51,13 @@ me:
         1 March in non-leap years.
       - Once set, date of birth can be changed only once (typo fix) within
         30 days; after that `DATE_OF_BIRTH_LOCKED` (support can change it).
+      - `location` is trimmed (inner whitespace collapsed) and must then be
+        1 to 100 characters with no control or zero-width characters
+        (`LOCATION_INVALID`); `null` clears it.
       - Guests can set `preferredLanguage` only.
 
       Errors: stale `If-Match` (412), `DATE_OF_BIRTH_LOCKED` (409), `NAME_INVALID`, `DATE_OF_BIRTH_INVALID`,
-      `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED` (422),
+      `AGE_REQUIREMENT_NOT_MET`, `LANGUAGE_UNSUPPORTED`, `LOCATION_INVALID` (422),
       `GUEST_NOT_ALLOWED` (403).
     parameters:
       - $ref: '../components/parameters.yaml#/ClientPlatform'
@@ -71,6 +77,12 @@ me:
               value: { gender: non_binary }
             name:
               value: { name: Amelia Jane }
+            location:
+              value: { location: 'Seattle, WA' }
+            privacy:
+              value: { accountPrivacy: followers }
+            locationSharing:
+              value: { locationSharing: while_using }
         application/json:
           schema:
             $ref: '../components/schemas.yaml#/UserUpdate'
@@ -172,6 +184,109 @@ mePassword:
       '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
       '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
       '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meEmailVerification:
+  post:
+    operationId: startEmailChange
+    tags: [Account]
+    summary: Send a code to a new email address to change the account's email
+    description: |
+      Change email in settings: confirm the password (`POST
+      /auth/reauthenticate`), enter the new address, then enter the code
+      sent to it. Verify with `POST /auth/challenges/{id}/verify` (purpose
+      `change_email`, owner's access token).
+
+      - Needs a fresh `X-Reauth-Token` (5 minutes). It is checked here only;
+        resending or verifying the code does not need it.
+      - The code goes to the **new** address. The account keeps its current
+        email (and signs in with it) until the code is accepted; then the
+        new address replaces it, stays verified, and the old address gets a
+        security notice.
+      - The address is normalised like at sign-up (trimmed, domain
+        lowercased) and compared case-insensitively.
+      - The address is not reserved while the code is pending: if another
+        account takes it first, verifying returns `EMAIL_TAKEN`.
+      - The account's current email returns `409 CONFLICT`, as the same
+        number does for phone.
+      - Calling again for the same address and install returns the **same
+        challenge** (no new code) until it expires.
+
+      Errors: `REAUTH_REQUIRED` (401, header missing, invalid or expired),
+      `GUEST_NOT_ALLOWED` (403), `EMAIL_TAKEN`, `CONFLICT` (409),
+      `EMAIL_INVALID`, `EMAIL_DOMAIN_NOT_ALLOWED` (422),
+      `SEND_LIMIT_REACHED` (429, 5 codes per address per 24 h),
+      `RATE_LIMITED` (429, 10 per account per 24 h),
+      `EMAIL_DELIVERY_FAILED` (503).
+    x-rate-limit:
+      - { key: email, limit: 5, window: 24h }
+      - { key: account, limit: 10, window: 24h }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/ClientInstallation'
+      - $ref: '../components/parameters.yaml#/AcceptLanguage'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+      - name: X-Reauth-Token
+        in: header
+        required: false
+        description: |
+          From `POST /auth/reauthenticate`, valid 5 minutes. Always needed
+          here; declared optional so a missing token is `401
+          REAUTH_REQUIRED` (the app asks for the password) rather than
+          `400 MALFORMED_REQUEST`.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/EmailRequest'
+          example:
+            email: amelia.new@example.com
+    responses:
+      '202':
+        description: Code sent to the new address (or an unexpired one already exists).
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Challenge'
+            example:
+              id: chl_01J8Z9C2
+              purpose: change_email
+              channel: email
+              destination: a•••••w@example.com
+              codeLength: 6
+              expiresAt: '2026-09-27T10:25:00Z'
+              resendAvailableAt: '2026-09-27T10:15:30Z'
+              attemptsRemaining: 5
+              sendsRemaining: 4
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401':
+        description: Missing or expired access token, or no valid reauth token.
+        headers:
+          WWW-Authenticate:
+            description: '`Bearer error="invalid_token"` when a token was sent.'
+            schema:
+              type: string
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/reauth-required
+              title: Confirm your password
+              status: 401
+              code: REAUTH_REQUIRED
+              detail: Enter your password again to change your email.
+              requestId: req_01J8Z3K5QH
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
 
 mePhoneVerification:
   post:
@@ -379,6 +494,11 @@ meInterests:
     operationId: getMyInterests
     tags: [Interests]
     summary: Get the user's selected interests
+    description: |
+      In the order chosen. Each item carries `followedAt`, when it was first
+      followed (`null` for selections saved before that was recorded). For
+      Settings > Your Interests sorted by follow time, use
+      `GET /interests/search?sort=recently_followed`.
     parameters:
       - $ref: '../components/parameters.yaml#/ClientPlatform'
       - $ref: '../components/parameters.yaml#/ClientVersion'
@@ -461,6 +581,282 @@ meInterest:
       '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
       '500': { $ref: '../components/responses.yaml#/InternalError' }
 
+meNotificationSettings:
+  get:
+    operationId: getNotificationSettings
+    tags: [Account]
+    summary: Get the notification switches
+    description: |
+      Settings > Notifications. A user who never saved them gets every
+      switch `true`. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The switches.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/NotificationSettings'
+            example:
+              likesAndComments: true
+              followRequests: true
+              profileEngagement: true
+              contributorMetrics: true
+              yourEngagement: true
+              newOrTrendingContent: true
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  patch:
+    operationId: updateNotificationSettings
+    tags: [Account]
+    summary: Change some notification switches
+    description: |
+      Send only the switches that change; the others keep their value.
+      Returns every switch. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/NotificationSettingsUpdate'
+          example:
+            followRequests: false
+        application/merge-patch+json:
+          schema:
+            $ref: '../components/schemas.yaml#/NotificationSettingsUpdate'
+    responses:
+      '200':
+        description: Every switch, after the change.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/NotificationSettings'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meContent:
+  get:
+    operationId: listMyContent
+    tags: [Content]
+    summary: List the user's own content
+    description: |
+      Profile tabs (All, Playlists, Albums, Songs, Stories) and Popular
+      Releases (`sort=popular&limit=3`), both with `hidden=false`, and
+      Privacy > Hide Content / Restrict Content (no `hidden`). This is the
+      owner's view: unless `hidden` filters them, hidden and followers-only
+      items are included, with their flags.
+
+      - `type`: `all` (default) or one content type.
+      - `sort`: `recent` (default; newest first), `popular` (most listens
+        first) or `title` (A to Z, ignoring case and accents). Ties keep a
+        stable order.
+      - `hidden`: `false` lists only items that are not hidden (the Profile
+        page: Popular Releases and the tabs), `true` only hidden ones;
+        absent lists both (the Privacy lists).
+      - `page.total` counts every item that matches `type` and `hidden`.
+      - A cursor only works for the same `type`, `hidden` and `sort` and for
+        24 hours (`CURSOR_INVALID`).
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - name: type
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [all, playlist, album, song, story]
+          default: all
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [recent, popular, title]
+          default: recent
+      - name: hidden
+        in: query
+        required: false
+        description: '`false`: only items that are not hidden; `true`: only hidden ones; absent: both.'
+        schema:
+          type: boolean
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: A page of the user's content.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/ContentPage'
+            example:
+              data:
+                - id: 6650f1c2a4b7e9d3c1f00b01
+                  type: album
+                  title: Late Night Drive
+                  image: { url: 'https://cdn.bondfire.app/c/late-night-drive.jpg', width: 512, height: 512, status: ready, blurhash: null }
+                  year: 2024
+                  songCount: 12
+                  durationSec: 2710
+                  listens: 48210
+                  badge: top10
+                  hidden: false
+                  followersOnly: false
+                  createdAt: '2026-09-27T10:15:00Z'
+              page: { nextCursor: null, hasMore: false, total: 1 }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meContentItem:
+  patch:
+    operationId: updateMyContent
+    tags: [Content]
+    summary: Hide or restrict one of the user's items
+    description: |
+      Privacy > Hide Content (`hidden`) and Restrict Content
+      (`followersOnly`). Send either or both.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+      another user's content).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ContentId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ContentUpdate'
+          example:
+            hidden: true
+        application/merge-patch+json:
+          schema:
+            $ref: '../components/schemas.yaml#/ContentUpdate'
+    responses:
+      '200':
+        description: The item after the change.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Content'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meHandPicked:
+  get:
+    operationId: getMyHandPicked
+    tags: [Content]
+    summary: Get the user's hand-picked items
+    description: |
+      The Profile's "Hand-picked by <name>" section (Figma 1576:22233,
+      1671:81081): up to 3 of the user's own playlists, songs, stories and
+      albums, in the order the user chose. The list is only ever the user's
+      choice, never computed. Items that no longer exist are left out. This
+      is the owner's view, so hidden and followers-only items are included,
+      with their flags. A user who never picked anything gets an empty list.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The hand-picked items, in the saved order.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/HandPicked'
+            example:
+              items:
+                - id: 6650f1c2a4b7e9d3c1f00b01
+                  type: album
+                  title: Late Night Drive
+                  image: { url: 'https://cdn.bondfire.app/c/late-night-drive.jpg', width: 512, height: 512, status: ready, blurhash: null }
+                  year: 2024
+                  songCount: 12
+                  durationSec: 2710
+                  listens: 48210
+                  badge: top10
+                  hidden: false
+                  followersOnly: false
+                  createdAt: '2026-09-27T10:15:00Z'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  put:
+    operationId: replaceMyHandPicked
+    tags: [Content]
+    summary: Replace the hand-picked items
+    description: |
+      Adding or removing an item (the menu on a content row) and dragging
+      to reorder all send the whole new list: 0 to 3 ids of the user's own
+      content, in the order to show. It replaces the saved list and answers
+      like `GET`. Sending the same list again changes nothing; `[]` clears
+      it. Hidden and followers-only items may be picked.
+
+      Errors: `GUEST_NOT_ALLOWED` (403); `HAND_PICKED_INVALID` (422) when an
+      id is not one of the user's own items (unknown, deleted or someone
+      else's, all answered alike) or is sent twice, with one `errors[]`
+      entry per such id (`field` `/contentIds/<index>`). More than 3 ids, or
+      a body in another shape, is `VALIDATION_FAILED` (422). Nothing is
+      saved when the request fails.
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/HandPickedReplace'
+          example:
+            contentIds: ['6650f1c2a4b7e9d3c1f00b01', '6650f1c2a4b7e9d3c1f00b07']
+    responses:
+      '200':
+        description: The saved list, as `GET` returns it.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/HandPicked'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
 meMediaUploads:
   post:
     operationId: createUploadIntent
@@ -522,6 +918,10 @@ meAvatar:
       resized to 128/256/512/1024 px; moderation. `status` is `processing`
       until done; a rejected image is removed and `IMAGE_REJECTED` is
       reported on the next `GET /me` as `avatar: null`.
+
+      The picture's `palette` (colour rules v1, see `ImagePalette`) and
+      `blurhash` are worked out from the crop as shown (transparency on
+      black) and returned in this answer and in every later `Image` of it.
 
       Errors: `GUEST_NOT_ALLOWED` (403), `UPLOAD_NOT_FOUND` (404),
       `UPLOAD_EXPIRED` (410), `PAYLOAD_TOO_LARGE` (413),
@@ -589,6 +989,7 @@ meBanner:
       Save on Your profile banner (Figma 1261:32324). Same rules as
       `PUT /me/avatar`, except the crop uses the banner ratio 393:264
       (±2%), minimum 786×528 px after crop, resized to 786/1179/1572 px wide.
+      The banner's `palette` gives the app its personal colour.
     parameters:
       - $ref: '../components/parameters.yaml#/ClientPlatform'
       - $ref: '../components/parameters.yaml#/ClientVersion'

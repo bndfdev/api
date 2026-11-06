@@ -30,10 +30,18 @@ const NEW_PASSWORD_FIELD = Object.freeze({
   '/v1/me/password': 'newPassword',
 });
 
+const pathOf = (req) => String((req && req.originalUrl) || '').split('?')[0].replace(/\/+$/, '');
+
 function newPasswordField(req) {
-  const path = String((req && req.originalUrl) || '').split('?')[0].replace(/\/+$/, '');
-  return NEW_PASSWORD_FIELD[path];
+  return NEW_PASSWORD_FIELD[pathOf(req)];
 }
+
+// The interest lists' search text and page cursor (too long, say) are reported with the codes the spec gives them.
+const INTEREST_LIST = /^\/v1\/interests\/(featured|search)$/;
+const INTEREST_LIST_CODES = Object.freeze({
+  q: { code: 'SEARCH_QUERY_INVALID', message: 'Use up to 100 characters.' },
+  cursor: { code: 'CURSOR_INVALID', message: 'Start again from the first page.' },
+});
 
 /**
  * Turn one express-openapi-validator item into a spec `FieldError`
@@ -41,7 +49,8 @@ function newPasswordField(req) {
  * error kind, never the validator's text, so request values are not echoed.
  * `field` is a JSON pointer for body fields, or the query/path parameter name.
  * An email that is not an address is EMAIL_INVALID, and a new password with a bad
- * length is PASSWORD_POLICY_VIOLATION, as the spec's operations list them.
+ * length is PASSWORD_POLICY_VIOLATION, and an interest list's `q` or `cursor` is
+ * SEARCH_QUERY_INVALID or CURSOR_INVALID, as the spec's operations list them.
  * @param {object} item
  * @param {import('express').Request} [req]
  */
@@ -55,6 +64,9 @@ function toFieldError(item, req) {
   const kind = typeof item.errorCode === 'string' ? item.errorCode.split('.')[0] : '';
   if (field === '/email' && kind === 'format') {
     return { field, code: 'EMAIL_INVALID', message: 'Enter a valid email address.' };
+  }
+  if (where === 'query' && Object.hasOwn(INTEREST_LIST_CODES, field) && INTEREST_LIST.test(pathOf(req))) {
+    return { field, ...INTEREST_LIST_CODES[field] };
   }
   const passwordField = newPasswordField(req);
   if (passwordField && field === `/${passwordField}` && (kind === 'minLength' || kind === 'maxLength')) {

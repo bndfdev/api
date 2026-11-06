@@ -4,6 +4,7 @@
  * and masked for display. No config and no database, so config.js can use it.
  */
 const { domainToASCII } = require('node:url');
+const { callingCodeOf } = require('./phone');
 
 const CHANNELS = Object.freeze(['email', 'sms']);
 const BULLETS = '•••••';
@@ -53,7 +54,7 @@ function isValidEmail(value) {
 }
 
 /** Spaces, dashes and parentheses are only formatting. */
-// TODO(PR 4, phone verification): parse to E.164 with libphonenumber-js and the user's country. Until then a number must already be +<country code><number>.
+// The app sends E.164 (the spec's PhoneNumber); lib/phone.js checks that the number exists and what kind it is.
 const normalizePhone = (value) => String(value).replace(/[\s\-()]/g, '');
 
 /**
@@ -95,9 +96,11 @@ function maskDestination(channel, destination) {
     if (local.length === 2) return `${local[0]}${BULLETS}${domain}`;
     return `${BULLETS}${domain}`;
   }
-  // TODO(PR 4): show the country code once numbers are parsed ('+1 •••-•••-0123').
+  // The country code and the last 4 digits ('+1 ••• ••• 0123'); when the country cannot be read, that is hidden too.
   const digits = value.replace(/\D/g, '');
-  return digits.length > 4 ? `+••• ••• ${digits.slice(-4)}` : '+••• •••';
+  const country = callingCodeOf(value);
+  const head = country ? `${country} •••` : '+•••';
+  return digits.length > 4 ? `${head} ••• ${digits.slice(-4)}` : `${head} •••`;
 }
 
 module.exports = {

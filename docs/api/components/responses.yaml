@@ -31,7 +31,9 @@ BadRequest:
 Unauthorized:
   description: |
     Missing, invalid or expired credentials. On `TOKEN_EXPIRED` the app
-    refreshes once and retries; on any other 401 it signs the user out.
+    refreshes once and retries; on `REAUTH_REQUIRED` it asks for the
+    password again (`POST /auth/reauthenticate`) and retries; on any other
+    401 it signs the user out.
   headers:
     WWW-Authenticate:
       description: '`Bearer error="invalid_token"` when a token was sent.'

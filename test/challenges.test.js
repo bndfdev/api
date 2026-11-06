@@ -612,7 +612,7 @@ test('a phone challenge belongs to its user: anyone else gets "not found"', asyn
   const challenge = await service.start({ purpose: 'phone_verification', channel: 'sms', destination: '+14155550123', installationId, userId });
   assert.equal(matchesSpec('Challenge', challenge), true, JSON.stringify(ajv.errors));
   assert.equal(challenge.channel, 'sms');
-  assert.equal(challenge.destination, '+••• ••• 0123');
+  assert.equal(challenge.destination, '+1 ••• ••• 0123');
   assert.equal(sms.sent.length, 1);
   assert.equal(email.sent.length, 0);
   const code = sms.sent[0].code;

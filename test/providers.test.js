@@ -47,7 +47,10 @@ test('masking hides most of the address and does not reveal its length', () => {
   assert.equal(maskDestination('email', 'a-much-longer-local-part@example.com'), 'a•••••t@example.com');
   assert.equal(maskDestination('email', 'ab@example.com'), 'a•••••@example.com');
   assert.equal(maskDestination('email', 'a@example.com'), '•••••@example.com');
-  assert.equal(maskDestination('sms', '+14155550123'), '+••• ••• 0123');
+  // A phone number keeps its country code and last 4 digits; one whose country cannot be read hides it too.
+  assert.equal(maskDestination('sms', '+14155550123'), '+1 ••• ••• 0123');
+  assert.equal(maskDestination('sms', '+919876543210'), '+91 ••• ••• 3210');
+  assert.equal(maskDestination('sms', '+9991234567'), '+••• ••• 4567');
   for (const masked of [maskDestination('email', 'amelia.jane@example.com'), maskDestination('sms', '+14155550123')]) {
     assert.ok(!masked.includes('amelia.jane') && !masked.includes('4155550'));
   }

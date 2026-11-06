@@ -2,7 +2,7 @@ const express = require('express');
 const { asyncHandler } = require('../../lib/asyncHandler');
 const { rateLimit, byIp, byInstallation } = require('../../middleware/rateLimit');
 const defaultAuth = require('../../middleware/requireAuth');
-const { idempotency: defaultIdempotency } = require('../../middleware/idempotency');
+const { idempotency: defaultIdempotency, scopeToInstallation } = require('../../middleware/idempotency');
 const { createAuthService } = require('./service');
 
 const HOUR = 60 * 60;
@@ -19,20 +19,23 @@ const LIMITS = Object.freeze({
   signupStartPerInstallation: { name: 'signup-email:installation', points: 10, durationSeconds: HOUR, key: byInstallation },
   verifyPerIp: { name: 'challenge-verify:ip', points: 60, durationSeconds: HOUR, key: byIp },
   loginPerIp: { name: 'login:ip', points: 50, durationSeconds: HOUR, key: byIp },
+  passwordResetPerIp: { name: 'password-reset:ip', points: 20, durationSeconds: HOUR, key: byIp },
+  guestPerIp: { name: 'guest:ip', points: 20, durationSeconds: HOUR, key: byIp },
 });
 
 /**
- * Email sign-up and login (`docs/api/paths/auth.yaml`: emailAvailability, signupEmail, challenge,
- * challengeResend, challengeVerify, signupComplete, login). Mount on the /v1 router, after the spec
- * validator. Handlers only read the request, call the service and send the answer.
+ * Email sign-up, login and password reset (`docs/api/paths/auth.yaml`: emailAvailability, signupEmail,
+ * challenge, challengeResend, challengeVerify, signupComplete, login, passwordResetStart,
+ * passwordResetComplete). Mount on the /v1 router, after the spec validator. Handlers only read the
+ * request, call the service and send the answer.
  *
  * The old `/user/*` routes (routes/user.js) are still mounted: the app uses them until it moves to these
  * endpoints. They are removed in a later cleanup PR, not here.
- * @param {{service?: object, auth?: {optionalAuth: Function}, idempotency?: Function}} [deps]
+ * @param {{service?: object, auth?: {optionalAuth: Function, authIfSent: Function}, idempotency?: Function}} [deps]
  *   Without `service`, the real one is built when the first request arrives (it needs the email provider from config).
  */
 function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultIdempotency } = {}) {
-  const { optionalAuth } = auth;
+  const { optionalAuth, authIfSent } = auth;
   let built = service;
   const svc = () => (built ??= createAuthService());
   const router = express.Router();
@@ -62,7 +65,7 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
     }),
   );
 
-  // GET /auth/challenges/{challengeId}: public for sign-up and reset codes; a phone code needs its owner's token.
+  // GET /auth/challenges/{challengeId}: public for sign-up and reset codes; a phone or email-change code needs its owner's token.
   router.get(
     '/auth/challenges/:challengeId',
     optionalAuth,
@@ -107,9 +110,13 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
     }),
   );
 
-  // POST /auth/signup/complete: creates the account; 201 with the session.
+  // POST /auth/signup/complete: creates the account; 201 with the session. With a guest's token the guest
+  // becomes the account (an expired one is refused, so the guest is never silently left behind). A repeat
+  // is keyed by the install: the guest session this ends cannot sign it.
   router.post(
     '/auth/signup/complete',
+    authIfSent,
+    scopeToInstallation,
     idempotency,
     asyncHandler(async (req, res) => {
       const session = await svc().completeSignup({
@@ -118,6 +125,7 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
         device: req.body.device,
         preferredLanguage: req.body.preferredLanguage,
         installationId: installationId(req),
+        auth: req.auth,
       });
       noStore(res).status(201).json(session);
     }),
@@ -131,6 +139,47 @@ function createAuthRouter({ service, auth = defaultAuth, idempotency = defaultId
       const session = await svc().login({
         email: req.body.email,
         password: req.body.password,
+        device: req.body.device,
+        installationId: installationId(req),
+      });
+      noStore(res).json(session);
+    }),
+  );
+
+  // POST /auth/guest: 201 with a new guest's session, or 200 with this install's existing guest.
+  router.post(
+    '/auth/guest',
+    rateLimit(LIMITS.guestPerIp),
+    asyncHandler(async (req, res) => {
+      const { session, created } = await svc().startGuestSession({
+        device: req.body.device,
+        dateOfBirth: req.body.dateOfBirth,
+        preferredLanguage: req.body.preferredLanguage,
+        installationId: installationId(req),
+      });
+      noStore(res).status(created ? 201 : 200).json(session);
+    }),
+  );
+
+  // POST /auth/password-reset: always 202 with a challenge, whether or not the email has an account.
+  router.post(
+    '/auth/password-reset',
+    rateLimit(LIMITS.passwordResetPerIp),
+    idempotency,
+    asyncHandler(async (req, res) => {
+      const challenge = await svc().startPasswordReset({ email: req.body.email, installationId: installationId(req) });
+      res.status(202).json(challenge);
+    }),
+  );
+
+  // POST /auth/password-reset/complete: new password, every other device signed out; 200 with the session.
+  router.post(
+    '/auth/password-reset/complete',
+    idempotency,
+    asyncHandler(async (req, res) => {
+      const session = await svc().completePasswordReset({
+        resetToken: req.body.resetToken,
+        newPassword: req.body.newPassword,
         device: req.body.device,
         installationId: installationId(req),
       });

@@ -6,6 +6,7 @@
 /** @param {'email' | 'sms'} channel */
 function createMemoryProvider(channel) {
   const sent = [];
+  const notices = [];
   let failure = null;
   return {
     name: 'memory',
@@ -20,6 +21,16 @@ function createMemoryProvider(channel) {
       }
       sent.push({ ...message });
     },
+    /** Every notice, oldest first: `{to, notice}`. */
+    notices,
+    async sendNotice(message) {
+      if (failure) {
+        const error = failure;
+        failure = null;
+        throw error;
+      }
+      notices.push({ ...message });
+    },
     /** The next send throws `error` (once). */
     failNext(error = new Error('provider is down')) {
       failure = error;
@@ -33,6 +44,7 @@ function createMemoryProvider(channel) {
     },
     clear() {
       sent.length = 0;
+      notices.length = 0;
       failure = null;
     },
   };

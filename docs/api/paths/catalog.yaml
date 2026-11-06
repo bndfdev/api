@@ -214,6 +214,19 @@ interestsSearch:
         and cancels stale requests.
       - Results are paginated with a cursor; a cursor from a different
         query or older than 24 hours is `CURSOR_INVALID`.
+      - `page.total` counts every match across all pages (the "All (2846)"
+        count on Settings > Your Interests).
+      - Sorts: `suggested` (the default) and `relevance` are the same order:
+        best match first, then most popular (most popular first when `q` is
+        empty). `popular`, `recent` (newest in the catalog first) and
+        `alphabetical` (A to Z). For Settings > Your Interests:
+        `recently_followed` puts the interests the user follows first, the
+        most recently followed first, then the rest in `suggested` order;
+        `following` puts them first A to Z, then the rest A to Z.
+        `recently_played` has no play data yet and is the same as
+        `suggested`.
+      - The Your Interests filter pills map to `kind`: `artist`, `genre`,
+        `story` (the Topics pill) and `place` (countries and places).
 
       Errors: `SEARCH_QUERY_INVALID`, `CURSOR_INVALID` (422).
     security:
@@ -244,8 +257,8 @@ interestsSearch:
         required: false
         schema:
           type: string
-          enum: [relevance, popular, recent, alphabetical]
-          default: relevance
+          enum: [suggested, relevance, popular, recent, alphabetical, recently_followed, following, recently_played]
+          default: suggested
       - $ref: '../components/parameters.yaml#/Limit'
       - $ref: '../components/parameters.yaml#/Cursor'
       - $ref: '../components/parameters.yaml#/ClientPlatform'
@@ -265,7 +278,7 @@ interestsSearch:
                   title: Paradise
                   subtitle: Daya
                   image: { url: 'https://cdn.bondfire.app/i/paradise.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj' }
-              page: { nextCursor: 'eyJvIjoyMH0', hasMore: true }
+              page: { nextCursor: 'eyJvIjoyMH0', hasMore: true, total: 2846 }
       '401': { $ref: '../components/responses.yaml#/Unauthorized' }
       '422': { $ref: '../components/responses.yaml#/Unprocessable' }
       '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }

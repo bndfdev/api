@@ -101,6 +101,13 @@ InterestId:
   schema:
     $ref: './schemas.yaml#/Id'
 
+ContentId:
+  name: contentId
+  in: path
+  required: true
+  schema:
+    $ref: './schemas.yaml#/Id'
+
 InstallationId:
   name: installationId
   in: path

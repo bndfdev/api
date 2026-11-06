@@ -6,6 +6,8 @@ const PLATFORMS = ['ios', 'android', 'web'];
 // One signed-in device. Raw tokens are never stored on it.
 const sessionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  // 'guest' for a guest's session, whose userId is a guest_accounts id. Absent for a full account.
+  accountType: { type: String, enum: ['user', 'guest'] },
   signInMethod: { type: String, enum: SIGN_IN_METHODS, required: true },
   device: {
     platform: { type: String, enum: PLATFORMS },

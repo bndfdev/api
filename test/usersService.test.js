@@ -35,7 +35,7 @@ test('toUserResponse builds the spec User for a new account and never exposes th
 test('toUserResponse passes real profile data through and keeps updatedAt when there is one', () => {
   const user = toUserResponse({
     ...base(), name: '  Amelia Jane ', dateOfBirth: '2000-01-12', gender: 'female', preferredLanguage: 'hi', phone: '+14155550123',
-    mobileNumberVerified: true, updatedAt: new Date('2026-10-02T00:00:00Z'),
+    mobileNumberVerified: true, phoneVerifiedAt: new Date('2026-10-01T00:00:00Z'), updatedAt: new Date('2026-10-02T00:00:00Z'),
   });
   assertUser(user);
   assert.equal(user.name, 'Amelia Jane');
@@ -70,7 +70,11 @@ test('a user without a stored email verification still counts as verified (older
 test('onboarding is worked out from the data that exists, and the first pending step is next', () => {
   assert.equal(buildOnboarding(base()).nextStep, 'phone_verified');
 
-  const progressed = buildOnboarding({ ...base(), mobileNumberVerified: true, dateOfBirth: '2000-01-12' });
+  const oldApiNumber = buildOnboarding({ ...base(), phone: '+14155550123', mobileNumberVerified: true });
+  assert.equal(oldApiNumber.nextStep, 'phone_verified', 'a number from the old API (fixed code) is not proof');
+  assert.equal(toUserResponse({ ...base(), phone: '+14155550123', mobileNumberVerified: true }).phoneVerified, false);
+
+  const progressed = buildOnboarding({ ...base(), phone: '+14155550123', phoneVerifiedAt: new Date(), dateOfBirth: '2000-01-12' });
   assert.equal(progressed.nextStep, 'terms_accepted', 'terms are not stored yet, so always pending');
   assert.equal(progressed.status, 'in_progress');
   assert.deepEqual(progressed.steps.filter((s) => s.status === 'completed').map((s) => s.step), ['email_verified', 'password_set', 'phone_verified', 'date_of_birth']);

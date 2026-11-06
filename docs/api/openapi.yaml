@@ -32,7 +32,7 @@ info:
     - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
       operation are listed under `x-rate-limit`.
     - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
-      `page.hasMore`).
+      `page.hasMore`; `page.total` counts every match).
     - **Every response** carries `X-Request-Id`; errors repeat it as
       `requestId`.
     - **Transport:** HTTPS only (HSTS). Tokens, codes and passwords are
@@ -60,13 +60,15 @@ tags:
   - name: Auth
     description: Sign-up, one-time codes, login, social login, guest, tokens, password reset.
   - name: Account
-    description: The signed-in user's profile, password, phone and deletion.
+    description: The signed-in user's profile, email, password, phone and deletion.
   - name: Onboarding
     description: Server-side onboarding progress so the flow resumes on any device.
   - name: Legal
     description: Terms and privacy documents and the user's acceptance.
   - name: Interests
     description: The interest catalog and the user's selection.
+  - name: Content
+    description: The user's own playlists, albums, songs and stories.
   - name: Catalog
     description: Reference data (countries).
   - name: Media
@@ -130,6 +132,8 @@ paths:
     $ref: './paths/me.yaml#/me'
   /me/password:
     $ref: './paths/me.yaml#/mePassword'
+  /me/email/verification:
+    $ref: './paths/me.yaml#/meEmailVerification'
   /me/phone:
     $ref: './paths/me.yaml#/mePhone'
   /me/phone/verification:
@@ -144,6 +148,14 @@ paths:
     $ref: './paths/me.yaml#/meInterests'
   /me/interests/{interestId}:
     $ref: './paths/me.yaml#/meInterest'
+  /me/notification-settings:
+    $ref: './paths/me.yaml#/meNotificationSettings'
+  /me/content:
+    $ref: './paths/me.yaml#/meContent'
+  /me/content/{contentId}:
+    $ref: './paths/me.yaml#/meContentItem'
+  /me/hand-picked:
+    $ref: './paths/me.yaml#/meHandPicked'
   /me/media/uploads:
     $ref: './paths/me.yaml#/meMediaUploads'
   /me/avatar:
