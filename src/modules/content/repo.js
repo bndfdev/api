@@ -1,5 +1,6 @@
 /**
- * The only place that reads and writes the `contents` collection (models/Content.js). Returns plain objects.
+ * The only place that reads and writes the `contents` collection (models/Content.js): the user's own content (the
+ * Profile) and the media player's songs, albums and playlists. Returns plain objects.
  *
  * Pages are read by key ("everything after this item"), not by skipping: each sort has its own index that starts
  * with `ownerId` and ends with `_id` (see the model), so a page costs the same however deep it is, and an item
@@ -77,4 +78,38 @@ function findOwned({ ownerId, ids }) {
   return Content.find({ _id: { $in: wanted }, ownerId }).lean();
 }
 
-module.exports = { page, count, updateFlags, findOwned, SORTS };
+/**
+ * Items by id, whoever owns them and whatever their type or flags (the media player's songs, albums and playlists:
+ * hidden and followers-only items still answer by id). Unknown ids and ids in no known format are left out.
+ * @param {string[]} ids
+ * @param {object} [fields] a projection, to read only some fields (a playlist's lengths, say)
+ * @returns {Promise<object[]>} in no particular order
+ */
+function findByIds(ids, fields = undefined) {
+  const wanted = [...new Set(ids.map((id) => String(id).toLowerCase()))].filter((id) => OBJECT_ID.test(id));
+  if (wanted.length === 0) return Promise.resolve([]);
+  return Content.find({ _id: { $in: wanted } }, fields).lean();
+}
+
+/**
+ * The songs on an album, in album order (track number, then id; the `album_order` index): the album owner's songs
+ * whose `albumId` is this album.
+ * @param {{albumId: string, ownerId: string}} input
+ * @returns {Promise<object[]>}
+ */
+function albumSongs({ albumId, ownerId }) {
+  if (!OBJECT_ID.test(String(albumId)) || !OBJECT_ID.test(String(ownerId))) return Promise.resolve([]);
+  return Content.find({ albumId, ownerId, type: 'song' }).sort({ trackNumber: 1, _id: 1 }).lean();
+}
+
+/**
+ * Add counted listens to songs (`listens`), in one round trip.
+ * @param {Map<string, number>} counts song id to the number of listens to add
+ */
+async function addListens(counts) {
+  const ops = [...counts].filter(([id, n]) => OBJECT_ID.test(String(id)) && Number.isInteger(n) && n > 0)
+    .map(([id, n]) => ({ updateOne: { filter: { _id: id, type: 'song' }, update: { $inc: { listens: n } } } }));
+  if (ops.length > 0) await Content.bulkWrite(ops, { ordered: false });
+}
+
+module.exports = { page, count, updateFlags, findOwned, findByIds, albumSongs, addListens, SORTS };

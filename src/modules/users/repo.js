@@ -328,4 +328,16 @@ async function setImageLook(userId, kind, path, { palette, blurhash }) {
   return result.matchedCount === 1;
 }
 
-module.exports = { findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/**
+ * How other people see these users: their name and avatar only (the media player's artists and playlist owners).
+ * Unknown ids and ids in no known format are left out.
+ * @param {string[]} ids
+ * @returns {Promise<Array<{_id: object, name?: string, avatar?: object}>>} in no particular order
+ */
+function findSummaries(ids) {
+  const wanted = [...new Set(ids.map((id) => String(id).toLowerCase()))].filter((id) => /^[0-9a-f]{24}$/.test(id));
+  if (wanted.length === 0) return Promise.resolve([]);
+  return User.find({ _id: { $in: wanted } }, { name: 1, avatar: 1 }).lean();
+}
+
+module.exports = { findSummaries, findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

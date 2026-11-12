@@ -8,6 +8,52 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-11-13: Media player, step 1: listening (songs, albums, playlists, transcripts, listens)
+
+**Existing data affected:**
+- **`contents.listens` (an existing field) is now written**, only on songs: each listen that counts (`POST /v1/me/listens`, 30 seconds played or played to the end) adds 1, with one `bulkWrite` of `updateOne({_id, type: 'song'}, {$inc: {listens: n}})` per batch, right after its events are stored. Nothing else in existing documents changes. No migration.
+- Everything else below is new: optional fields that nothing stored today has (every existing item reads as before: a song with no `audio` is described with `playable: false`), one new index, and three new collections.
+
+**`contents`: new optional fields** (no defaults, so documents created through the model do not get them; the player reads values in another shape as their defaults)
+
+| Field | On | Purpose |
+| --- | --- | --- |
+| `audio` | songs | `{key, mimeType, sizeBytes, durationMs, status, uploadedAt}`: the audio file by storage key (never an address), its type, size and length, and `status` `processing`, `ready` or `failed`. The player streams it only when `ready` (`GET /v1/songs/{id}/playback` builds the address from the key). |
+| `waveform` | songs | Array of numbers from 0 to 1 (128, made when the audio is processed): the seek bar's loudness. |
+| `transcriptLanguages` | songs | Array of language tags with a transcript in `transcripts`, the original first. Kept in step with `transcripts` by whatever writes them. |
+| `albumId`, `trackNumber` | songs | The album the song is on (an ObjectId of a `contents` item of type `album`, same owner) and its place there (1, 2, ...). |
+| `commentCount` | songs | Integer counter for the comments (step 3 writes it); absent reads as 0. |
+| `image.palette`, `image.blurhash` | songs, albums, playlists | The artwork's colours (`{version, seed, accent, neutral}`, as for avatars) and BlurHash, inside the existing `image` sub-document. Worked out when the artwork is stored; absent reads as `null`. |
+
+**`contents`: new index**
+
+| Name | Keys | Options | Serves |
+| --- | --- | --- | --- |
+| `album_order` | `{albumId: 1, trackNumber: 1, _id: 1}` | partial: `{albumId: {$exists: true}}` (only songs on an album are in it) | `GET /v1/albums/{id}`: `{albumId, ownerId, type: 'song'}` sorted by `trackNumber`, `_id`. Nothing stored today has `albumId`, so it builds empty. |
+
+The other player reads of `contents` are by `_id` (`{_id: {$in: [...]}}`, at most 50 ids for `GET /v1/songs`, or a playlist's song ids), served by the existing `_id` index. The player also reads `users` by `_id` with the projection `{name, avatar}` (artists and playlist owners), and writes nothing there.
+
+**New collections**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `playlist_items` | A playlist's songs: `playlistId` and `songId` (`contents` ids), `position` (number; a song added later gets a higher one), `addedAt` | `playlist_song` `{playlistId: 1, songId: 1}` unique (a song once per playlist); `playlist_order` `{playlistId: 1, position: 1, _id: 1}` (paging) | None yet. Read only in this step (nothing in v1 writes it; Add to Playlist, step 2, will). Whatever deletes playlists or songs later (account deletion) must delete their items. |
+| `transcripts` | A song's timed words in one language: `songId`, `language` (tag), `translatedFrom` (the original's tag for a translation, `null` for the original), `lines` (each `{words: [{text, startMs, endMs}]}` or `{text, startMs, endMs}`; the model refuses blank text and times that go back), `updatedAt` | `song_language` `{songId: 1, language: 1}` unique | None yet. Read only in this step (no upload endpoint). |
+| `listens` | One reported listen: `listenerId` (a `users` or `guest_accounts` id) and `listenerType` (`user` or `guest`), `songId`, `listenedMs`, `completed`, `endedAt` (the device's time), `source` (`{type, id}` or null), `counted` (met the counting rule), `receivedAt` | `listener_song_end` `{listenerId: 1, songId: 1, endedAt: 1}` unique: a resend is refused by the index and so never counted twice | **None yet: retention is an open question** (`docs/api/PLAYER.md`). A TTL on `receivedAt` can be added once decided; it must be longer than the 30 days an event is accepted, or a late resend would count again. Grows by one small document (about 200 bytes) per listen, at most 50 per request and 60 requests a minute per listener. |
+
+Locally, `tools.local/e2e/seed_player.js` (not in this repo) writes demo rows marked `seed: 'player'` into these collections and `contents`, and refuses any non-localhost database.
+
+**Rollback:**
+- Stop the new code.
+- Drop `playlist_items`, `transcripts` and `listens`.
+- Drop the `album_order` index: `db.contents.dropIndex('album_order')`.
+- The new `contents` fields can stay (nothing else reads them), or be removed with `db.contents.updateMany({}, { $unset: { audio: '', waveform: '', transcriptLanguages: '', albumId: '', trackNumber: '', commentCount: '', 'image.palette': '', 'image.blurhash': '' } })`.
+- Listens already added to `contents.listens` stay added (the raw events in `listens` say which; count them per song before dropping it if the numbers must be rolled back).
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-30: Hand-picked items on the Profile
 
 **Existing data affected:** none. The new code only adds the field below. No migration, no edit of existing documents.

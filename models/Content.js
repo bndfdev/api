@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 
 const TYPES = ['playlist', 'album', 'song', 'story'];
 const BADGES = ['trending', 'top10'];
+/** A song's audio file: being processed, ready to play, or unusable. */
+const AUDIO_STATUSES = ['processing', 'ready', 'failed'];
 
 /**
  * A title as the A-to-Z sort compares it: accents removed, lower case. Kept in `titleLower` so the sort can use an
@@ -23,6 +25,19 @@ const contentSchema = new mongoose.Schema({
       url: { type: String, required: true },
       width: { type: Number, required: true },
       height: { type: Number, required: true },
+      // The picture's colours (colour rules v1, src/lib/palette.js) and BlurHash, worked out when the artwork is
+      // stored, as for profile photos (the player's `Song.image` and `Album.image`). Absent on artwork stored
+      // before they existed: the player then sends null and the app works the colours out itself.
+      palette: {
+        type: new mongoose.Schema({
+          version: { type: Number, required: true },
+          seed: { type: String, required: true },
+          accent: { type: String, required: true },
+          neutral: { type: Boolean, required: true },
+        }, { _id: false }),
+        default: undefined,
+      },
+      blurhash: { type: String },
     }, { _id: false }),
     default: null,
   },
@@ -35,6 +50,33 @@ const contentSchema = new mongoose.Schema({
   // Privacy > Hide Content and Restrict Content.
   hidden: { type: Boolean, default: false },
   followersOnly: { type: Boolean, default: false },
+
+  // The media player (v1, docs/api/PLAYER.md). Songs only, all optional: absent on other types and on songs stored
+  // before. No defaults, so documents created through this model do not get them.
+  // The audio file, by storage key (never an address: GET /v1/songs/{id}/playback makes one when it is played).
+  // A song plays only once `status` is `ready`; `durationMs` is then the file's length.
+  audio: {
+    type: new mongoose.Schema({
+      key: { type: String, required: true },
+      mimeType: { type: String },
+      sizeBytes: { type: Number, min: 1 },
+      durationMs: { type: Number, min: 0 },
+      status: { type: String, enum: AUDIO_STATUSES, required: true },
+      uploadedAt: { type: Date, required: true },
+    }, { _id: false }),
+    default: undefined,
+  },
+  // Loudness across the song for the seek bar: levels from 0 to 1, evenly spaced in time (128 when the audio is
+  // processed).
+  waveform: { type: [Number], default: undefined },
+  // Languages the song has a transcript in (`transcripts`), the original first, then the translations by tag. Kept
+  // in step with `transcripts` by whatever writes them.
+  transcriptLanguages: { type: [String], default: undefined },
+  // The album the song is on (an album of the same owner) and its place there. A song is on one album at most.
+  albumId: { type: mongoose.Schema.Types.ObjectId, ref: 'Content' },
+  trackNumber: { type: Number, min: 1 },
+  // Every comment on the song, replies included (written by the comments, a later step). Absent reads as 0.
+  commentCount: { type: Number, min: 0 },
 }, { collection: 'contents', timestamps: true });
 
 contentSchema.pre('validate', function setTitleLower() {
@@ -46,8 +88,14 @@ contentSchema.pre('validate', function setTitleLower() {
 contentSchema.index({ ownerId: 1, createdAt: -1, _id: -1 }, { name: 'owner_recent' });
 contentSchema.index({ ownerId: 1, listens: -1, _id: -1 }, { name: 'owner_popular' });
 contentSchema.index({ ownerId: 1, titleLower: 1, _id: 1 }, { name: 'owner_title' });
+// An album's songs in album order (GET /v1/albums/{id}), `_id` breaking ties. Only songs on an album are indexed.
+contentSchema.index(
+  { albumId: 1, trackNumber: 1, _id: 1 },
+  { name: 'album_order', partialFilterExpression: { albumId: { $exists: true } } },
+);
 
 module.exports = mongoose.models.Content || mongoose.model('Content', contentSchema);
 module.exports.sortableTitle = sortableTitle;
 module.exports.TYPES = TYPES;
 module.exports.BADGES = BADGES;
+module.exports.AUDIO_STATUSES = AUDIO_STATUSES;

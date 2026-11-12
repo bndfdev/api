@@ -21,6 +21,7 @@ const { router: defaultMediaRouter } = require('./modules/media/routes');
 const { router: defaultNotificationSettingsRouter } = require('./modules/notificationSettings/routes');
 const { router: defaultContentRouter } = require('./modules/content/routes');
 const { router: defaultHandPickedRouter } = require('./modules/handPicked/routes');
+const { router: defaultPlayerRouter } = require('./modules/player/routes');
 const { storage: defaultStorage } = require('./providers/storage');
 const { clientVersionGate: defaultVersionGate } = require('./middleware/clientVersion');
 
@@ -33,7 +34,7 @@ const ROOT = path.join(__dirname, '..');
  *   meRouter?: import('express').Router, metaRouter?: import('express').Router, credentialsRouter?: import('express').Router,
  *   interestsRouter?: import('express').Router, mediaRouter?: import('express').Router,
  *   notificationSettingsRouter?: import('express').Router, contentRouter?: import('express').Router, versionGate?: Function,
- *   storage?: object, handPickedRouter?: import('express').Router}} [options]
+ *   storage?: object, handPickedRouter?: import('express').Router, playerRouter?: import('express').Router}} [options]
  *   `extend` is a hook used only by tests to add routes after the legacy
  *   mounts and before the /v1 404 and error handlers. `trustProxy` overrides
  *   config.trustProxy (tests). `authRouter` replaces the sign-up and login
@@ -42,7 +43,8 @@ const ROOT = path.join(__dirname, '..');
  *   `credentialsRouter`, `interestsRouter`, `notificationSettingsRouter` and `contentRouter` likewise
  *   replace those routes, `mediaRouter` the profile photo routes, and `versionGate` the minimum-app-version
  *   check. `storage` is where profile photos are kept; its folder is served at /media when it is local.
- *   `handPickedRouter` replaces the Profile's hand-picked routes.
+ *   `handPickedRouter` replaces the Profile's hand-picked routes, and `playerRouter` the media player's (songs, albums,
+ *   playlists, playback, transcripts and listens).
  */
 function createApp({
   extend,
@@ -58,6 +60,7 @@ function createApp({
   notificationSettingsRouter = defaultNotificationSettingsRouter,
   contentRouter = defaultContentRouter,
   handPickedRouter = defaultHandPickedRouter,
+  playerRouter = defaultPlayerRouter,
   versionGate = defaultVersionGate,
   storage = defaultStorage,
 } = {}) {
@@ -76,7 +79,8 @@ function createApp({
   app.use('/uploads', express.static(path.join(ROOT, 'public/uploads')));
   // Also serve uploads from admin-panel for backward compatibility
   app.use('/uploads', express.static(path.join(ROOT, '../admin-panel/public/uploads')));
-  // Profile photos set through v1 (local storage). Every upload has its own address, so files never change.
+  // Profile photos and the player's audio and artwork (local storage). Every upload has its own address, so files
+  // never change. express.static answers Range requests (206), which the player needs to seek.
   if (storage.name === 'local') {
     app.use('/media', express.static(storage.root, { immutable: true, maxAge: '365d', index: false, dotfiles: 'deny', redirect: false }));
   }
@@ -178,6 +182,7 @@ function createApp({
   v1.use(notificationSettingsRouter);
   v1.use(contentRouter);
   v1.use(handPickedRouter);
+  v1.use(playerRouter);
   v1.use(notFound);
   app.use('/v1', v1);
 
