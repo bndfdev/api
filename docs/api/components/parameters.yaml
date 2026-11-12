@@ -108,6 +108,38 @@ ContentId:
   schema:
     $ref: './schemas.yaml#/Id'
 
+SongId:
+  name: songId
+  in: path
+  required: true
+  description: A song's id (`Content.id` of an item of type `song`).
+  schema:
+    $ref: './schemas.yaml#/Id'
+
+AlbumId:
+  name: albumId
+  in: path
+  required: true
+  description: An album's id (`Content.id` of an item of type `album`).
+  schema:
+    $ref: './schemas.yaml#/Id'
+
+PlaylistId:
+  name: playlistId
+  in: path
+  required: true
+  description: A playlist's id (`Content.id` of an item of type `playlist`).
+  schema:
+    $ref: './schemas.yaml#/Id'
+
+CommentId:
+  name: commentId
+  in: path
+  required: true
+  description: A comment's or a reply's id.
+  schema:
+    $ref: './schemas.yaml#/Id'
+
 InstallationId:
   name: installationId
   in: path

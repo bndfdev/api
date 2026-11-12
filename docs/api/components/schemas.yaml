@@ -157,6 +157,17 @@ ErrorCode:
   description: |
     Stable, machine-readable error code. New codes may be added in v1;
     clients must treat unknown codes by their HTTP status.
+
+    Codes of the media player (tags Player, Library and Comments):
+    - `CONTENT_NOT_FOUND` (404): no song, album or playlist with that id (or the id is of another type).
+    - `CONTENT_RESTRICTED` (403): the song is followers-only and the viewer may not play it, so its audio,
+      transcript and comments are withheld.
+    - `AUDIO_UNAVAILABLE` (409): the song has no audio yet, or its audio is still being processed.
+    - `TRANSCRIPT_NOT_FOUND` (404): the song has no transcript in that language, or none at all.
+    - `PLAYLIST_NOT_FOUND` (404): an id is not a playlist in the user's library; `meta.playlistIds` lists them.
+    - `PLAYLIST_NOT_EDITABLE` (403): a playlist is not the user's own, so songs cannot be added to it or
+      taken out of it; `meta.playlistIds` lists them.
+    - `COMMENT_NOT_FOUND` (404): the comment does not exist or was deleted.
   enum:
     # generic
     - MALFORMED_REQUEST
@@ -250,6 +261,13 @@ ErrorCode:
     # the user's own content
     - CONTENT_NOT_FOUND
     - HAND_PICKED_INVALID
+    # media player
+    - CONTENT_RESTRICTED
+    - AUDIO_UNAVAILABLE
+    - TRANSCRIPT_NOT_FOUND
+    - PLAYLIST_NOT_FOUND
+    - PLAYLIST_NOT_EDITABLE
+    - COMMENT_NOT_FOUND
     # media
     - UPLOAD_NOT_FOUND
     - UPLOAD_EXPIRED
@@ -1446,8 +1464,9 @@ Image:
       type: [string, 'null']
       description: |
         Tiny placeholder to paint while the image loads: a BlurHash with 4x3 components (28 characters) of the
-        picture as shown, worked out at upload. Filled for avatars and banners; `null` for ones stored before
-        this was added, until the backfill has run, and for other images (artwork) for now.
+        picture as shown, worked out at upload. Filled for avatars and banners, and for song and album artwork
+        too (`Song.image`, `Album.image`; worked out when the artwork is uploaded, see `docs/api/PLAYER.md`).
+        `null` for images stored before this was added, until the backfill has run.
       examples: ['L*J3}y{@OGOHspn~a}a}fQfQfQfQ']
     palette:
       oneOf:
@@ -1455,9 +1474,9 @@ Image:
         - type: 'null'
       description: |
         The picture's colours, worked out at upload by colour rules v1 (see `ImagePalette`). Filled for avatars
-        and banners; `null` (or absent) for ones stored before this was added, until the backfill has run, and
-        for other images (artwork) for now. When it is `null` the app works the colours out itself with the same
-        rules.
+        and banners, and for song and album artwork too (worked out when the artwork is uploaded); `null` (or
+        absent) for images stored before this was added, until the backfill has run. When it is `null` the app
+        works the colours out itself with the same rules.
     variants:
       type: object
       description: Resized copies keyed by width in pixels.
@@ -1469,9 +1488,10 @@ Image:
 ImagePalette:
   type: object
   description: |
-    The colours of an avatar or banner, worked out once at upload by colour rules v1 from the picture exactly
-    as shown (the crop, with transparency flattened onto black). The app takes its personal colour from the
-    banner's palette: `accent` on primary buttons, selected tags and switches. The rules group the picture's
+    The colours of an avatar, banner or piece of song or album artwork, worked out once at upload by colour
+    rules v1 from the picture exactly as shown (the crop, with transparency flattened onto black). The app
+    takes its personal colour from the banner's palette: `accent` on primary buttons, selected tags and
+    switches; the player takes its colours from the artwork's palette the same way. The rules group the picture's
     colours (Material colour utilities), pick the main colour family that covers at least 5% of the picture,
     and adjust its tone, keeping its hue, so that white text on it reads at 4.5:1 and it stands out 3:1 from
     the page background (black at 80% over the blurred banner). A yellow that would turn olive at that tone
@@ -1582,3 +1602,600 @@ ImageSetMultipart:
       description: JSON-encoded `ImageCrop`.
       type: string
       contentMediaType: application/json
+
+# ---------------------------------------------------------------------------
+# Media player: songs, albums, playlists, playback, listens, transcripts
+# (design notes: docs/api/PLAYER.md)
+# ---------------------------------------------------------------------------
+
+TranscriptLanguage:
+  type: string
+  description: |
+    BCP 47 tag of a language a song's transcript is written in. Any
+    language, not only the app's `supportedLanguages`.
+  pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+  examples: ['en', 'es', 'pt-BR']
+
+ArtistSummary:
+  type: object
+  description: |
+    Who a song or album is by: the account that published it (`id` is that
+    user's id). An artist page is not specified yet.
+  required: [id, name, image]
+  properties:
+    id:
+      $ref: '#/Id'
+    name:
+      type: string
+      examples: ['Mara Quillon']
+    image:
+      description: The artist's profile photo. The player shows it when the song has no artwork.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+
+UserSummary:
+  type: object
+  description: Another account as lists show it (a comment's author, a playlist's owner).
+  required: [id, name, avatar]
+  properties:
+    id:
+      $ref: '#/Id'
+    name:
+      type: [string, 'null']
+      description: '`null` when the account has no name yet; the app shows its own placeholder.'
+      examples: ['Amelia Jane']
+    avatar:
+      description: The profile photo; `null` draws the placeholder circle.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+
+AlbumSummary:
+  type: object
+  description: The album a song is on (the player header and "Go to album").
+  required: [id, title]
+  properties:
+    id:
+      $ref: '#/Id'
+    title:
+      type: string
+      examples: ['Tallow Bay']
+
+Song:
+  type: object
+  description: |
+    One song as the player shows it. Songs are `Content` items of type
+    `song` (same ids as `GET /me/content`). `liked` and `playable` are the
+    viewer's. The audio address is not here: get it from
+    `GET /songs/{songId}/playback` right before playing.
+  required: [id, title, artist, album, image, durationMs, waveform, transcriptLanguages, listens, commentCount, latestComment, liked, followersOnly, playable]
+  properties:
+    id:
+      $ref: '#/Id'
+    title:
+      type: string
+      examples: ['Kites Over Tallow Bay']
+    artist:
+      $ref: '#/ArtistSummary'
+    album:
+      description: The album the song is on; `null` for a single (the header then shows the song title).
+      oneOf:
+        - $ref: '#/AlbumSummary'
+        - type: 'null'
+    image:
+      description: |
+        The artwork the server chose: the album's when the song is on one,
+        else the song's own, with `palette` and `blurhash`. `null` when there
+        is none: the app then shows `artist.image`, else its standard picture.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    durationMs:
+      type: integer
+      minimum: 0
+      description: Length in milliseconds (the audio file's, once it is processed).
+    waveform:
+      type: [array, 'null']
+      description: |
+        Loudness across the song for the seek bar: levels from 0 (silence) to
+        1 (loudest), evenly spaced in time. Any length: the server makes 128
+        when the audio is uploaded, and the app resamples to the bars it
+        draws. `null` until it is worked out.
+      minItems: 1
+      maxItems: 1024
+      items:
+        type: number
+        minimum: 0
+        maximum: 1
+    transcriptLanguages:
+      type: array
+      description: Languages it has a transcript in, the original first. Empty when it has none (the app hides the flip button).
+      items:
+        $ref: '#/TranscriptLanguage'
+    listens:
+      type: integer
+      minimum: 0
+      description: Counted listens (the rule is under `POST /me/listens`).
+    commentCount:
+      type: integer
+      minimum: 0
+      description: Every comment on it, replies included (the "Comments (549)" tab label).
+    latestComment:
+      description: The newest top-level comment, for the pill under the player (its `replies` is empty); `null` when there is none.
+      oneOf:
+        - $ref: '#/Comment'
+        - type: 'null'
+    liked:
+      type: boolean
+      description: Whether the viewer has it in Liked songs. Always `false` for guests.
+    followersOnly:
+      type: boolean
+      description: Restrict Content is on for the song or for its album, so only the artist's followers can play it.
+    playable:
+      type: boolean
+      description: |
+        Whether the viewer can play it now. `false` when it is followers-only
+        and the viewer may not play it, or when its audio is not ready yet;
+        `GET /songs/{songId}/playback` then answers `CONTENT_RESTRICTED` or
+        `AUDIO_UNAVAILABLE`.
+
+SongList:
+  type: object
+  required: [data]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Song'
+
+SongPage:
+  type: object
+  required: [data, page]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/Song'
+    page:
+      $ref: '#/PageInfo'
+
+Playback:
+  type: object
+  description: |
+    Where to stream a song from, for one play. `url` is short-lived (6
+    hours) and answers HTTP Range requests, so the player can seek and
+    resume. Fetch it right before playing and again once it has expired;
+    never store or share it.
+  required: [url, expiresAt, mimeType, sizeBytes, durationMs]
+  properties:
+    url:
+      type: string
+      format: uri
+      description: Signed address of the audio file. Works without the access token, until `expiresAt`.
+    expiresAt:
+      description: When `url` stops working (6 hours after this answer). After that it answers 403.
+      $ref: '#/Timestamp'
+    mimeType:
+      type: string
+      description: The audio file's type.
+      examples: ['audio/mp4', 'audio/mpeg']
+    sizeBytes:
+      type: integer
+      minimum: 1
+      description: Size of the audio file.
+    durationMs:
+      type: integer
+      minimum: 0
+      description: Length of the audio file in milliseconds.
+
+Album:
+  type: object
+  description: An album and its songs. Albums are `Content` items of type `album` (same ids).
+  required: [id, title, artist, image, year, durationMs, songCount, songs]
+  properties:
+    id:
+      $ref: '#/Id'
+    title:
+      type: string
+      examples: ['Tallow Bay']
+    artist:
+      $ref: '#/ArtistSummary'
+    image:
+      description: The album's artwork, with `palette` and `blurhash`; `null` when it has none.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    year:
+      type: [integer, 'null']
+      description: Release year.
+      examples: [2026]
+    durationMs:
+      type: integer
+      minimum: 0
+      description: Total length of its songs in milliseconds.
+    songCount:
+      type: integer
+      minimum: 0
+    songs:
+      type: array
+      description: Every song on it, in album order.
+      items:
+        $ref: '#/Song'
+
+Playlist:
+  type: object
+  description: |
+    A playlist's header; its songs are paged by
+    `GET /playlists/{playlistId}/songs`. Playlists are `Content` items of
+    type `playlist` (same ids).
+  required: [id, title, owner, image, songCount, durationMs, updatedAt]
+  properties:
+    id:
+      $ref: '#/Id'
+    title:
+      type: string
+      examples: ['Rainy Commute']
+    owner:
+      $ref: '#/UserSummary'
+    image:
+      description: The playlist's own picture; `null` draws the app's 2x2 mosaic.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    songCount:
+      type: integer
+      minimum: 0
+    durationMs:
+      type: integer
+      minimum: 0
+      description: Total length of its songs in milliseconds.
+    updatedAt:
+      description: When a song was last added to or taken out of it.
+      $ref: '#/Timestamp'
+
+ListenSource:
+  type: object
+  description: |
+    Where the song was played from. A `playlist` or `liked_songs` source
+    also moves that entry's `playedAt` in the listener's library (the
+    "Recently played" sort).
+  required: [type]
+  additionalProperties: false
+  properties:
+    type:
+      type: string
+      enum: [album, playlist, liked_songs, song]
+      description: '`song` when it was played on its own (a link, a single).'
+    id:
+      description: |
+        The album's or playlist's id, for `album` and `playlist` (not sent
+        for the others). A source that needs an id and has none is ignored;
+        the listen itself still counts.
+      $ref: '#/Id'
+
+ListenEvent:
+  type: object
+  description: One song that stopped being the current one (it finished, was skipped or replaced, or the app closed).
+  required: [songId, listenedMs, completed, endedAt]
+  additionalProperties: false
+  properties:
+    songId:
+      $ref: '#/Id'
+    listenedMs:
+      type: integer
+      minimum: 0
+      maximum: 86400000
+      description: |
+        Time actually played, in the song's own time: seeking does not add
+        to it, and pauses do not count.
+    completed:
+      type: boolean
+      description: Whether it played to the end.
+    endedAt:
+      description: When it stopped being the current song, by the device's clock.
+      $ref: '#/Timestamp'
+    source:
+      $ref: '#/ListenSource'
+
+ListenBatch:
+  type: object
+  required: [events]
+  additionalProperties: false
+  properties:
+    events:
+      type: array
+      minItems: 1
+      maxItems: 50
+      items:
+        $ref: '#/ListenEvent'
+
+TranscriptWord:
+  type: object
+  description: One word, heard from `startMs` up to (not including) `endMs`.
+  required: [text, startMs, endMs]
+  properties:
+    text:
+      type: string
+      minLength: 1
+      description: The word as shown, with its punctuation. Never blank.
+    startMs:
+      type: integer
+      minimum: 0
+    endMs:
+      type: integer
+      minimum: 0
+      description: Never before `startMs`.
+
+TranscriptWordsLine:
+  type: object
+  description: A line whose words each have their own times.
+  required: [words]
+  properties:
+    words:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/TranscriptWord'
+
+TranscriptTextLine:
+  type: object
+  description: A line with one time for the whole line; the app spreads it evenly over the line's words.
+  required: [text, startMs, endMs]
+  properties:
+    text:
+      type: string
+      minLength: 1
+      description: The line as shown. Never blank.
+    startMs:
+      type: integer
+      minimum: 0
+    endMs:
+      type: integer
+      minimum: 0
+      description: Never before `startMs`.
+
+TranscriptLine:
+  description: One line of a transcript (it may wrap on screen). Either timed words or one line-level time.
+  oneOf:
+    - $ref: '#/TranscriptWordsLine'
+    - $ref: '#/TranscriptTextLine'
+
+Transcript:
+  type: object
+  description: |
+    The words of a song with their times, for the player's live transcript.
+    The shape the app parses (`TimedTranscript.fromJson`). Times are whole
+    milliseconds from the start of the song; words never go back in time
+    (each starts at or after the start of the one before, across lines).
+  required: [language, translatedFrom, lines, availableLanguages]
+  properties:
+    language:
+      $ref: '#/TranscriptLanguage'
+    translatedFrom:
+      description: |
+        The language the song is in when this text is a translation (the
+        "Translated from English" pill); `null` for the original.
+      oneOf:
+        - $ref: '#/TranscriptLanguage'
+        - type: 'null'
+    lines:
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/TranscriptLine'
+    availableLanguages:
+      type: array
+      description: Every language the song has a transcript in, the original first (the same list as `Song.transcriptLanguages`).
+      minItems: 1
+      items:
+        $ref: '#/TranscriptLanguage'
+
+# ---------------------------------------------------------------------------
+# Library: likes and the user's playlists
+# ---------------------------------------------------------------------------
+
+LikedSong:
+  description: A song in Liked songs, with when the user liked it.
+  allOf:
+    - $ref: '#/Song'
+    - type: object
+      required: [likedAt]
+      properties:
+        likedAt:
+          $ref: '#/Timestamp'
+
+LikedSongPage:
+  type: object
+  required: [data, page]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/LikedSong'
+    page:
+      $ref: '#/PageInfo'
+
+LibraryPlaylist:
+  type: object
+  description: |
+    One playlist in the user's library, as Add to Playlist lists it: the
+    user's own playlists, playlists saved from others, and the Liked songs
+    entry (`isLikedSongs: true`).
+  required: [id, title, image, songCount, updatedAt, savedAt, playedAt, isLikedSongs, editable]
+  properties:
+    id:
+      $ref: '#/Id'
+    title:
+      type: string
+      description: For the Liked songs entry this is `Liked songs` (English); the app shows its own words instead.
+      examples: ['Rainy Commute']
+    image:
+      description: The playlist's own picture; `null` draws the app's 2x2 mosaic.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    songCount:
+      type: integer
+      minimum: 0
+    updatedAt:
+      description: When a song was last added to or taken out of it ("Recently updated").
+      $ref: '#/Timestamp'
+    savedAt:
+      description: When it joined the library ("Recently saved"); for the user's own playlists, when it was created.
+      $ref: '#/Timestamp'
+    playedAt:
+      description: When the user last played from it ("Recently played", from `POST /me/listens`); `null` if never.
+      oneOf:
+        - $ref: '#/Timestamp'
+        - type: 'null'
+    isLikedSongs:
+      type: boolean
+      description: Marks the one Liked songs entry, which only the heart fills. Exactly one entry has it.
+    editable:
+      type: boolean
+      description: |
+        `true` for the user's own playlists: only these can take songs (Add
+        to Playlist). `false` for saved playlists and for Liked songs.
+
+LibraryPlaylistPage:
+  type: object
+  required: [data, page]
+  properties:
+    data:
+      type: array
+      items:
+        $ref: '#/LibraryPlaylist'
+    page:
+      $ref: '#/PageInfo'
+
+SongLibraryState:
+  type: object
+  description: The player's heart and "+" states for one song.
+  required: [liked, playlistIds]
+  properties:
+    liked:
+      type: boolean
+      description: Whether the song is in Liked songs.
+    playlistIds:
+      type: array
+      description: The user's editable playlists that hold the song (Liked songs not included), in no particular order.
+      items:
+        $ref: '#/Id'
+
+SongPlaylists:
+  type: object
+  description: |
+    The user's playlists, other than Liked songs, that hold a song. Sent
+    to set them, answered as saved. When sent, duplicates and the Liked
+    songs id are ignored.
+  required: [playlistIds]
+  additionalProperties: false
+  properties:
+    playlistIds:
+      type: array
+      maxItems: 500
+      items:
+        $ref: '#/Id'
+
+# ---------------------------------------------------------------------------
+# Comments
+# ---------------------------------------------------------------------------
+
+Comment:
+  type: object
+  description: |
+    A comment on a song, or a reply to one. Replies are one level deep:
+    they have no replies of their own.
+  required: [id, parentId, author, text, createdAt, likeCount, likedByMe, replyCount, isMine]
+  properties:
+    id:
+      $ref: '#/Id'
+    parentId:
+      description: The top-level comment this replies to; `null` for a top-level comment.
+      oneOf:
+        - $ref: '#/Id'
+        - type: 'null'
+    author:
+      $ref: '#/UserSummary'
+    text:
+      type: string
+      minLength: 1
+      maxLength: 500
+      description: As saved (trimmed). Line breaks inside are kept.
+    createdAt:
+      $ref: '#/Timestamp'
+    likeCount:
+      type: integer
+      minimum: 0
+    likedByMe:
+      type: boolean
+      description: Always `false` for guests.
+    replyCount:
+      type: integer
+      minimum: 0
+      description: How many replies it has (can be more than `replies` holds). Always 0 on a reply.
+    replies:
+      type: array
+      description: |
+        On a top-level comment in `GET /songs/{songId}/comments`: its first
+        replies, oldest first (up to 3). Empty in `Song.latestComment`.
+        Absent on a reply.
+      maxItems: 3
+      items:
+        $ref: '#/Comment'
+    isMine:
+      type: boolean
+      description: Whether the viewer wrote it (and so can delete it). Always `false` for guests.
+
+CommentPage:
+  type: object
+  required: [data, page, commentCount]
+  properties:
+    data:
+      type: array
+      description: Top-level comments, newest first.
+      items:
+        $ref: '#/Comment'
+    page:
+      $ref: '#/PageInfo'
+    commentCount:
+      type: integer
+      minimum: 0
+      description: Every comment on the song, replies included (`page.total` counts top-level comments only).
+
+CommentReplyPage:
+  type: object
+  required: [data, page]
+  properties:
+    data:
+      type: array
+      description: Replies, oldest first.
+      items:
+        $ref: '#/Comment'
+    page:
+      $ref: '#/PageInfo'
+
+CommentCreate:
+  type: object
+  required: [text]
+  additionalProperties: false
+  properties:
+    text:
+      type: string
+      minLength: 1
+      maxLength: 1000
+      description: |
+        Trimmed (line breaks inside are kept), then it must be 1 to 500
+        characters; otherwise `VALIDATION_FAILED` with `field` `/text`.
+
+CommentLike:
+  type: object
+  description: A comment's likes after a like or unlike.
+  required: [likeCount, likedByMe]
+  properties:
+    likeCount:
+      type: integer
+      minimum: 0
+    likedByMe:
+      type: boolean

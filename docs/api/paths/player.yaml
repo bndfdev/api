@@ -1,0 +1,527 @@
+# The media player: songs, albums, playlists, playback addresses,
+# transcripts and listens. Spec first: none of these is built yet (they
+# answer 404 until they are). Design notes: docs/api/PLAYER.md.
+
+songs:
+  get:
+    operationId: listSongs
+    tags: [Player]
+    summary: Get several songs by id
+    description: |
+      For restoring a saved queue and drawing lists: 1 to 50 song ids,
+      comma separated (`?ids=a,b,c`). The answer keeps the order asked.
+      Ids that are unknown or not songs are left out without an error, and
+      an id asked twice is answered once, at its first place. Guests
+      allowed.
+
+      Errors: `VALIDATION_FAILED` (422, no ids or more than 50).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - name: ids
+        in: query
+        required: true
+        description: Song ids, comma separated (1 to 50).
+        style: form
+        explode: false
+        schema:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '../components/schemas.yaml#/Id'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The songs found, in the order asked.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/SongList'
+            example:
+              data:
+                - id: 6650f1c2a4b7e9d3c1f00c21
+                  title: Northbound Hum
+                  artist: { id: 6650f1c2a4b7e9d3c1f00a22, name: Theo Brannick, image: null }
+                  album: null
+                  image: { url: 'https://cdn.bondfire.app/c/northbound-hum/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#FFFFFF', accent: '#747676', neutral: true } }
+                  durationMs: 176500
+                  waveform: [0.02, 0.33, 0.61, 0.66, 0.70, 0.57, 0.25, 0.23, 0.48, 0.58, 0.58, 0.77, 0.90, 0.64, 0.20, 0.02]
+                  transcriptLanguages: []
+                  listens: 913
+                  commentCount: 0
+                  latestComment: null
+                  liked: false
+                  followersOnly: false
+                  playable: true
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+song:
+  get:
+    operationId: getSong
+    tags: [Player]
+    summary: Get a song
+    description: |
+      Everything the player shows for one song: title, artist (and their
+      photo, used when there is no artwork), album, artwork with `palette`
+      and `blurhash`, length, waveform, transcript languages, counts, the
+      latest comment (the pill) and the viewer's heart. Guests allowed
+      (`liked` is then `false`).
+
+      - A followers-only song is still described, with `playable: false`
+        for a viewer who may not play it; only its audio, transcript and
+        comments are withheld (`CONTENT_RESTRICTED`).
+      - A hidden song (Hide Content) still answers: hiding takes it off its
+        artist's Profile, not out of albums, playlists or queues.
+      - To play it, get `GET /songs/{songId}/playback`.
+
+      Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not a song).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The song.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Song'
+            example:
+              id: 6650f1c2a4b7e9d3c1f00c11
+              title: Kites Over Tallow Bay
+              artist:
+                id: 6650f1c2a4b7e9d3c1f00a21
+                name: Mara Quillon
+                image: { url: 'https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg', width: 512, height: 512, status: ready, blurhash: 'L*J3}y{@OGOHspn~a}a}fQfQfQfQ', palette: { version: 1, seed: '#B0522F', accent: '#A84E2D', neutral: false } }
+              album: { id: 6650f1c2a4b7e9d3c1f00c10, title: Tallow Bay }
+              image: { url: 'https://cdn.bondfire.app/c/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#2F6FB0', accent: '#2F6FB0', neutral: false } }
+              durationMs: 214380
+              waveform:
+                [
+                  0.02, 0.03, 0.05, 0.07, 0.13, 0.18, 0.17, 0.20, 0.30, 0.33, 0.29, 0.38, 0.50, 0.46, 0.44, 0.59,
+                  0.68, 0.58, 0.60, 0.80, 0.82, 0.68, 0.76, 0.91, 0.79, 0.65, 0.79, 0.86, 0.68, 0.63, 0.79, 0.77,
+                  0.58, 0.61, 0.75, 0.64, 0.48, 0.59, 0.68, 0.50, 0.41, 0.57, 0.57, 0.37, 0.37, 0.53, 0.45, 0.27,
+                  0.37, 0.48, 0.33, 0.22, 0.38, 0.42, 0.23, 0.22, 0.40, 0.36, 0.19, 0.27, 0.42, 0.31, 0.20, 0.36,
+                  0.44, 0.28, 0.26, 0.45, 0.45, 0.29, 0.37, 0.55, 0.47, 0.35, 0.51, 0.63, 0.48, 0.45, 0.64, 0.68,
+                  0.52, 0.57, 0.76, 0.70, 0.57, 0.70, 0.84, 0.70, 0.63, 0.82, 0.87, 0.69, 0.71, 0.89, 0.85, 0.68,
+                  0.78, 0.92, 0.79, 0.68, 0.83, 0.89, 0.70, 0.67, 0.84, 0.80, 0.62, 0.67, 0.81, 0.68, 0.54, 0.66,
+                  0.69, 0.48, 0.39, 0.48, 0.43, 0.26, 0.25, 0.30, 0.21, 0.12, 0.14, 0.13, 0.07, 0.03, 0.03, 0.02
+                ]
+              transcriptLanguages: [en, es]
+              listens: 48210
+              commentCount: 549
+              latestComment:
+                id: 6650f1c2a4b7e9d3c1f00e01
+                parentId: null
+                author: { id: 6650f1c2a4b7e9d3c1f00a12, name: Amelia Jane, avatar: null }
+                text: The second half of this one stays with me all day.
+                createdAt: '2026-11-12T18:40:00Z'
+                likeCount: 12
+                likedByMe: false
+                replyCount: 1
+                replies: []
+                isMine: false
+              liked: true
+              followersOnly: false
+              playable: true
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+songPlayback:
+  get:
+    operationId: getSongPlayback
+    tags: [Player]
+    summary: Get the address to stream a song from
+    description: |
+      Called right before a song plays. `url` works for 6 hours
+      (`expiresAt`) and answers HTTP Range requests, so the player can seek
+      and resume with a plain URL. Fetch a new one when it has expired (it
+      then answers 403); never store or share it. Fetching it does not
+      count a listen (`POST /me/listens` does). Guests allowed.
+
+      Errors: `CONTENT_RESTRICTED` (403, followers-only and the viewer may
+      not play it), `CONTENT_NOT_FOUND` (404), `AUDIO_UNAVAILABLE` (409, no
+      audio yet, or still being processed).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: Where to stream it from, for the next 6 hours.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Playback'
+            example:
+              url: 'https://cdn.bondfire.app/audio/6650f1c2a4b7e9d3c1f00c11/128k.m4a?exp=1794600000&sig=Qm9uZGZpcmVTaWc'
+              expiresAt: '2026-11-13T16:00:00Z'
+              mimeType: audio/mp4
+              sizeBytes: 3473920
+              durationMs: 214380
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403':
+        description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/content-restricted
+              title: Only followers can play this
+              status: 403
+              code: CONTENT_RESTRICTED
+              requestId: req_01J8Z3K5QH
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '409':
+        description: The song has no audio yet, or it is still being processed (`AUDIO_UNAVAILABLE`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/audio-unavailable
+              title: This song is not ready to play yet
+              status: 409
+              code: AUDIO_UNAVAILABLE
+              requestId: req_01J8Z3K5QH
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+songTranscript:
+  get:
+    operationId: getSongTranscript
+    tags: [Player]
+    summary: Get a song's timed transcript
+    description: |
+      The words of the song with their times, for the player's live
+      transcript, in the shape the app parses (`TimedTranscript.fromJson`).
+      Guests allowed.
+
+      - `language` picks one of `Song.transcriptLanguages`. Without it, the
+        server picks from `Accept-Language`: the first language there (in
+        order of preference, matched on the main subtag, so `es-MX` finds
+        `es`) that the song has a transcript in, a translation or the
+        original; when none matches, the original.
+      - `translatedFrom` is the original's language when the text is a
+        translation (the "Translated from English" pill), else `null`.
+        `availableLanguages` lists every language, the original first.
+      - A line has either `words`, each with its own times, or one `text`
+        with the line's times. Times are whole milliseconds from the start
+        of the song; words never go back in time, and no `endMs` is before
+        its `startMs`.
+
+      Errors: `CONTENT_RESTRICTED` (403, followers-only and the viewer may
+      not play it), `CONTENT_NOT_FOUND` (404), `TRANSCRIPT_NOT_FOUND` (404,
+      none in that language or none at all; the app hides the flip button).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - name: language
+        in: query
+        required: false
+        description: The transcript language wanted. Omit it to let `Accept-Language` decide.
+        schema:
+          $ref: '../components/schemas.yaml#/TranscriptLanguage'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - name: Accept-Language
+        in: header
+        required: false
+        description: Picks the transcript language when `language` is not sent (and the language of error titles).
+        schema:
+          type: string
+          examples: ['es-MX, es;q=0.9, en;q=0.8']
+    responses:
+      '200':
+        description: The transcript.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Transcript'
+            examples:
+              original:
+                summary: The original, timed word by word
+                value:
+                  language: en
+                  translatedFrom: null
+                  availableLanguages: [en, es]
+                  lines:
+                    - words:
+                        - { text: We, startMs: 12400, endMs: 12620 }
+                        - { text: fly, startMs: 12620, endMs: 12980 }
+                        - { text: paper, startMs: 12980, endMs: 13410 }
+                        - { text: kites, startMs: 13410, endMs: 13900 }
+                        - { text: at, startMs: 13900, endMs: 14050 }
+                        - { text: noon, startMs: 14050, endMs: 14800 }
+                    - { text: Over the bay the gulls reply, startMs: 15200, endMs: 18900 }
+              translation:
+                summary: A translation, timed line by line
+                value:
+                  language: es
+                  translatedFrom: en
+                  availableLanguages: [en, es]
+                  lines:
+                    - { text: Volamos cometas de papel al mediodía, startMs: 12400, endMs: 14800 }
+                    - { text: Sobre la bahía responden las gaviotas, startMs: 15200, endMs: 18900 }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403':
+        description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+      '404':
+        description: No such song (`CONTENT_NOT_FOUND`), or no transcript in that language (`TRANSCRIPT_NOT_FOUND`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/transcript-not-found
+              title: No transcript in this language
+              status: 404
+              code: TRANSCRIPT_NOT_FOUND
+              requestId: req_01J8Z3K5QH
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+album:
+  get:
+    operationId: getAlbum
+    tags: [Player]
+    summary: Get an album and its songs
+    description: |
+      "Go to album" and the album page: the album and every song on it, in
+      album order. Guests allowed.
+
+      Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not an album).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/AlbumId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The album.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Album'
+            example:
+              id: 6650f1c2a4b7e9d3c1f00c10
+              title: Tallow Bay
+              artist: { id: 6650f1c2a4b7e9d3c1f00a21, name: Mara Quillon, image: { url: 'https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg', width: 512, height: 512, status: ready, blurhash: 'L*J3}y{@OGOHspn~a}a}fQfQfQfQ', palette: { version: 1, seed: '#B0522F', accent: '#A84E2D', neutral: false } } }
+              image: { url: 'https://cdn.bondfire.app/c/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#2F6FB0', accent: '#2F6FB0', neutral: false } }
+              year: 2026
+              durationMs: 388040
+              songCount: 2
+              songs:
+                - id: 6650f1c2a4b7e9d3c1f00c12
+                  title: Low Tide Letters
+                  artist: { id: 6650f1c2a4b7e9d3c1f00a21, name: Mara Quillon, image: { url: 'https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg', width: 512, height: 512, status: ready, blurhash: 'L*J3}y{@OGOHspn~a}a}fQfQfQfQ', palette: { version: 1, seed: '#B0522F', accent: '#A84E2D', neutral: false } } }
+                  album: { id: 6650f1c2a4b7e9d3c1f00c10, title: Tallow Bay }
+                  image: { url: 'https://cdn.bondfire.app/c/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#2F6FB0', accent: '#2F6FB0', neutral: false } }
+                  durationMs: 187040
+                  waveform: [0.02, 0.33, 0.61, 0.66, 0.70, 0.57, 0.25, 0.23, 0.48, 0.58, 0.58, 0.77, 0.90, 0.64, 0.20, 0.02]
+                  transcriptLanguages: [en]
+                  listens: 30544
+                  commentCount: 0
+                  latestComment: null
+                  liked: false
+                  followersOnly: false
+                  playable: true
+                - id: 6650f1c2a4b7e9d3c1f00c13
+                  title: Salt and Static
+                  artist: { id: 6650f1c2a4b7e9d3c1f00a21, name: Mara Quillon, image: { url: 'https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg', width: 512, height: 512, status: ready, blurhash: 'L*J3}y{@OGOHspn~a}a}fQfQfQfQ', palette: { version: 1, seed: '#B0522F', accent: '#A84E2D', neutral: false } } }
+                  album: { id: 6650f1c2a4b7e9d3c1f00c10, title: Tallow Bay }
+                  image: { url: 'https://cdn.bondfire.app/c/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#2F6FB0', accent: '#2F6FB0', neutral: false } }
+                  durationMs: 201000
+                  waveform: null
+                  transcriptLanguages: []
+                  listens: 0
+                  commentCount: 0
+                  latestComment: null
+                  liked: false
+                  followersOnly: false
+                  playable: false
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+playlist:
+  get:
+    operationId: getPlaylist
+    tags: [Player]
+    summary: Get a playlist's header
+    description: |
+      The playlist page's header: title, owner, picture, size and length.
+      Its songs are paged by `GET /playlists/{playlistId}/songs`. Guests
+      allowed. The Liked songs entry of a library is not a playlist here:
+      read it with `GET /me/liked-songs`.
+
+      Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not a playlist).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/PlaylistId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The playlist.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Playlist'
+            example:
+              id: 6650f1c2a4b7e9d3c1f00d01
+              title: Rainy Commute
+              owner: { id: 6650f1c2a4b7e9d3c1f00a12, name: Amelia Jane, avatar: null }
+              image: null
+              songCount: 37
+              durationMs: 8123000
+              updatedAt: '2026-11-10T08:05:00Z'
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+playlistSongs:
+  get:
+    operationId: listPlaylistSongs
+    tags: [Player]
+    summary: List a playlist's songs
+    description: |
+      The songs of a playlist in playlist order (a song added later comes
+      last). A song is in a playlist at most once. `page.total` is the
+      playlist's `songCount`. A cursor only works for the same playlist and
+      for 24 hours (`CURSOR_INVALID`). Guests allowed.
+
+      Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not a
+      playlist), `CURSOR_INVALID` (422).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/PlaylistId'
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: A page of the playlist's songs.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/SongPage'
+            example:
+              data:
+                - id: 6650f1c2a4b7e9d3c1f00c31
+                  title: Glasshouse Weather
+                  artist: { id: 6650f1c2a4b7e9d3c1f00a22, name: Theo Brannick, image: null }
+                  album: null
+                  image: null
+                  durationMs: 243900
+                  waveform: [0.02, 0.33, 0.61, 0.66, 0.70, 0.57, 0.25, 0.23, 0.48, 0.58, 0.58, 0.77, 0.90, 0.64, 0.20, 0.02]
+                  transcriptLanguages: [en]
+                  listens: 2210
+                  commentCount: 4
+                  latestComment: null
+                  liked: false
+                  followersOnly: true
+                  playable: false
+              page: { nextCursor: 'eyJvIjoyMH0', hasMore: true, total: 37 }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meListens:
+  post:
+    operationId: recordListens
+    tags: [Player]
+    summary: Report listens
+    description: |
+      The app sends one event each time a song stops being the current one
+      (it finished, was skipped or replaced, or the app closed), and may
+      hold events to send several at once (1 to 50 per call). Guests
+      allowed.
+
+      - A listen counts towards `Song.listens` when `listenedMs` is at
+        least 30000 (30 seconds) or `completed` is `true` (the rule is an
+        open question, see `docs/api/PLAYER.md`). Counting happens after
+        the answer: `202` only says the batch was received.
+      - A `playlist` or `liked_songs` `source` moves that entry's
+        `playedAt` in the listener's library ("Recently played").
+      - Events for unknown songs or songs the listener may not play, and
+        events whose `endedAt` is more than 30 days old or more than 5
+        minutes in the future, are dropped without an error, so one bad
+        event never blocks the rest.
+      - An event sent again (same listener, song and `endedAt`) is
+        ignored, so a resend never counts twice. Send `Idempotency-Key` too.
+
+      Errors: `VALIDATION_FAILED` (422, a batch in another shape);
+      `IDEMPOTENCY_IN_PROGRESS` (409) and `IDEMPOTENCY_KEY_REUSED` (422) as
+      described on `Idempotency-Key`.
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/ListenBatch'
+          example:
+            events:
+              - songId: 6650f1c2a4b7e9d3c1f00c12
+                listenedMs: 187040
+                completed: true
+                endedAt: '2026-11-13T09:58:12Z'
+                source: { type: album, id: 6650f1c2a4b7e9d3c1f00c10 }
+              - songId: 6650f1c2a4b7e9d3c1f00c11
+                listenedMs: 8200
+                completed: false
+                endedAt: '2026-11-13T09:58:21Z'
+                source: { type: liked_songs }
+    responses:
+      '202':
+        description: Received. No body; listens are counted afterwards.
+        headers:
+          X-Request-Id:
+            $ref: '../components/headers.yaml#/RequestId'
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }

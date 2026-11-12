@@ -2,12 +2,16 @@ openapi: 3.1.0
 info:
   title: Bondfire API
   version: 1.0.0-draft.1
-  summary: Accounts, onboarding, profile and catalog for the Bondfire app.
+  summary: Accounts, onboarding, profile, catalog and the media player for the Bondfire app.
   description: |
     **Status: draft for review.** Contract between the Bondfire app and the
     `api` server for everything the onboarding flow needs. Design notes,
     edge cases and the migration from today's endpoints are in
     `docs/api/README.md`.
+
+    The media player's endpoints (tags Player, Library and Comments) are
+    written spec first: they answer `404` until they are built. Their
+    design notes and planned data model are in `docs/api/PLAYER.md`.
 
     ## Conventions (apply to every endpoint)
 
@@ -28,7 +32,8 @@ info:
     - **Errors** are RFC 9457 problem details (`application/problem+json`)
       with a stable `code`. Branch on `code`, never on text.
     - **Retries:** send `Idempotency-Key` (UUID) on calls that send codes,
-      create accounts or upload, and reuse it when retrying the same action.
+      create accounts, upload, post comments or report listens, and reuse it
+      when retrying the same action.
     - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
       operation are listed under `x-rate-limit`.
     - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
@@ -77,6 +82,55 @@ tags:
     description: Signed-in devices and linked sign-in methods.
   - name: Devices
     description: Push notification registration.
+  - name: Player
+    description: |
+      Listening: songs, albums, playlists, playback addresses, transcripts
+      and listens. Spec first: these answer `404` until they are built
+      (design notes and planned data model: `docs/api/PLAYER.md`).
+
+      - Songs, albums and playlists are `Content` items, with the same ids
+        as `GET /me/content`. An unknown id, or one of another type, is
+        `CONTENT_NOT_FOUND` (404).
+      - Guests can listen: every Player operation accepts a guest token.
+      - **Followers-only** (Restrict Content on the song or its album): the
+        song is still described, with `playable: false` for a viewer who may
+        not play it, and its audio, transcript and comments answer
+        `CONTENT_RESTRICTED` (403). Only the artist's followers may play it;
+        there is no follow data yet, so for now only the artist can.
+      - **Hidden** (Hide Content) takes a song off its artist's Profile
+        only: it still answers by id and in albums, playlists and queues.
+      - **Audio** is never inside `Song`: `GET /songs/{songId}/playback`
+        gives a short-lived URL (6 hours, HTTP Range) right before playing.
+      - **Artwork** (`Song.image`, the album's when the song is on one)
+        carries `palette` and `blurhash` like profile photos.
+      - Lengths are milliseconds (`durationMs`), unlike `Content.durationSec`.
+  - name: Library
+    description: |
+      The listener's likes and playlists, as the player's heart and Add to
+      Playlist need them. Accounts only: guests get `403 GUEST_NOT_ALLOWED`.
+
+      - Liking a song puts it in the library's **Liked songs** entry
+        (`isLikedSongs: true`): one per account, filled by the heart only,
+        listed by `GET /me/liked-songs`. The app words its name.
+      - Only the user's own playlists are `editable` and can take songs.
+        `PUT /me/library/songs/{songId}/playlists` sets the exact set of
+        playlists holding a song in one call, all or nothing.
+      - Creating, renaming and saving playlists are not specified yet.
+  - name: Comments
+    description: |
+      Comments on songs: the player drawer's Comments tab and the pill
+      under the player. Reading is open to guests; posting, liking and
+      deleting need an account (`GUEST_NOT_ALLOWED`).
+
+      - Replies are one level deep: a reply to a reply is attached to the
+        same top-level comment.
+      - Comments are listed newest first, each with its first 3 replies
+        (oldest first); more replies are paged separately, oldest first.
+      - `commentCount` (on `Song` and on comment pages) includes replies;
+        `page.total` counts only what that list pages through.
+      - Text is trimmed, then 1 to 500 characters.
+      - A followers-only song's comments answer `CONTENT_RESTRICTED` to a
+        viewer who may not play it.
 
 paths:
   # Meta and catalog
@@ -172,6 +226,46 @@ paths:
     $ref: './paths/me.yaml#/meIdentity'
   /me/devices/{installationId}:
     $ref: './paths/me.yaml#/meDevice'
+
+  # Media player: listening (spec first, not built yet)
+  /songs:
+    $ref: './paths/player.yaml#/songs'
+  /songs/{songId}:
+    $ref: './paths/player.yaml#/song'
+  /songs/{songId}/playback:
+    $ref: './paths/player.yaml#/songPlayback'
+  /songs/{songId}/transcript:
+    $ref: './paths/player.yaml#/songTranscript'
+  /albums/{albumId}:
+    $ref: './paths/player.yaml#/album'
+  /playlists/{playlistId}:
+    $ref: './paths/player.yaml#/playlist'
+  /playlists/{playlistId}/songs:
+    $ref: './paths/player.yaml#/playlistSongs'
+  /me/listens:
+    $ref: './paths/player.yaml#/meListens'
+
+  # Media player: the listener's library
+  /me/liked-songs:
+    $ref: './paths/library.yaml#/meLikedSongs'
+  /me/liked-songs/{songId}:
+    $ref: './paths/library.yaml#/meLikedSong'
+  /me/library/playlists:
+    $ref: './paths/library.yaml#/meLibraryPlaylists'
+  /me/library/songs/{songId}:
+    $ref: './paths/library.yaml#/meLibrarySong'
+  /me/library/songs/{songId}/playlists:
+    $ref: './paths/library.yaml#/meLibrarySongPlaylists'
+
+  # Media player: comments
+  /songs/{songId}/comments:
+    $ref: './paths/comments.yaml#/songComments'
+  /comments/{commentId}:
+    $ref: './paths/comments.yaml#/comment'
+  /comments/{commentId}/replies:
+    $ref: './paths/comments.yaml#/commentReplies'
+  /comments/{commentId}/like:
+    $ref: './paths/comments.yaml#/commentLike'
 
 components:
   securitySchemes:
