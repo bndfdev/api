@@ -1,6 +1,6 @@
 # Media player API (spec first)
 
-**Status: Player built; Library and Comments spec only.** The operations tagged Player, Library and Comments in `docs/api/openapi.yaml` are the contract for the app's media player. The Player operations (songs, albums, playlists, playback, transcripts, listens) are built (`src/modules/player`, step 1 of 3); Library (step 2) and Comments (step 3) still answer `404` until their routes exist. Until then a `Song` has `liked: false`, `commentCount` as stored (0) and `latestComment: null` (`NO_SOCIAL` in `src/modules/player/service.js`, which those steps replace). The data model below marks what is built and what is still planned; each step adds its own `docs/DB_CHANGES.md` entry for review.
+**Status: Player and Library built; Comments spec only.** The operations tagged Player, Library and Comments in `docs/api/openapi.yaml` are the contract for the app's media player. The Player operations (songs, albums, playlists, playback, transcripts, listens) are built (`src/modules/player`, step 1 of 3), and so are the Library operations (likes, the library's playlists, a song's heart and "+" states, Add to Playlist: `src/modules/player/library.js` and `libraryRoutes.js`, step 2). Comments (step 3) still answer `404` until their routes exist. Until then a `Song` has `commentCount` as stored (0) and `latestComment: null` (`NO_SOCIAL` in `src/modules/player/service.js`, which step 3 replaces); `liked` is the viewer's like (always `false` for guests). The data model below marks what is built and what is still planned; each step adds its own `docs/DB_CHANGES.md` entry for review.
 
 ## Decisions
 
@@ -41,7 +41,7 @@
 | `TranscriptRepository.transcriptFor(id, language)` | `GET /songs/{id}/transcript?language=`; `404 TRANSCRIPT_NOT_FOUND` → `Ok(null)` |
 | `ListenEvent` (not sent yet) | `POST /me/listens`: `trackId` → `songId`, `listened` → `listenedMs`, `completed`; plus `endedAt` and `source` |
 
-## Data model (built in step 1 unless marked planned)
+## Data model (built in steps 1 and 2 unless marked planned)
 
 **`contents` (existing): new optional fields** (`models/Content.js`; absent on everything stored before)
 
@@ -53,8 +53,9 @@
 | `albumId`, `trackNumber` | songs | Album membership and order (a song is on at most one album, and only on an album of the same owner) |
 | `commentCount` | songs | Counter, replies included (written by step 3; absent reads as 0) |
 | `image.palette`, `image.blurhash` | songs, albums, playlists | Artwork colours and blur preview, made at upload as for photos (read as stored; `null` when absent) |
+| `songsUpdatedAt` | playlists | Step 2: when Add to Playlist last added the song to or took it out of the playlist. A playlist's `updatedAt` is the later of this and its newest item's `addedAt` (its creation while it has neither). Not the document's `updatedAt`, which moves with any change. |
 
-Existing field now written: `listens` (songs), incremented by counted listens.
+Existing fields now written: `listens` (songs), incremented by counted listens; `songCount` (playlists, step 2), set to the playlist's number of items by Add to Playlist, so the Profile's count stays in step.
 
 New index: `album_order` `{albumId: 1, trackNumber: 1, _id: 1}` (partial: `albumId` exists, so only songs on an album).
 
@@ -62,28 +63,39 @@ New index: `album_order` `{albumId: 1, trackNumber: 1, _id: 1}` (partial: `album
 
 | Collection | Holds | Indexes |
 | --- | --- | --- |
-| `playlist_items` (built) | `playlistId`, `songId`, `position`, `addedAt` | `playlist_song` `{playlistId, songId}` unique; `playlist_order` `{playlistId, position, _id}` |
+| `playlist_items` (built; written by Add to Playlist since step 2) | `playlistId`, `songId`, `position`, `addedAt` | `playlist_song` `{playlistId, songId}` unique; `playlist_order` `{playlistId, position, _id}` |
 | `transcripts` (built) | `songId`, `language`, `translatedFrom` (null for the original), `lines`, `updatedAt` | `song_language` `{songId, language}` unique |
 | `listens` (built) | `listenerId` (user or guest), `listenerType`, `songId`, `listenedMs`, `completed`, `endedAt`, `source`, `counted`, `receivedAt` | `listener_song_end` `{listenerId, songId, endedAt}` unique (dedupe). No TTL yet: retention is to decide, and it must outlast the 30 days an event is accepted, or a late resend would count again. |
-| `library_entries` (planned, step 2) | `userId`, `playlistId` (or `kind: 'liked_songs'`), `savedAt`, `playedAt` | `{userId, playlistId}` unique |
-| `song_likes` (planned, step 2) | `userId`, `songId`, `likedAt` | `{userId, songId}` unique; `{userId, likedAt: -1, _id: -1}` |
+| `song_likes` (built, step 2) | `userId`, `songId`, `likedAt` | `user_song` `{userId, songId}` unique; `user_liked` `{userId, likedAt: -1, _id: -1}` |
+| `library_entries` (built, step 2) | `userId`, `kind` (`playlist` or `liked_songs`), `playlistId` (null for Liked songs), `savedAt` (playlists), `playedAt`, `unlikedAt` (Liked songs) | `user_playlist` `{userId, playlistId}` unique (one row per playlist, one Liked songs row) |
+| `library_locks` (built, step 2) | `_id` (the account's id), `owner`, `expiresAt` | `expires` TTL on `expiresAt` |
 | `comments` (planned, step 3) | `songId`, `parentId` (null for top-level), `authorId`, `text`, `likeCount`, `replyCount`, `createdAt` | `{songId, parentId, createdAt: -1, _id: -1}`; `{parentId, createdAt: 1, _id: 1}` |
 | `comment_likes` (planned, step 3) | `commentId`, `userId`, `createdAt` | `{commentId, userId}` unique |
 
-The Liked songs entry is built from `song_likes` (count; newest `likedAt` as `updatedAt`) plus its `library_entries` row (`playedAt`); its id is derived from the user (`liked_<userId>`). Counted listens increment `contents.listens`. Account deletion will have to remove likes, library entries, the user's playlists' items, comment likes and listens, and remove or anonymise comments.
+The library is the user's own playlists (`contents`, no row needed), the playlists saved from others (a `library_entries` row each: nothing in v1 saves them yet; locally the seed does), and the Liked songs entry, built from `song_likes` (count; newest `likedAt`) plus its `library_entries` row (`playedAt`, `unlikedAt`); its id is derived from the user (`liked_<userId>`). An own playlist gets a row the first time it is played from (for `playedAt`). `library_locks` holds an account's Add to Playlist lock for the few milliseconds of its writes. Counted listens increment `contents.listens`. Account deletion will have to remove likes, library entries, the user's playlists' items, comment likes and listens, and remove or anonymise comments.
 
 **How step 1 reads it (choices the spec left open)**
 
 - `Song.image` is the album's artwork when the album has some, else the song's own. A song whose `albumId` is missing, not an album, or someone else's album is a single.
 - `ArtistSummary.name` is `''` when the publishing account has no name (the spec makes it a non-null string); a playlist owner's `name` is then `null`.
 - Followers-only songs play only for their artist; Restrict Content on a playlist changes nothing yet.
-- A playlist's `songCount` (and `page.total`) counts its items; an item whose song no longer exists is left out of the pages and of `durationMs`. `updatedAt` is the newest item's `addedAt` (the playlist's creation while it is empty); removals will move it once step 2 stores it.
+- A playlist's `songCount` (and `page.total`) counts its items; an item whose song no longer exists is left out of the pages and of `durationMs`. `updatedAt` is the later of `songsUpdatedAt` (Add to Playlist, step 2, which also covers removals) and the newest item's `addedAt`; the playlist's creation while it has neither.
 - Transcripts: `language` must match a stored tag, compared without regard to case (`pt-br` finds `pt-BR`); without it, each Accept-Language range by preference matches the same tag first, then the same main subtag, `*` is the original, and nothing matching gives the original (the first translation by tag if no original is stored).
-- Listens: "may not play" means followers-only (audio not ready does not drop an event). Counting happens right after the events are stored, before the `202`; if adding the counts fails the events stay stored, are not counted, and the answer is still `202`. A `playlist` or `liked_songs` source does not move `playedAt` until step 2 (`NO_LIBRARY` in `src/modules/player/listens.js`).
+- Listens: "may not play" means followers-only (audio not ready does not drop an event). Counting happens right after the events are stored, before the `202`; if adding the counts fails the events stay stored, are not counted, and the answer is still `202`. A `playlist` or `liked_songs` source moves that library entry's `playedAt` (step 2, below).
+
+**How step 2 reads it (choices the spec left open)**
+
+- Likes: a followers-only song can be liked (the spec lists no restriction for `likeSong`) and is listed with `playable: false`. Unliking an id in no known format is `204`, like any song that is not liked.
+- Liked songs pages (newest like first, the like's id breaking ties): a like whose song no longer exists, or is no longer a song, is left out of its page but still counted in `page.total` and in the entry's `songCount`, as step 1 does for playlist items. Liked songs' `updatedAt` is the newer of the newest like and the last unlike; `savedAt`, and `updatedAt` before any like, is the account's creation.
+- The library lists hidden and followers-only own playlists (the owner's view) and saved playlists that still exist (hidden ones too, as they still answer by id). Own playlists' `savedAt` is their creation. It is sorted in memory (a library is small); ties by id (A to Z), so the order is total; `title` compares without case or accents (as the Profile's A to Z).
+- `playedAt` moves with listens played from the entry: the newest `endedAt` of the batch, never ahead of the server's clock, never back. A `playlist` source marks the user's own playlist (its row is made then) or a saved one; someone else's playlist that is not saved, and guests, mark nothing.
+- Add to Playlist: an id is "not a playlist in the user's library" (`404 PLAYLIST_NOT_FOUND`) when it is unknown, in no known format, not a playlist, someone else's playlist that is not saved, or another account's Liked songs id; a saved playlist of someone else is `403 PLAYLIST_NOT_EDITABLE`. `meta.playlistIds` lists them as sent, each once. The song is checked first (`CONTENT_NOT_FOUND`). The answer lists the saved set in lower case, in the order sent.
+- All or nothing without transactions (nothing else in this API uses them): an account's sets run one at a time under a lock (`library_locks`, a 10-second lease that a crashed request's successor takes over; a waiting request gives up after 12 seconds with `500`), and if a write fails, what was written is undone (added items deleted, removed ones put back with their ids and positions, counts and times restored) before the request fails.
+- New items go after the playlist's highest position (1 in an empty playlist); removing one leaves the others' positions as they are. Each playlist that changes gets `songsUpdatedAt` and `songCount` (its items counted after the change).
 
 ## Storage
 
-Today every file sits on the API server's disk: `src/providers/storage` has only the `local` driver (`MEDIA_DIR`, served at `/media` by `express.static`, which answers Range requests with `206`). The player is built and tested on that: `/playback` returns the file's `/media/...` URL with `expiresAt` 6 hours ahead, but that URL does not really expire. Real streaming needs object storage and a CDN, which is infrastructure for the seniors. Locally, `tools.local/e2e/seed_player.js` (not in this repo) seeds an album, a single, a playlist, generated audio, artwork and transcripts.
+Today every file sits on the API server's disk: `src/providers/storage` has only the `local` driver (`MEDIA_DIR`, served at `/media` by `express.static`, which answers Range requests with `206`). The player is built and tested on that: `/playback` returns the file's `/media/...` URL with `expiresAt` 6 hours ahead, but that URL does not really expire. Real streaming needs object storage and a CDN, which is infrastructure for the seniors. Locally, `tools.local/e2e/seed_player.js` (not in this repo) seeds an album, a single, a playlist, generated audio, artwork and transcripts, and, for a second (listener) account, a library: two own playlists, a saved playlist and two liked songs.
 
 **What the infrastructure needs**
 
@@ -112,4 +124,4 @@ Today every file sits on the API server's disk: `src/providers/storage` has only
 
 ## Out of scope
 
-Building the Library and Comments endpoints (steps 2 and 3); uploading songs and albums; creating or editing playlists; search; artist pages; recommendations; queue sync; offline downloads; notifications for comments and likes; moderation tools; stories.
+Building the Comments endpoints (step 3); uploading songs and albums; creating or editing playlists; search; artist pages; recommendations; queue sync; offline downloads; notifications for comments and likes; moderation tools; stories.

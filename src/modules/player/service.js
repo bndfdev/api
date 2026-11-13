@@ -12,8 +12,9 @@
  *   are 403 CONTENT_RESTRICTED. Restrict Content on a playlist changes nothing here (not specified yet).
  * - `Song.image` is the album's artwork when the song is on an album and the album has artwork, else the song's
  *   own; palette and BlurHash are read as stored (null when absent), never worked out here.
- * - `liked`, `commentCount` and `latestComment` come from `social` (see NO_SOCIAL), which the Library and Comments
- *   steps replace.
+ * - `liked`, `commentCount` and `latestComment` come from `social`: `liked` is the viewer's like (`SOCIAL`, the
+ *   Library; always false for a guest); the comment fields are still NO_SOCIAL's until the Comments step.
+ * - A playlist's `updatedAt` is when a song was last added or taken out (`playlistUpdatedAt`).
  * - A playlist's songs are its `playlist_items`, in position order. An item whose song no longer exists (nothing
  *   deletes songs yet) is left out of the page but still counted in `songCount` and `page.total`.
  * - Playlist pages: `limit` songs (1 to 50, 20 by default) and an opaque cursor, as for the Profile's content: a
@@ -29,6 +30,7 @@ const { toImage, paletteOrNull, BLURHASH } = require('../users/service');
 const defaultContents = require('../content/repo');
 const defaultUsers = require('../users/repo');
 const defaultItems = require('./repo');
+const defaultLikes = require('./libraryRepo');
 const { byId, followersOnlyOf, mayPlay, readyAudioOf, durationMsOf, albumIdsOf, albumOf } = require('./songs');
 
 /** How long a playback address works ("`url` works for 6 hours"). */
@@ -68,9 +70,10 @@ const count = (value) => (Number.isInteger(value) && value >= 0 ? value : 0);
 const tagOrNull = (value) => (typeof value === 'string' && LANGUAGE_TAG.test(value) ? value : null);
 
 /**
- * What the later steps of the player add to a song. Until they are built nobody has liked a song (step 2, the
- * Library, replaces `likedSongIds`), `commentCount` is the stored counter (0 until comments exist) and no song has a
- * latest comment (step 3, Comments, replaces `latestComments` and keeps the counter). Same signatures there.
+ * What the Library and Comments steps add to a song, with nothing in it: nobody has liked a song, `commentCount` is
+ * the stored counter (0 until comments exist) and no song has a latest comment. The Library (step 2) is built:
+ * `SOCIAL` replaces `likedSongIds` with the viewer's likes. Step 3 (Comments) replaces `latestComments` and keeps the
+ * counter, with the same signatures.
  */
 const NO_SOCIAL = Object.freeze({
   /** `(auth, songIds) => Promise<Set<string>>`: the ids among `songIds` the viewer has liked. */
@@ -80,6 +83,35 @@ const NO_SOCIAL = Object.freeze({
   /** `(auth, songIds) => Promise<Map<string, object>>`: song id to its newest top-level `Comment` (`replies: []`). */
   latestComments: async () => new Map(),
 });
+
+/**
+ * `Song.liked` from the listener's likes (`song_likes`, ./libraryRepo.js): the songs among `songIds` the viewer has
+ * liked; always none for a guest, who cannot like.
+ * @param {object} likes `likedAmong` of ./libraryRepo.js
+ */
+const likedSongIdsFrom = (likes) => async (auth, songIds) => {
+  if (!auth || auth.accountType === 'guest') return new Set();
+  return likes.likedAmong({ userId: auth.userId, songIds });
+};
+
+/** What a song carries for its viewer now: the Library's likes (step 2); comments still as in NO_SOCIAL (step 3). */
+const SOCIAL = Object.freeze({ ...NO_SOCIAL, likedSongIds: likedSongIdsFrom(defaultLikes) });
+
+const isDate = (at) => at instanceof Date && !Number.isNaN(at.getTime());
+
+/**
+ * A playlist's `updatedAt` (when a song was last added to or taken out of it): the later of the stored
+ * `songsUpdatedAt` (Add to Playlist writes it) and its newest item's `addedAt`; the playlist's creation while it has
+ * neither; the epoch when even that is missing.
+ * @param {object} playlist the `contents` document
+ * @param {Date | null} lastAddedAt the newest item's `addedAt`
+ * @returns {Date}
+ */
+function playlistUpdatedAt(playlist, lastAddedAt) {
+  const changes = [playlist.songsUpdatedAt, lastAddedAt].filter(isDate);
+  if (changes.length > 0) return new Date(Math.max(...changes.map((at) => at.getTime())));
+  return isDate(playlist.createdAt) ? playlist.createdAt : new Date(0);
+}
 
 /** The spec's `Image` for stored artwork, with its palette and BlurHash as stored; null for none or an address that is not http(s). */
 function artworkOf(stored) {
@@ -194,14 +226,14 @@ const fingerprintOf = (parts) => crypto.createHash('sha256').update(JSON.stringi
 /**
  * @param {{contents?: object, users?: object, items?: object, storage?: object, social?: object, now?: () => number,
  *   logger?: object}} [deps] `contents` the content module's repo, `users` the users repo (`findSummaries`), `items`
- *   ./repo.js, `social` what the Library and Comments steps add (NO_SOCIAL until then)
+ *   ./repo.js, `social` what the Library and Comments steps add (`SOCIAL`: likes; comments still NO_SOCIAL's)
  */
 function createPlayerService({
   contents = defaultContents,
   users = defaultUsers,
   items = defaultItems,
   storage = defaultStorage,
-  social = NO_SOCIAL,
+  social = SOCIAL,
   now = Date.now,
   logger = defaultLogger,
 } = {}) {
@@ -311,6 +343,16 @@ function createPlayerService({
     return { position: k, id: i };
   }
 
+  /**
+   * The spec's `Song` for these stored songs, for this viewer, in the same order (the Library's Liked songs).
+   * @param {object | undefined} auth `req.auth`
+   * @param {object[]} songs `contents` documents of type `song`
+   * @returns {Promise<object[]>}
+   */
+  async function describeSongs(auth, songs) {
+    return present(auth, songs, await albumsFor(songs));
+  }
+
   /** GET /songs/{songId}. @returns {Promise<object>} `Song` */
   async function getSong(auth, songId) {
     const song = await findItem(songId, 'song');
@@ -404,8 +446,8 @@ function createPlayerService({
   }
 
   /**
-   * GET /playlists/{playlistId}: the header. `updatedAt` is when the newest song was added (the playlist's
-   * creation while it has none); taking songs out comes with Add to Playlist (step 2), which will store it.
+   * GET /playlists/{playlistId}: the header. `updatedAt` is when a song was last added or taken out
+   * (`playlistUpdatedAt`: Add to Playlist stores it; the newest item's `addedAt` covers items written elsewhere).
    * @returns {Promise<object>} `Playlist`
    */
   async function getPlaylist(auth, playlistId) {
@@ -415,7 +457,6 @@ function createPlayerService({
     const lengths = summary.songIds.length > 0
       ? await contents.findByIds(summary.songIds, { type: 1, durationSec: 1, audio: 1 })
       : [];
-    const changed = [summary.lastAddedAt, playlist.createdAt].find((at) => at instanceof Date && !Number.isNaN(at.getTime()));
     return {
       id,
       title: playlist.title,
@@ -423,7 +464,7 @@ function createPlayerService({
       image: artworkOf(playlist.image),
       songCount: summary.count,
       durationMs: lengths.filter((doc) => doc.type === 'song').reduce((sum, doc) => sum + durationMsOf(doc), 0),
-      updatedAt: iso(changed || 0),
+      updatedAt: iso(playlistUpdatedAt(playlist, summary.lastAddedAt)),
     };
   }
 
@@ -451,12 +492,16 @@ function createPlayerService({
     };
   }
 
-  return { getSong, listSongs, playback, transcript, getAlbum, getPlaylist, listPlaylistSongs };
+  return { describeSongs, getSong, listSongs, playback, transcript, getAlbum, getPlaylist, listPlaylistSongs };
 }
 
 module.exports = {
   createPlayerService,
   NO_SOCIAL,
+  SOCIAL,
+  likedSongIdsFrom,
+  artworkOf,
+  playlistUpdatedAt,
   PLAYBACK_TTL_MS,
   CURSOR_TTL_MS,
   DEFAULT_LIMIT,

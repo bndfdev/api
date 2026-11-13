@@ -103,6 +103,35 @@ function albumSongs({ albumId, ownerId }) {
 }
 
 /**
+ * Every playlist the owner made, hidden and followers-only ones included (the library's own playlists and Add to
+ * Playlist's choices), on the `owner_recent` index.
+ * @param {string} ownerId
+ * @param {object} [fields] a projection
+ * @returns {Promise<object[]>} in no particular order
+ */
+function ownPlaylists(ownerId, fields = undefined) {
+  if (!OBJECT_ID.test(String(ownerId))) return Promise.resolve([]);
+  return Content.find({ ownerId, type: 'playlist' }, fields).lean();
+}
+
+/**
+ * Store what Add to Playlist changed on playlists, in one round trip: `songCount` (their number of items) and
+ * `songsUpdatedAt` (null removes it).
+ * @param {Array<{id: string, songCount: number, songsUpdatedAt: Date | null}>} stats
+ */
+async function setPlaylistStats(stats) {
+  const ops = stats.filter(({ id }) => OBJECT_ID.test(String(id))).map(({ id, songCount, songsUpdatedAt }) => ({
+    updateOne: {
+      filter: { _id: id, type: 'playlist' },
+      update: songsUpdatedAt
+        ? { $set: { songCount, songsUpdatedAt } }
+        : { $set: { songCount }, $unset: { songsUpdatedAt: '' } },
+    },
+  }));
+  if (ops.length > 0) await Content.bulkWrite(ops, { ordered: false });
+}
+
+/**
  * Add counted listens to songs (`listens`), in one round trip.
  * @param {Map<string, number>} counts song id to the number of listens to add
  */
@@ -112,4 +141,6 @@ async function addListens(counts) {
   if (ops.length > 0) await Content.bulkWrite(ops, { ordered: false });
 }
 
-module.exports = { page, count, updateFlags, findOwned, findByIds, albumSongs, addListens, SORTS };
+module.exports = {
+  page, count, updateFlags, findOwned, findByIds, albumSongs, ownPlaylists, setPlaylistStats, addListens, SORTS,
+};

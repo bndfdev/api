@@ -340,4 +340,16 @@ function findSummaries(ids) {
   return User.find({ _id: { $in: wanted } }, { name: 1, avatar: 1 }).lean();
 }
 
-module.exports = { findSummaries, findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+/**
+ * When the account was made (the library's Liked songs entry has been there since).
+ * @param {string} userId
+ * @returns {Promise<Date | null>} null for an unknown account or one with no usable date
+ */
+async function findCreatedAt(userId) {
+  if (!/^[0-9a-f]{24}$/i.test(String(userId))) return null;
+  const doc = await User.findById(userId, { createdAt: 1 }).lean();
+  const at = doc && doc.createdAt;
+  return at instanceof Date && !Number.isNaN(at.getTime()) ? at : null;
+}
+
+module.exports = { findSummaries, findCreatedAt, findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

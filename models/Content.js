@@ -77,6 +77,11 @@ const contentSchema = new mongoose.Schema({
   trackNumber: { type: Number, min: 1 },
   // Every comment on the song, replies included (written by the comments, a later step). Absent reads as 0.
   commentCount: { type: Number, min: 0 },
+  // Playlists only: when a song was last added to or taken out of it (Add to Playlist, PUT
+  // /v1/me/library/songs/{id}/playlists, which also keeps `songCount` in step with `playlist_items`). Absent until
+  // then: the player then uses the newest item's `addedAt`, else `createdAt`. Not `updatedAt`, which moves with
+  // any change (Hide Content too).
+  songsUpdatedAt: { type: Date },
 }, { collection: 'contents', timestamps: true });
 
 contentSchema.pre('validate', function setTitleLower() {

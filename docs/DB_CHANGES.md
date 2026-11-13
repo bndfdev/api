@@ -8,6 +8,43 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-11-13: Media player, step 2: the library (likes, library playlists, Add to Playlist)
+
+**Existing data affected:**
+- **`contents.songCount` (an existing field) is now written, only on playlists**, by Add to Playlist (`PUT /v1/me/library/songs/{id}/playlists`): each playlist the request changes gets its number of `playlist_items` after the change, in one `bulkWrite` of `updateOne({_id, type: 'playlist'}, {$set: {songCount, songsUpdatedAt}})`. The model's timestamps also move those documents' `updatedAt`. Only playlists of the requesting account are written; nothing else in existing documents changes. No migration.
+- **`playlist_items` (step 1's collection) is now written** by the same request: one row inserted per playlist the song goes into (after the playlist's highest `position`), one row deleted per playlist it leaves. Nothing else writes there.
+- Everything else below is new: one optional field on playlists and three new collections.
+
+**`contents`: new optional field** (no default; absent reads as before)
+
+| Field | On | Purpose |
+| --- | --- | --- |
+| `songsUpdatedAt` | playlists | Date: when Add to Playlist last added a song to or took one out of the playlist. The player's `updatedAt` for a playlist is the later of this and its newest item's `addedAt` (its creation while it has neither); the document's own `updatedAt` is not used, as it moves with any change (Hide Content too). |
+
+**New collections**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `song_likes` | One song a user liked: `userId`, `songId` (`contents` id), `likedAt` | `user_song` `{userId: 1, songId: 1}` unique (a song once per user; liking twice at once stores one row; "which of these songs did the viewer like" for every `Song`); `user_liked` `{userId: 1, likedAt: -1, _id: -1}` (Liked songs pages, newest first, by key) | Unliking deletes the row. Account deletion (not built) must delete the user's rows; a deleted song's rows are left out when read. About 100 bytes per like. |
+| `library_entries` | What a user's library keeps about a playlist or Liked songs: `userId`, `kind` (`playlist` or `liked_songs`), `playlistId` (null for Liked songs), `savedAt` (playlists: when saved, or an own playlist's creation), `playedAt` (newest play from it), `unlikedAt` (Liked songs: the last unlike) | `user_playlist` `{userId: 1, playlistId: 1}` unique (one row per playlist per user, and one Liked songs row, whose `playlistId` is null) | A row is made when an own playlist or Liked songs is first played from, or a song is first unliked; saved playlists' rows would be made by saving, which v1 does not specify yet (locally, `tools.local/e2e/seed_player.js` writes some). Rows are only updated with `$max` (times never move back). Account deletion must delete the user's rows; rows whose playlist is gone are left out when read. |
+| `library_locks` | One account's Add to Playlist lock while its writes run (a few milliseconds): `_id` (the account's id), `owner` (a random value of the request holding it), `expiresAt` | `expires` `{expiresAt: 1}` TTL (`expireAfterSeconds: 0`) | Deleted by the request when it ends; a lock left by a crash is taken over after its 10-second lease and removed by the TTL monitor soon after. At most one small document per account, usually none. |
+
+**What the new reads use:** a user's playlists are `contents` `{ownerId, type: 'playlist'}` (the existing `owner_recent` index, by `ownerId`); saved playlists and songs by `_id`; a playlist's size and newest item are one `$group` over `playlist_items` `{playlistId: {$in}}` (`playlist_song` or `playlist_order`); which of the user's playlists hold a song is `{playlistId: {$in}, songId}` (`playlist_song`); a playlist's last position is one `playlist_order` lookup read backwards. The account's creation time is read from `users` by `_id` (projection `{createdAt}`); nothing is written to `users`.
+
+**Writes and concurrency:** no transactions (nothing else in this API uses them). Add to Playlist validates every id first, then runs under the account's lock: it inserts and deletes items in one unordered `bulkWrite` (the `playlist_song` unique index refuses a duplicate), then writes the counts. If any of that fails, it deletes what it inserted, puts back what it deleted (same `_id`, `position` and `addedAt`) and restores `songCount` and `songsUpdatedAt`, then answers 500.
+
+Locally, `tools.local/e2e/seed_player.js` (not in this repo) writes demo rows marked `seed: 'player'` into these collections too, and refuses any non-localhost database.
+
+**Rollback:**
+- Stop the new code.
+- Drop `song_likes`, `library_entries` and `library_locks`.
+- `songsUpdatedAt` can stay (nothing else reads it), or be removed with `db.contents.updateMany({type: 'playlist'}, { $unset: { songsUpdatedAt: '' } })`.
+- `playlist_items` rows added or removed by Add to Playlist, and the `songCount` values it wrote, stay as they are (they are users' own playlists; there is no record of the previous state to go back to).
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-11-13: Media player, step 1: listening (songs, albums, playlists, transcripts, listens)
 
 **Existing data affected:**

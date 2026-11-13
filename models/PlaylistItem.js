@@ -2,8 +2,8 @@ const mongoose = require('mongoose');
 
 // One song in a playlist (v1, the media player: GET /v1/playlists/{id}/songs). A playlist is a `contents` item of
 // type `playlist`; its songs are these rows, in `position` order (a song added later gets a higher position, so it
-// comes last). A song is in a playlist at most once. Read by the player; written by Add to Playlist (a later step)
-// and, locally, by tools.local/e2e/seed_player.js.
+// comes last). A song is in a playlist at most once. Read by the player; written by Add to Playlist (PUT
+// /v1/me/library/songs/{id}/playlists, src/modules/player/library.js) and, locally, by tools.local/e2e/seed_player.js.
 const playlistItemSchema = new mongoose.Schema({
   playlistId: { type: mongoose.Schema.Types.ObjectId, ref: 'Content', required: true },
   songId: { type: mongoose.Schema.Types.ObjectId, ref: 'Content', required: true },

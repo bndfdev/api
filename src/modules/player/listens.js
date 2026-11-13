@@ -15,12 +15,14 @@
  *   logged): those listens are then missing from the count, never counted twice.
  * - `source` is kept when usable: `album` and `playlist` with an id, `liked_songs` and `song` (an id sent with them is
  *   ignored). An `album` or `playlist` source without an id is dropped; the listen itself still counts.
- * - Moving the library entry's `playedAt` for a `playlist` or `liked_songs` source ("Recently played") comes with
- *   the Library (step 2), which replaces `NO_LIBRARY`.
+ * - The events stored with a `playlist` or `liked_songs` source move that library entry's `playedAt` ("Recently
+ *   played"; the Library, ./library.js `markPlayed`), after the counts. If that fails, the answer is still 202 (the
+ *   failure is logged).
  */
 const { logger: defaultLogger } = require('../../lib/logger');
 const defaultContents = require('../content/repo');
 const defaultListens = require('./listensRepo');
+const defaultLibrary = require('./library');
 const { byId, mayPlay, albumIdsOf, albumOf } = require('./songs');
 
 /** The counting rule: at least 30 seconds played, or played to the end. */
@@ -32,7 +34,7 @@ const MAX_AHEAD_MS = 5 * 60 * 1000;
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const NEEDS_ID = Object.freeze(['album', 'playlist']);
 
-/** What the Library (step 2) does with listens; nothing until it is built. Same signature there. */
+/** A library that does nothing with listens (tests); the default is the Library's (./library.js). */
 const NO_LIBRARY = Object.freeze({
   /** `(auth, listens) => Promise<void>`: move `playedAt` of the library entries these listens were played from. */
   markPlayed: async () => {},
@@ -50,12 +52,12 @@ function sourceOf(source) {
 
 /**
  * @param {{contents?: object, listens?: object, library?: object, now?: () => number, logger?: object}} [deps]
- *   `contents` the content module's repo, `listens` ./listensRepo.js, `library` NO_LIBRARY until step 2
+ *   `contents` the content module's repo, `listens` ./listensRepo.js, `library` ./library.js (its `markPlayed`)
  */
 function createListenService({
   contents = defaultContents,
   listens = defaultListens,
-  library = NO_LIBRARY,
+  library = defaultLibrary,
   now = Date.now,
   logger = defaultLogger,
 } = {}) {
@@ -112,7 +114,11 @@ function createListenService({
     } catch (err) {
       logger.error({ err }, 'listens were stored but could not be added to the songs\' counts');
     }
-    await library.markPlayed(auth, stored);
+    try {
+      await library.markPlayed(auth, stored);
+    } catch (err) {
+      logger.error({ err }, 'listens were stored but could not move the library\'s "played" times');
+    }
     return { stored: stored.length, counted: [...increments.values()].reduce((sum, n) => sum + n, 0) };
   }
 
