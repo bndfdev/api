@@ -1,6 +1,5 @@
 # The media player: songs, albums, playlists, playback addresses,
-# transcripts and listens. Spec first: none of these is built yet (they
-# answer 404 until they are). Design notes: docs/api/PLAYER.md.
+# transcripts and listens. Design notes: docs/api/PLAYER.md.
 
 songs:
   get:

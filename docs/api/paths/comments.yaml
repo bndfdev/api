@@ -1,6 +1,5 @@
 # Comments on songs: the player drawer's Comments tab and the latest-comment
-# pill. Spec first: none of these is built yet. Design notes:
-# docs/api/PLAYER.md.
+# pill. Design notes: docs/api/PLAYER.md.
 
 songComments:
   get:

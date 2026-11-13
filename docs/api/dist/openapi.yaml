@@ -10,8 +10,8 @@ info:
     `docs/api/README.md`.
 
     The media player's endpoints (tags Player, Library and Comments) are
-    written spec first: they answer `404` until they are built. Their
-    design notes and planned data model are in `docs/api/PLAYER.md`.
+    built in `src/modules/player`. Their design notes and data model are
+    in `docs/api/PLAYER.md`.
 
     ## Conventions (apply to every endpoint)
 
@@ -82,8 +82,7 @@ tags:
   - name: Player
     description: |
       Listening: songs, albums, playlists, playback addresses, transcripts
-      and listens. Spec first: these answer `404` until they are built
-      (design notes and planned data model: `docs/api/PLAYER.md`).
+      and listens (design notes and data model: `docs/api/PLAYER.md`).
 
       - Songs, albums and playlists are `Content` items, with the same ids
         as `GET /me/content`. An unknown id, or one of another type, is

@@ -1,6 +1,5 @@
 # The listener's library (/me): liked songs and playlists, as the player's
-# heart and Add to Playlist need them. Spec first: none of these is built
-# yet. Design notes: docs/api/PLAYER.md.
+# heart and Add to Playlist need them. Design notes: docs/api/PLAYER.md.
 
 meLikedSongs:
   get:
