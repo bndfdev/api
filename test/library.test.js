@@ -669,6 +669,9 @@ test('PUT .../playlists: a lock left behind is taken over once it expires; a hel
   const slept = [];
   const advancing = (ms) => { slept.push(ms); clock.t += ms; return new Promise((resolve) => { setImmediate(resolve); }); };
   const target = buildApp({ sleep: advancing });
+  // The TTL monitor removes expired locks by the real clock: with this test's clock an hour ahead of it, it never
+  // removes a lock the test is waiting on, however slowly the waiting runs on a busy machine.
+  clock.t += 60 * 60 * 1000;
 
   await LibraryLock.create({ _id: me.user._id, owner: 'crashed', expiresAt: ago(1) });
   await LibraryLock.create({ _id: other.user._id, owner: 'busy', expiresAt: new Date(clock.t + 60 * 60 * 1000) });

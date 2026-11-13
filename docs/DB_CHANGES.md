@@ -8,6 +8,34 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-11-13: Media player, step 3: comments on songs (comments, replies, comment likes)
+
+**Existing data affected:**
+- **`contents.commentCount` (step 1's optional field) is now written, only on songs**, by posting and deleting comments (`POST /v1/songs/{id}/comments`, `POST /v1/comments/{id}/replies`, `DELETE /v1/comments/{id}`): one `updateOne({_id, type: 'song'}, [pipeline])` per change, adding or taking away the number of comments and replies stored or deleted, in one atomic step that never goes below 0 (`$max: [0, $add: [current, delta]]`; a value that is not a number counts as 0, so the field is created at the first comment). Written with `timestamps: false`: the song's `updatedAt` does not move. Nothing else in existing documents changes. No migration: every song stored today has no comments and reads as 0.
+- Everything else below is new: two new collections.
+
+**New collections**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `comments` | A comment on a song or a reply to one: `songId` (`contents` id), `parentId` (the top-level comment for a reply, `null` for a top-level comment; replies are one level deep), `authorId` (`users` id), `text` (trimmed, 1 to 500 characters), `likeCount` and `replyCount` (counters, see below), `createdAt` | `song_thread` `{songId: 1, parentId: 1, createdAt: -1, _id: -1}`: one index serves a song's top-level comments newest first (`{songId, parentId: null}`), a comment's replies oldest first (`{songId, parentId}`, the index read backwards), the count of a song's top-level comments, its newest top-level comment (`Song.latestComment`, one lookup per song) and the replies deleted with their comment. Both page orders end in `_id`, so pages are read by key and no sort happens in memory. Comments are read by `_id` otherwise. | Deleting a comment deletes the row; deleting a top-level comment deletes its replies (`{songId, parentId}` ids, then `deleteMany({_id: {$in}})`). Account deletion (not built) must delete or anonymise the user's comments (no index by author yet: one would be added with that feature). Rows whose song no longer exists are not shown (nothing deletes songs yet). About 300 bytes per comment plus its text; at most 10 posts a minute per account. |
+| `comment_likes` | One like of a comment or a reply: `commentId`, `userId`, `createdAt` | `comment_user` `{commentId: 1, userId: 1}` unique (a comment liked once per user; liking twice at once stores one row; "which of these comments did the viewer like" for a page, one `{commentId: {$in}, userId}` read; a deleted comment's likes) | Unliking deletes the row; deleting a comment (and a top-level comment's replies) deletes their likes. Account deletion must delete the user's rows (no index by user yet, as above). About 100 bytes per like. |
+
+**Counters and concurrency:** `contents.commentCount` (every comment on the song, replies included), `comments.replyCount` (a top-level comment's replies) and `comments.likeCount` are changed only by atomic update pipelines (the same `$max: [0, ...]` step), never read and written back. Each moves up **before** its row is inserted and down only **after** a row was really deleted (by `deletedCount`), so with posts, likes and deletes running at once a counter is never below the real number and settles on it; a failed insert puts it back. No transactions (nothing else in this API uses them). A reply inserted while its top-level comment was being deleted is found by the replying request (it checks the comment still exists after inserting) and deleted again, so no reply outlives its comment; a like likewise. If the server stops between two of these writes, a counter can be left one too high (never too low).
+
+**What the reads use:** a song and its album by `_id` (`contents`, as before); comment authors from `users` by `_id` with the projection `{name, avatar}`, one query per page; the viewer's likes, one `comment_likes` query per page. Nothing is written to `users`.
+
+Locally, `tools.local/e2e/seed_player.js` (not in this repo) writes demo comments, replies and likes marked `seed: 'player'` (and two demo `users` accounts with invented names, also marked), and refuses any non-localhost database.
+
+**Rollback:**
+- Stop the new code.
+- Drop `comments` and `comment_likes`.
+- `contents.commentCount` can stay (step 1's code reads it as the count), or be cleared with `db.contents.updateMany({type: 'song'}, { $unset: { commentCount: '' } })` (it then reads as 0).
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-11-13: Media player, step 2: the library (likes, library playlists, Add to Playlist)
 
 **Existing data affected:**

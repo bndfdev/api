@@ -7,6 +7,7 @@
  * added or hidden meanwhile does not shift the next page.
  */
 const Content = require('../../../models/Content');
+const { addToCounter } = require('../../lib/counter');
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 
@@ -141,6 +142,20 @@ async function addListens(counts) {
   if (ops.length > 0) await Content.bulkWrite(ops, { ordered: false });
 }
 
+/**
+ * Change a song's `commentCount` (every comment on it, replies included) by `delta`, in one atomic step that never
+ * takes it below 0. The song's `updatedAt` stays: a comment is not a change to the song.
+ * @param {string} songId
+ * @param {number} delta a whole number, up or down
+ */
+async function addComments(songId, delta) {
+  if (!OBJECT_ID.test(String(songId))) return;
+  await Content.updateOne({ _id: songId, type: 'song' }, addToCounter('commentCount', delta), {
+    updatePipeline: true, timestamps: false,
+  });
+}
+
 module.exports = {
-  page, count, updateFlags, findOwned, findByIds, albumSongs, ownPlaylists, setPlaylistStats, addListens, SORTS,
+  page, count, updateFlags, findOwned, findByIds, albumSongs, ownPlaylists, setPlaylistStats, addListens, addComments,
+  SORTS,
 };

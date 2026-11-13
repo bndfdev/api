@@ -12,8 +12,10 @@
  *   are 403 CONTENT_RESTRICTED. Restrict Content on a playlist changes nothing here (not specified yet).
  * - `Song.image` is the album's artwork when the song is on an album and the album has artwork, else the song's
  *   own; palette and BlurHash are read as stored (null when absent), never worked out here.
- * - `liked`, `commentCount` and `latestComment` come from `social`: `liked` is the viewer's like (`SOCIAL`, the
- *   Library; always false for a guest); the comment fields are still NO_SOCIAL's until the Comments step.
+ * - `liked`, `commentCount` and `latestComment` come from `social` (`SOCIAL`): `liked` is the viewer's like (the
+ *   Library; always false for a guest), `commentCount` the song's counter (every comment, replies included, kept by
+ *   ./comments.js), `latestComment` its newest top-level comment (./comments.js), null when it has none or when the
+ *   viewer may not read its comments (a followers-only song they may not play).
  * - A playlist's `updatedAt` is when a song was last added or taken out (`playlistUpdatedAt`).
  * - A playlist's songs are its `playlist_items`, in position order. An item whose song no longer exists (nothing
  *   deletes songs yet) is left out of the page but still counted in `songCount` and `page.total`.
@@ -31,6 +33,7 @@ const defaultContents = require('../content/repo');
 const defaultUsers = require('../users/repo');
 const defaultItems = require('./repo');
 const defaultLikes = require('./libraryRepo');
+const defaultComments = require('./comments');
 const { byId, followersOnlyOf, mayPlay, readyAudioOf, durationMsOf, albumIdsOf, albumOf } = require('./songs');
 
 /** How long a playback address works ("`url` works for 6 hours"). */
@@ -70,17 +73,18 @@ const count = (value) => (Number.isInteger(value) && value >= 0 ? value : 0);
 const tagOrNull = (value) => (typeof value === 'string' && LANGUAGE_TAG.test(value) ? value : null);
 
 /**
- * What the Library and Comments steps add to a song, with nothing in it: nobody has liked a song, `commentCount` is
- * the stored counter (0 until comments exist) and no song has a latest comment. The Library (step 2) is built:
- * `SOCIAL` replaces `likedSongIds` with the viewer's likes. Step 3 (Comments) replaces `latestComments` and keeps the
- * counter, with the same signatures.
+ * What the Library and Comments add to a song, with nothing in it (tests): nobody has liked a song, `commentCount`
+ * is the stored counter and no song has a latest comment. `SOCIAL` is the real one, with the same signatures.
  */
 const NO_SOCIAL = Object.freeze({
   /** `(auth, songIds) => Promise<Set<string>>`: the ids among `songIds` the viewer has liked. */
   likedSongIds: async () => new Set(),
   /** `(song) => number`: every comment on the song, replies included. */
   commentCountOf: (song) => count(song.commentCount),
-  /** `(auth, songIds) => Promise<Map<string, object>>`: song id to its newest top-level `Comment` (`replies: []`). */
+  /**
+   * `(auth, songIds) => Promise<Map<string, object>>`: song id to its newest top-level `Comment` (`replies: []`).
+   * Asked only for songs whose comments the viewer may read.
+   */
   latestComments: async () => new Map(),
 });
 
@@ -94,8 +98,21 @@ const likedSongIdsFrom = (likes) => async (auth, songIds) => {
   return likes.likedAmong({ userId: auth.userId, songIds });
 };
 
-/** What a song carries for its viewer now: the Library's likes (step 2); comments still as in NO_SOCIAL (step 3). */
-const SOCIAL = Object.freeze({ ...NO_SOCIAL, likedSongIds: likedSongIdsFrom(defaultLikes) });
+/**
+ * `Song.latestComment` from the comments (./comments.js `latestComments`).
+ * @param {object} comments the comment service
+ */
+const latestCommentsFrom = (comments) => (auth, songIds) => comments.latestComments(auth, songIds);
+
+/**
+ * What a song carries for its viewer: the Library's likes, and the comments' counter (`contents.commentCount`, kept
+ * by ./comments.js) and newest top-level comment.
+ */
+const SOCIAL = Object.freeze({
+  likedSongIds: likedSongIdsFrom(defaultLikes),
+  commentCountOf: NO_SOCIAL.commentCountOf,
+  latestComments: latestCommentsFrom(defaultComments),
+});
 
 const isDate = (at) => at instanceof Date && !Number.isNaN(at.getTime());
 
@@ -226,7 +243,7 @@ const fingerprintOf = (parts) => crypto.createHash('sha256').update(JSON.stringi
 /**
  * @param {{contents?: object, users?: object, items?: object, storage?: object, social?: object, now?: () => number,
  *   logger?: object}} [deps] `contents` the content module's repo, `users` the users repo (`findSummaries`), `items`
- *   ./repo.js, `social` what the Library and Comments steps add (`SOCIAL`: likes; comments still NO_SOCIAL's)
+ *   ./repo.js, `social` what the Library and Comments add (`SOCIAL`; `NO_SOCIAL` for none)
  */
 function createPlayerService({
   contents = defaultContents,
@@ -287,13 +304,18 @@ function createPlayerService({
   async function present(auth, songs, albumsById, people = null) {
     if (songs.length === 0) return [];
     const ids = songs.map((song) => String(song._id));
+    const albums = songs.map((song) => albumOf(song, albumsById));
+    const readable = songs.map((song, i) => mayPlay(auth, song, albums[i]));
+    // The latest comment only of songs whose comments the viewer may read, and that have comments: the counter is
+    // never below the real number (it moves up before a comment is stored), so a song at 0 has none.
+    const withComments = ids.filter((id, i) => readable[i] && social.commentCountOf(songs[i]) > 0);
     const [owners, liked, latest] = await Promise.all([
       people || peopleById(songs.map((song) => song.ownerId)),
       social.likedSongIds(auth, ids),
-      social.latestComments(auth, ids),
+      withComments.length > 0 ? social.latestComments(auth, withComments) : new Map(),
     ]);
     return songs.map((song, i) => {
-      const album = albumOf(song, albumsById);
+      const album = albums[i];
       return {
         id: ids[i],
         title: song.title,
@@ -308,7 +330,7 @@ function createPlayerService({
         latestComment: latest.get(ids[i]) || null,
         liked: liked.has(ids[i]),
         followersOnly: followersOnlyOf(song, album),
-        playable: mayPlay(auth, song, album) && readyAudioOf(song) !== null,
+        playable: readable[i] && readyAudioOf(song) !== null,
       };
     });
   }
@@ -500,6 +522,7 @@ module.exports = {
   NO_SOCIAL,
   SOCIAL,
   likedSongIdsFrom,
+  latestCommentsFrom,
   artworkOf,
   playlistUpdatedAt,
   PLAYBACK_TTL_MS,

@@ -1,6 +1,6 @@
 # Media player API (spec first)
 
-**Status: Player and Library built; Comments spec only.** The operations tagged Player, Library and Comments in `docs/api/openapi.yaml` are the contract for the app's media player. The Player operations (songs, albums, playlists, playback, transcripts, listens) are built (`src/modules/player`, step 1 of 3), and so are the Library operations (likes, the library's playlists, a song's heart and "+" states, Add to Playlist: `src/modules/player/library.js` and `libraryRoutes.js`, step 2). Comments (step 3) still answer `404` until their routes exist. Until then a `Song` has `commentCount` as stored (0) and `latestComment: null` (`NO_SOCIAL` in `src/modules/player/service.js`, which step 3 replaces); `liked` is the viewer's like (always `false` for guests). The data model below marks what is built and what is still planned; each step adds its own `docs/DB_CHANGES.md` entry for review.
+**Status: Player, Library and Comments built.** The operations tagged Player, Library and Comments in `docs/api/openapi.yaml` are the contract for the app's media player. The Player operations (songs, albums, playlists, playback, transcripts, listens) are built (`src/modules/player`, step 1 of 3), and so are the Library operations (likes, the library's playlists, a song's heart and "+" states, Add to Playlist: `src/modules/player/library.js` and `libraryRoutes.js`, step 2) and the Comments operations (comments, replies, comment likes, deleting: `src/modules/player/comments.js`, `commentsRepo.js` and `commentRoutes.js`, step 3). A `Song`'s `liked` is the viewer's like (always `false` for guests), `commentCount` the song's counter (replies included) and `latestComment` its newest top-level comment (`SOCIAL` in `src/modules/player/service.js`). The data model below is what is built; each step has its own `docs/DB_CHANGES.md` entry for review.
 
 ## Decisions
 
@@ -41,7 +41,7 @@
 | `TranscriptRepository.transcriptFor(id, language)` | `GET /songs/{id}/transcript?language=`; `404 TRANSCRIPT_NOT_FOUND` → `Ok(null)` |
 | `ListenEvent` (not sent yet) | `POST /me/listens`: `trackId` → `songId`, `listened` → `listenedMs`, `completed`; plus `endedAt` and `source` |
 
-## Data model (built in steps 1 and 2 unless marked planned)
+## Data model (built in steps 1 to 3)
 
 **`contents` (existing): new optional fields** (`models/Content.js`; absent on everything stored before)
 
@@ -51,11 +51,11 @@
 | `waveform` | songs | 128 numbers from 0 to 1, made when the audio is processed (any 1 to 1024 are served; another shape reads as `null`) |
 | `transcriptLanguages` | songs | Languages with a transcript, original first, then translations by tag; kept in step with `transcripts` |
 | `albumId`, `trackNumber` | songs | Album membership and order (a song is on at most one album, and only on an album of the same owner) |
-| `commentCount` | songs | Counter, replies included (written by step 3; absent reads as 0) |
+| `commentCount` | songs | Counter, replies included (written by the comments since step 3, atomically and never below 0; absent reads as 0) |
 | `image.palette`, `image.blurhash` | songs, albums, playlists | Artwork colours and blur preview, made at upload as for photos (read as stored; `null` when absent) |
 | `songsUpdatedAt` | playlists | Step 2: when Add to Playlist last added the song to or took it out of the playlist. A playlist's `updatedAt` is the later of this and its newest item's `addedAt` (its creation while it has neither). Not the document's `updatedAt`, which moves with any change. |
 
-Existing fields now written: `listens` (songs), incremented by counted listens; `songCount` (playlists, step 2), set to the playlist's number of items by Add to Playlist, so the Profile's count stays in step.
+Existing fields now written: `listens` (songs), incremented by counted listens; `songCount` (playlists, step 2), set to the playlist's number of items by Add to Playlist, so the Profile's count stays in step; `commentCount` (songs, step 3), by posting and deleting comments.
 
 New index: `album_order` `{albumId: 1, trackNumber: 1, _id: 1}` (partial: `albumId` exists, so only songs on an album).
 
@@ -69,8 +69,8 @@ New index: `album_order` `{albumId: 1, trackNumber: 1, _id: 1}` (partial: `album
 | `song_likes` (built, step 2) | `userId`, `songId`, `likedAt` | `user_song` `{userId, songId}` unique; `user_liked` `{userId, likedAt: -1, _id: -1}` |
 | `library_entries` (built, step 2) | `userId`, `kind` (`playlist` or `liked_songs`), `playlistId` (null for Liked songs), `savedAt` (playlists), `playedAt`, `unlikedAt` (Liked songs) | `user_playlist` `{userId, playlistId}` unique (one row per playlist, one Liked songs row) |
 | `library_locks` (built, step 2) | `_id` (the account's id), `owner`, `expiresAt` | `expires` TTL on `expiresAt` |
-| `comments` (planned, step 3) | `songId`, `parentId` (null for top-level), `authorId`, `text`, `likeCount`, `replyCount`, `createdAt` | `{songId, parentId, createdAt: -1, _id: -1}`; `{parentId, createdAt: 1, _id: 1}` |
-| `comment_likes` (planned, step 3) | `commentId`, `userId`, `createdAt` | `{commentId, userId}` unique |
+| `comments` (built, step 3) | `songId`, `parentId` (the top-level comment for a reply, null for a top-level comment), `authorId`, `text`, `likeCount`, `replyCount` (top-level only), `createdAt` | `song_thread` `{songId, parentId, createdAt: -1, _id: -1}`: a song's top-level comments newest first and, read backwards, a comment's replies oldest first (one index for both; replies are stored with their song) |
+| `comment_likes` (built, step 3) | `commentId`, `userId`, `createdAt` | `comment_user` `{commentId, userId}` unique |
 
 The library is the user's own playlists (`contents`, no row needed), the playlists saved from others (a `library_entries` row each: nothing in v1 saves them yet; locally the seed does), and the Liked songs entry, built from `song_likes` (count; newest `likedAt`) plus its `library_entries` row (`playedAt`, `unlikedAt`); its id is derived from the user (`liked_<userId>`). An own playlist gets a row the first time it is played from (for `playedAt`). `library_locks` holds an account's Add to Playlist lock for the few milliseconds of its writes. Counted listens increment `contents.listens`. Account deletion will have to remove likes, library entries, the user's playlists' items, comment likes and listens, and remove or anonymise comments.
 
@@ -93,9 +93,19 @@ The library is the user's own playlists (`contents`, no row needed), the playlis
 - All or nothing without transactions (nothing else in this API uses them): an account's sets run one at a time under a lock (`library_locks`, a 10-second lease that a crashed request's successor takes over; a waiting request gives up after 12 seconds with `500`), and if a write fails, what was written is undone (added items deleted, removed ones put back with their ids and positions, counts and times restored) before the request fails.
 - New items go after the playlist's highest position (1 in an empty playlist); removing one leaves the others' positions as they are. Each playlist that changes gets `songsUpdatedAt` and `songCount` (its items counted after the change).
 
+**How step 3 reads it (choices the spec left open)**
+
+- Text: made well formed (a lone surrogate becomes U+FFFD), trimmed (`String.prototype.trim`: spaces, tabs and line breaks at both ends; line breaks inside are kept), then 1 to 500 characters counted as Unicode code points, as the spec's JSON Schema counts `maxLength` (an emoji outside the BMP is one character). Checked before the song or comment is looked up, so a blank text is `422` even on an unknown song.
+- Who may read: a followers-only song's comments follow `mayPlay` (only its artist, for now): listing, replies, posting, replying, liking and unliking are `403 CONTENT_RESTRICTED` for anyone else, as the spec lists. Deleting lists no such code, so an author may delete their comment on a song that became followers-only. A `Song` stays described with its `commentCount`, but its `latestComment` is `null` for a viewer who may not read its comments.
+- Deleting: the author, or the song's owner (`Song.artist.id`); anyone else `403 FORBIDDEN`. A comment whose song no longer exists (nothing deletes songs yet) is `COMMENT_NOT_FOUND` everywhere except to its author's delete.
+- Counters: `commentCount` (song, replies included), `replyCount` and `likeCount` are stored and changed atomically, never below 0; each moves up before its row is stored and down after a row is deleted, so concurrent posts and deletes can only leave it briefly high, never low. `page.total` of a song's comments is counted from the rows (top-level only); a replies page's `page.total` is the comment's `replyCount`, as the spec says.
+- Pages: newest first by `createdAt`, then id (the newer id first on the same millisecond); replies oldest first, by `createdAt` then id. A cursor holds the last comment's time and id and is tied to the song (or to the comment): one from another song's or comment's list is `CURSOR_INVALID`. `GET /comments/{id}/replies` on a reply answers an empty page (`total: 0`).
+- A reply to a reply is stored under the same top-level comment, and so are its counts (the top-level comment's `replyCount`). A reply posted while its comment is deleted is deleted again and answers `404 COMMENT_NOT_FOUND`; so is a like stored while its comment is deleted.
+- Rate limits: one counter of 10 a minute for posting comments and replies together; listing 120, likes and unlikes 60 each, deletes 30, each its own counter. `Idempotency-Key` replays a post's or reply's `201`.
+
 ## Storage
 
-Today every file sits on the API server's disk: `src/providers/storage` has only the `local` driver (`MEDIA_DIR`, served at `/media` by `express.static`, which answers Range requests with `206`). The player is built and tested on that: `/playback` returns the file's `/media/...` URL with `expiresAt` 6 hours ahead, but that URL does not really expire. Real streaming needs object storage and a CDN, which is infrastructure for the seniors. Locally, `tools.local/e2e/seed_player.js` (not in this repo) seeds an album, a single, a playlist, generated audio, artwork and transcripts, and, for a second (listener) account, a library: two own playlists, a saved playlist and two liked songs.
+Today every file sits on the API server's disk: `src/providers/storage` has only the `local` driver (`MEDIA_DIR`, served at `/media` by `express.static`, which answers Range requests with `206`). The player is built and tested on that: `/playback` returns the file's `/media/...` URL with `expiresAt` 6 hours ahead, but that URL does not really expire. Real streaming needs object storage and a CDN, which is infrastructure for the seniors. Locally, `tools.local/e2e/seed_player.js` (not in this repo) seeds an album, a single, a playlist, generated audio, artwork and transcripts; for a second (listener) account, a library: two own playlists, a saved playlist and two liked songs; and comments with replies and likes on two songs, by two demo accounts with invented names.
 
 **What the infrastructure needs**
 
@@ -124,4 +134,4 @@ Today every file sits on the API server's disk: `src/providers/storage` has only
 
 ## Out of scope
 
-Building the Comments endpoints (step 3); uploading songs and albums; creating or editing playlists; search; artist pages; recommendations; queue sync; offline downloads; notifications for comments and likes; moderation tools; stories.
+Uploading songs and albums; creating or editing playlists; search; artist pages; recommendations; queue sync; offline downloads; notifications for comments and likes; moderation tools; stories.

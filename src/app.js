@@ -23,6 +23,7 @@ const { router: defaultContentRouter } = require('./modules/content/routes');
 const { router: defaultHandPickedRouter } = require('./modules/handPicked/routes');
 const { router: defaultPlayerRouter } = require('./modules/player/routes');
 const { router: defaultLibraryRouter } = require('./modules/player/libraryRoutes');
+const { router: defaultCommentsRouter } = require('./modules/player/commentRoutes');
 const { storage: defaultStorage } = require('./providers/storage');
 const { clientVersionGate: defaultVersionGate } = require('./middleware/clientVersion');
 
@@ -36,7 +37,7 @@ const ROOT = path.join(__dirname, '..');
  *   interestsRouter?: import('express').Router, mediaRouter?: import('express').Router,
  *   notificationSettingsRouter?: import('express').Router, contentRouter?: import('express').Router, versionGate?: Function,
  *   storage?: object, handPickedRouter?: import('express').Router, playerRouter?: import('express').Router,
- *   libraryRouter?: import('express').Router}} [options]
+ *   libraryRouter?: import('express').Router, commentsRouter?: import('express').Router}} [options]
  *   `extend` is a hook used only by tests to add routes after the legacy
  *   mounts and before the /v1 404 and error handlers. `trustProxy` overrides
  *   config.trustProxy (tests). `authRouter` replaces the sign-up and login
@@ -47,7 +48,7 @@ const ROOT = path.join(__dirname, '..');
  *   check. `storage` is where profile photos are kept; its folder is served at /media when it is local.
  *   `handPickedRouter` replaces the Profile's hand-picked routes, and `playerRouter` the media player's (songs, albums,
  *   playlists, playback, transcripts and listens), `libraryRouter` the listener's library (likes, the library's
- *   playlists, Add to Playlist).
+ *   playlists, Add to Playlist), `commentsRouter` the comments on songs.
  */
 function createApp({
   extend,
@@ -65,6 +66,7 @@ function createApp({
   handPickedRouter = defaultHandPickedRouter,
   playerRouter = defaultPlayerRouter,
   libraryRouter = defaultLibraryRouter,
+  commentsRouter = defaultCommentsRouter,
   versionGate = defaultVersionGate,
   storage = defaultStorage,
 } = {}) {
@@ -188,6 +190,7 @@ function createApp({
   v1.use(handPickedRouter);
   v1.use(playerRouter);
   v1.use(libraryRouter);
+  v1.use(commentsRouter);
   v1.use(notFound);
   app.use('/v1', v1);
 
