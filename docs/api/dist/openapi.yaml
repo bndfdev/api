@@ -960,6 +960,14 @@ paths:
            one later.
         5. Provider says the email is unverified → `SOCIAL_EMAIL_UNVERIFIED`.
 
+        A verified email collision with any existing account (including a
+        social-only account) also requires explicit linking, never automatic
+        linking. Sign in using an existing method and link with the token.
+        Link tokens are single use, stored only as hashes, expire after ten
+        minutes and are bound to the account that owns the matching email.
+        New social accounts skip email, password and phone onboarding steps
+        and start at date of birth, even when no email was shared.
+
         Apple only sends the name on first authorisation; the app forwards
         `givenName`/`familyName` once. On account deletion the server revokes
         the Apple token (App Store requirement).
@@ -1288,6 +1296,9 @@ paths:
         Returns a 5-minute `reauthToken` for sensitive calls (delete account,
         change the email, unlink a login method, set a first password).
         Social-only users re-confirm with a fresh provider credential.
+        The verified identity must already belong to this account; another
+        identity returns `SOCIAL_TOKEN_INVALID`. Provider verification errors
+        are the same as social login (including `SERVICE_UNAVAILABLE`, 503).
 
         Wrong password is `422 PASSWORD_INCORRECT` (not 401, which would sign
         the user out). 5 failures lock it like login (`ACCOUNT_LOCKED`, 423).
@@ -1325,6 +1336,8 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /me:
     get:
       operationId: getMe
@@ -2691,6 +2704,15 @@ paths:
         Finishes the `ACCOUNT_LINK_REQUIRED` flow (send `linkToken`), or links
         a provider from settings (send `credential`).
 
+        A link token is single use, expires after ten minutes, and is accepted
+        only by the account named by the original email collision. Invalid,
+        expired, reused or wrong-account tokens return `LINK_TOKEN_INVALID`.
+        Linking an identity already on this account returns its existing
+        identity (201); an identity on another account is never transferred.
+        Provider verification follows `SocialCredential`, including disabled
+        providers, email verification and nonce checks. A provider outage is
+        `SERVICE_UNAVAILABLE` (503).
+
         Errors: `LINK_TOKEN_INVALID`, `SOCIAL_TOKEN_INVALID` (401),
         `IDENTITY_ALREADY_LINKED` (409, that provider account belongs to
         another Bondfire user).
@@ -2724,6 +2746,8 @@ paths:
           $ref: '#/components/responses/UpgradeRequired'
         '500':
           $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /me/identities/{provider}:
     delete:
       operationId: unlinkIdentity
@@ -4096,8 +4120,17 @@ components:
         What the native provider SDK returned on the phone. The server verifies
         it with the provider; the app never sends a provider password.
         - apple: `idToken` (+ `authorizationCode` so the server can revoke the Apple token on account deletion) and `nonce`.
-        - google: `idToken` (audience = our iOS/Android/web client IDs).
-        - facebook: `accessToken` (checked with the Graph API `debug_token`) or a Limited Login `idToken` with `nonce` on iOS.
+        - google: `idToken` (audience = our iOS/Android/web client IDs). When
+          either the request or JWT contains a nonce, both must be present and
+          the JWT nonce must equal the lowercase hex SHA-256 of the raw nonce.
+          An email is accepted only when `email_verified` is boolean true;
+          an email without that proof is `SOCIAL_EMAIL_UNVERIFIED`.
+        - facebook: `accessToken` (checked with the Graph API `debug_token`).
+          Limited Login `idToken` is reserved for a later release and currently
+          returns `SOCIAL_TOKEN_INVALID`. Graph email is not proof of email
+          ownership and is ignored: these accounts follow the no-email rule.
+        Disabled providers (including Apple for now) return
+        `SOCIAL_PROVIDER_UNSUPPORTED` before credential-form checks.
       required:
         - provider
       additionalProperties: false
