@@ -319,6 +319,46 @@ test('sms: only the console provider exists for now', () => {
   assert.throws(() => loadConfig({ NODE_ENV: 'test', SMS_PROVIDER: 'twilio' }), /SMS_PROVIDER/);
 });
 
+test('social: optional providers are disabled by default and configured values are trimmed and frozen', () => {
+  assert.deepEqual(loadConfig({ NODE_ENV: 'test' }).social, {
+    googleClientIds: [], facebookAppId: undefined, facebookAppSecret: undefined,
+  });
+  const cfg = loadConfig({
+    NODE_ENV: 'test', GOOGLE_CLIENT_IDS: ' web-client , android-client, ios-client,web-client ',
+    FACEBOOK_APP_ID: ' app-id ', FACEBOOK_APP_SECRET: ' app-secret ',
+  });
+  assert.deepEqual(cfg.social.googleClientIds, ['web-client', 'android-client', 'ios-client']);
+  assert.equal(cfg.social.facebookAppId, 'app-id');
+  assert.equal(cfg.social.facebookAppSecret, 'app-secret');
+  assert.ok(Object.isFrozen(cfg.social) && Object.isFrozen(cfg.social.googleClientIds));
+  assert.deepEqual(loadConfig({ NODE_ENV: 'test', GOOGLE_CLIENT_IDS: '  ' }).social.googleClientIds, []);
+});
+
+test('social: malformed Google lists are rejected without exposing values and fail closed without validation', () => {
+  for (const GOOGLE_CLIENT_IDS of [',client', 'client,', 'client,,other', 'client id', 'private/client']) {
+    assert.throws(() => loadConfig({ NODE_ENV: 'test', GOOGLE_CLIENT_IDS }),
+      (err) => /GOOGLE_CLIENT_IDS/.test(err.message) && !err.message.includes(GOOGLE_CLIENT_IDS));
+    assert.deepEqual(loadConfig({ NODE_ENV: 'test', GOOGLE_CLIENT_IDS }, { validate: false }).social.googleClientIds, []);
+  }
+});
+
+test('social: Facebook requires both values, refuses malformed values and never echoes them', () => {
+  for (const extra of [
+    { FACEBOOK_APP_ID: 'private-id' }, { FACEBOOK_APP_SECRET: 'private-secret' },
+    { FACEBOOK_APP_ID: 'private-id', FACEBOOK_APP_SECRET: '  ' },
+    { FACEBOOK_APP_ID: 'private id', FACEBOOK_APP_SECRET: 'private-secret' },
+    { FACEBOOK_APP_ID: 'private-id', FACEBOOK_APP_SECRET: 'private|secret' },
+  ]) {
+    assert.throws(() => loadConfig({ NODE_ENV: 'test', ...extra }),
+      (err) => /FACEBOOK_APP_ID and FACEBOOK_APP_SECRET/.test(err.message) &&
+        !err.message.includes('private'));
+    assert.deepEqual(loadConfig({ NODE_ENV: 'test', ...extra }, { validate: false }).social, {
+      googleClientIds: [], facebookAppId: undefined, facebookAppSecret: undefined,
+    });
+  }
+  assert.equal(loadConfig({ NODE_ENV: 'test', FACEBOOK_APP_ID: ' ', FACEBOOK_APP_SECRET: ' ' }).social.facebookAppId, undefined);
+});
+
 test('phone: every region and VoIP allowed by default; PHONE_REGIONS and PHONE_REFUSE_VOIP narrow it', () => {
   const plain = loadConfig({ NODE_ENV: 'test' });
   assert.deepEqual(plain.phone.regions, []);

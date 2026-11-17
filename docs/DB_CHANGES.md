@@ -8,6 +8,58 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-11-17: Google and Facebook identities and account-link tokens
+
+**Existing data affected:** existing user documents are unchanged. Migration 16
+(`migrations/migrate_16_social_identities.js`) replaces the existing `users.email_1` unique index with a sparse unique index of
+the same name, and adds the identity and link-token indexes below. The migration
+must run before accepting social accounts without email; Mongoose `autoIndex`
+does not replace an existing non-sparse index. This migration has not been run
+against any shared database.
+
+**`users`: optional email/password and a new optional field**
+
+| Field | Purpose |
+| --- | --- |
+| `email`, `password` | These existing string fields are now optional in the API model. A social-only account has no password; a provider without a verified email creates an account with the email field absent, never an invented address or a shared null value. Existing values retain their types and meanings. |
+| `socialIdentities` | Array of `{provider, providerUserId, email?, linkedAt}`. The provider user ID comes only from server verification. The optional email is the provider's verified address. The array records linked sign-in methods; no provider credential is stored. |
+
+**`users`: indexes**
+
+- `email_1`: `{email: 1}`, unique and sparse. Existing email uniqueness remains;
+  multiple documents without the field are allowed. The case-insensitive lookup
+  index remains unchanged.
+- `social_identity_unique`: `{'socialIdentities.provider': 1,
+  'socialIdentities.providerUserId': 1}`, unique, with partial filter
+  `{'socialIdentities.providerUserId': {$type: 'string'}}`. A provider identity
+  cannot belong to two users, including when sign-ins race. Atomic repository
+  updates also prevent adding the same identity twice to one user's array.
+
+**New collection: `link_tokens`**
+
+- Stores `tokenHash` (unique), `userId`, the verified identity payload and
+  `expiresAt`. The opaque link token returned in `ACCOUNT_LINK_REQUIRED` is
+  stored only as a hash, never in plaintext.
+- A TTL index on `expiresAt` (`expireAfterSeconds: 0`) cleans up ten-minute
+  tokens. Requests check expiry themselves; TTL cleanup is not an authorization
+  check.
+- Linking with a token atomically consumes it and adds the identity in a
+  transaction, so it is single use and accepted only for the intended user.
+  A MongoDB replica set is required for this flow (as in the local test helper).
+
+**Rollback:** stop social login and linking before rolling back code. Existing
+email/password accounts remain readable by older code. Social-only accounts
+require a data decision before returning to the old required-email/password
+model: do not invent credentials. In particular, restoring the non-sparse email
+index requires resolving multiple documents with an absent email first. The
+optional identity array and `link_tokens` collection can remain until the
+database owner approves removing them; do not remove identities while accounts
+depend on them to sign in.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-10-30: Hand-picked items on the Profile
 
 **Existing data affected:** none. The new code only adds the field below. No migration, no edit of existing documents.

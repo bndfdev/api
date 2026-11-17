@@ -1124,6 +1124,15 @@ meIdentities:
       Finishes the `ACCOUNT_LINK_REQUIRED` flow (send `linkToken`), or links
       a provider from settings (send `credential`).
 
+      A link token is single use, expires after ten minutes, and is accepted
+      only by the account named by the original email collision. Invalid,
+      expired, reused or wrong-account tokens return `LINK_TOKEN_INVALID`.
+      Linking an identity already on this account returns its existing
+      identity (201); an identity on another account is never transferred.
+      Provider verification follows `SocialCredential`, including disabled
+      providers, email verification and nonce checks. A provider outage is
+      `SERVICE_UNAVAILABLE` (503).
+
       Errors: `LINK_TOKEN_INVALID`, `SOCIAL_TOKEN_INVALID` (401),
       `IDENTITY_ALREADY_LINKED` (409, that provider account belongs to
       another Bondfire user).
@@ -1150,6 +1159,7 @@ meIdentities:
       '422': { $ref: '../components/responses.yaml#/Unprocessable' }
       '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
       '500': { $ref: '../components/responses.yaml#/InternalError' }
+      '503': { $ref: '../components/responses.yaml#/ServiceUnavailable' }
 
 meIdentity:
   delete:
