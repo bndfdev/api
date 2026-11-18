@@ -2022,7 +2022,7 @@ LibraryPlaylist:
     One playlist in the user's library, as Add to Playlist lists it: the
     user's own playlists, playlists saved from others, and the Liked songs
     entry (`isLikedSongs: true`).
-  required: [id, title, image, songCount, updatedAt, savedAt, playedAt, isLikedSongs, editable]
+  required: [id, title, image, artwork, songCount, updatedAt, savedAt, playedAt, isLikedSongs, editable]
   properties:
     id:
       $ref: '#/Id'
@@ -2031,10 +2031,22 @@ LibraryPlaylist:
       description: For the Liked songs entry this is `Liked songs` (English); the app shows its own words instead.
       examples: ['Rainy Commute']
     image:
-      description: The playlist's own picture; `null` draws the app's 2x2 mosaic.
+      description: The playlist's own picture; `null` draws the app's 2x2 mosaic of `artwork`.
       oneOf:
         - $ref: '#/Image'
         - type: 'null'
+    artwork:
+      type: array
+      maxItems: 4
+      description: |
+        Covers for the app's 2x2 mosaic when the playlist has no `image`:
+        the artwork of its first songs by playlist position, as `Song.image`
+        gives it (the album's artwork, else the song's own), skipping songs
+        that have none and covers already listed, up to 4. Only the first 20
+        songs are looked at. Always present; `[]` when none has artwork, and
+        always `[]` for the Liked songs entry (the app draws its own).
+      items:
+        $ref: '#/Image'
     songCount:
       type: integer
       minimum: 0

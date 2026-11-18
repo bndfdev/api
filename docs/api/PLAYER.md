@@ -11,6 +11,7 @@
 - **`Song` carries `transcriptLanguages`, `commentCount`, `latestComment` and `liked`:** the flip button, the Comments tab label, the pill and the heart come with the song, in one call.
 - **`GET /me/library/songs/{id}`** answers the heart and the "+" button together.
 - **Guests can listen and read comments**; the library and writing comments need an account (`GUEST_NOT_ALLOWED`).
+- **`LibraryPlaylist.artwork` carries the mosaic's covers** (up to 4 distinct `Song.image`s of the first 20 songs by position; `[]` for none and for Liked songs): a playlist without its own `image` draws them without one request per playlist. The server reads them for the whole library at once: the first song ids come with the playlists' counts (one `playlist_items` aggregate), then one read of those songs and one of their albums.
 - **Liked songs is a flagged library entry** (`isLikedSongs`), not a stored playlist: a like is a per-user relation and the heart is its only way in.
 - **`PUT /me/library/songs/{id}/playlists` sets the exact set,** all or nothing: it is what the Add to Playlist sheet saves, it is idempotent, and no half-saved state exists.
 - **Listens are batched events** (`202`, `Idempotency-Key`, and events deduplicated by listener, song and `endedAt`): mobile networks drop requests, and counting can run later.
@@ -32,7 +33,7 @@
 | `setLiked(id, liked)` | `PUT` / `DELETE /me/liked-songs/{id}` |
 | `setPlaylistsFor(id, ids)` | `PUT /me/library/songs/{id}/playlists` |
 | `likedTrackIds()` | `GET /me/liked-songs` (ids in order, newest like first) |
-| `LibraryPlaylist` | `image` → `cover`, `songCount` → `itemCount`; `updatedAt`, `savedAt`, `playedAt`, `isLikedSongs` as they are; `editable` is new |
+| `LibraryPlaylist` | `image` → `cover`, `artwork` → `artwork` (the mosaic when `cover` is null), `songCount` → `itemCount`; `updatedAt`, `savedAt`, `playedAt`, `isLikedSongs` as they are; `editable` is new |
 | `CommentsRepository.comments(id, cursor, limit)` | `GET /songs/{id}/comments` (`commentCount` → `total`, `page.nextCursor` → `nextCursor`) |
 | `count`, `latest` | `Song.commentCount`, `Song.latestComment` |
 | `setLiked(trackId, commentId, liked)` | `PUT` / `DELETE /comments/{id}/like` (answers `likeCount`) |

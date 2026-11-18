@@ -17,7 +17,9 @@ const { createLocalStorage } = require('../src/providers/storage/local');
 const { createPlayerService } = require('../src/modules/player/service');
 const { createPlayerRouter } = require('../src/modules/player/routes');
 const { createListenService } = require('../src/modules/player/listens');
-const { createLibraryService, CURSOR_TTL_MS, LOCK_LEASE_MS, LOCK_WAIT_MS } = require('../src/modules/player/library');
+const {
+  createLibraryService, CURSOR_TTL_MS, LOCK_LEASE_MS, LOCK_WAIT_MS, ARTWORK_MAX, ARTWORK_SONGS,
+} = require('../src/modules/player/library');
 const { createLibraryRouter, LIMITS } = require('../src/modules/player/libraryRoutes');
 const itemsRepo = require('../src/modules/player/repo');
 const contentRepo = require('../src/modules/content/repo');
@@ -394,7 +396,7 @@ async function libraryFixture() {
   await like(me, s1, ago(60));
   await like(me, s2, ago(30));
   const entry = (id, title, fields) => ({
-    id, title, image: null, songCount: 0, playedAt: null, isLikedSongs: false, editable: true, ...fields,
+    id, title, image: null, artwork: [], songCount: 0, playedAt: null, isLikedSongs: false, editable: true, ...fields,
   });
   const expected = {
     liked: entry(likedId(me), 'Liked songs', {
@@ -428,7 +430,7 @@ test('GET /me/library/playlists: a new account has the Liked songs entry only, e
   assertOk(res, 'LibraryPlaylistPage');
   assert.deepEqual(res.body, {
     data: [{
-      id: likedId(me), title: 'Liked songs', image: null, songCount: 0, updatedAt: iso(made), savedAt: iso(made),
+      id: likedId(me), title: 'Liked songs', image: null, artwork: [], songCount: 0, updatedAt: iso(made), savedAt: iso(made),
       playedAt: null, isLikedSongs: true, editable: false,
     }],
     page: { nextCursor: null, hasMore: false, total: 1 },
@@ -489,6 +491,104 @@ test('GET /me/library/playlists: pages follow the sort by cursor; a cursor works
   for (const query of ['limit=0', 'limit=201', 'sort=newest', 'other=1']) {
     assertProblem(await get(me, `/me/library/playlists?${query}`), 422, 'VALIDATION_FAILED');
   }
+});
+
+// ---------------------------------------------------------------------------
+// GET /me/library/playlists: artwork (the app's mosaic)
+// ---------------------------------------------------------------------------
+
+/** Stored artwork with this slug, and the spec's `Image` for it. */
+const cover = (slug) => ({ ...ART, url: `https://cdn.example.com/c/${slug}/512.jpg` });
+const coverImage = (slug) => ({
+  url: `https://cdn.example.com/c/${slug}/512.jpg`, width: 512, height: 512, status: 'ready', blurhash: ART.blurhash,
+  palette: ART.palette,
+});
+/** Put songs in a playlist at positions 1, 2, ..., storing the items last first (so ids run against positions). */
+const fillInOrder = (playlistId, songIds) => fill(playlistId, songIds.map((id, i) => [id, i + 1]).reverse());
+const artworkOf = async (who, id) => {
+  const res = await get(who, '/me/library/playlists');
+  assertOk(res, 'LibraryPlaylistPage');
+  return res.body.data.find((entry) => entry.id === id).artwork;
+};
+
+test('artwork: the first songs\' covers by position, the album\'s first, else the song\'s own; none skipped, repeats once, up to 4', async () => {
+  const me = await account();
+  const theo = await account();
+  const other = await account();
+  const withArt = await add(theo, { type: 'album', image: cover('album') });
+  const noArt = await add(theo, { type: 'album' });
+  const othersAlbum = await add(other, { type: 'album', image: cover('not-theirs') });
+  const bare = await song(theo);
+  const onAlbum = await song(theo, { albumId: withArt, image: cover('own-but-on-album') });
+  const sameAlbum = await song(theo, { albumId: withArt });
+  const single = await song(theo, { image: cover('single') });
+  const onBareAlbum = await song(theo, { albumId: noArt, image: cover('bare-album') });
+  const gone = oid();
+  const elsewhere = await song(theo, { albumId: othersAlbum, image: cover('elsewhere') });
+  const late = [await song(theo, { image: cover('late-1') }), await song(theo, { image: cover('late-2') })];
+  const P = await playlist(me, { title: 'Mixed' });
+  await fillInOrder(P, [bare, onAlbum, single, sameAlbum, onBareAlbum, gone, elsewhere, ...late]);
+  assert.deepEqual(await artworkOf(me, P), ['album', 'single', 'bare-album', 'elsewhere'].map(coverImage));
+});
+
+test('artwork: fewer than 4 covers, none, an empty playlist, songs past the first 20, saved playlists and Liked songs', async () => {
+  const me = await account();
+  const theo = await account();
+  const [a, b] = [await song(theo, { image: cover('a') }), await song(theo, { image: cover('b') })];
+  const bare = [];
+  for (let i = 0; i < ARTWORK_SONGS; i += 1) bare.push(await song(theo));
+  const two = await playlist(me, { title: 'Two', image: ART });
+  const none = await playlist(me, { title: 'None' });
+  const empty = await playlist(me, { title: 'Empty' });
+  const deep = await playlist(me, { title: 'Deep' });
+  const saved = await playlist(theo, { title: 'Saved' });
+  await fillInOrder(two, [b, bare[0], a]);
+  await fillInOrder(none, bare.slice(0, 3));
+  await fillInOrder(deep, [...bare, a]);
+  await fillInOrder(saved, [a]);
+  await save(me, saved, ago(5));
+  await like(me, a, ago(1));
+  assert.deepEqual(await artworkOf(me, two), [coverImage('b'), coverImage('a')], 'its own image does not change it');
+  assert.deepEqual(await artworkOf(me, none), []);
+  assert.deepEqual(await artworkOf(me, empty), []);
+  assert.deepEqual(await artworkOf(me, deep), [], `only the first ${ARTWORK_SONGS} songs are looked at`);
+  assert.deepEqual(await artworkOf(me, saved), [coverImage('a')]);
+  assert.deepEqual(await artworkOf(me, likedId(me)), [], 'the app draws Liked songs itself');
+});
+
+test('artwork: the reads stay the same however many playlists there are (one items read, one songs read, one albums read)', async () => {
+  const me = await account();
+  const theo = await account();
+  const library = libraryWith();
+  const auth = { userId: String(me.user._id), accountType: 'account' };
+  const reads = async () => {
+    const seen = [];
+    mongoose.set('debug', (collection, method) => { seen.push(`${collection}.${method}`); });
+    try {
+      await library.listLibraryPlaylists(auth, { limit: 200 });
+    } finally {
+      mongoose.set('debug', false);
+    }
+    return seen.sort();
+  };
+  const addPlaylist = async (n) => {
+    const albumId = await add(theo, { type: 'album', image: cover(`album-${n}`) });
+    const songs = [];
+    for (let i = 0; i < ARTWORK_MAX + 1; i += 1) {
+      songs.push(await song(theo, i % 2 ? { image: cover(`song-${n}-${i}`) } : { albumId }));
+    }
+    const id = await playlist(me, { title: `Playlist ${n}` });
+    await fillInOrder(id, songs);
+    return id;
+  };
+  const first = await addPlaylist(0);
+  const one = await reads();
+  for (let n = 1; n < 8; n += 1) await addPlaylist(n);
+  const eight = await reads();
+  assert.deepEqual(eight, one);
+  assert.equal(one.filter((op) => op === 'playlist_items.aggregate').length, 1, one.join(' '));
+  assert.equal(one.filter((op) => op === 'contents.find').length, 3, `own playlists, songs, albums: ${one.join(' ')}`);
+  assert.deepEqual(await artworkOf(me, first), ['album-0', 'song-0-1', 'song-0-3'].map(coverImage));
 });
 
 // ---------------------------------------------------------------------------

@@ -159,6 +159,7 @@ meLibraryPlaylists:
                 - id: liked_6650f1c2a4b7e9d3c1f00a12
                   title: Liked songs
                   image: null
+                  artwork: []
                   songCount: 128
                   updatedAt: '2026-11-12T21:03:00Z'
                   savedAt: '2026-09-27T10:15:00Z'
@@ -168,6 +169,9 @@ meLibraryPlaylists:
                 - id: 6650f1c2a4b7e9d3c1f00d01
                   title: Rainy Commute
                   image: null
+                  artwork:
+                    - { url: 'https://cdn.bondfire.app/c/northbound-hum/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#FFFFFF', accent: '#747676', neutral: true } }
+                    - { url: 'https://cdn.bondfire.app/a/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: null, palette: null }
                   songCount: 37
                   updatedAt: '2026-11-10T08:05:00Z'
                   savedAt: '2026-10-02T17:30:00Z'
@@ -177,6 +181,7 @@ meLibraryPlaylists:
                 - id: 6650f1c2a4b7e9d3c1f00d02
                   title: Quiet Hours
                   image: { url: 'https://cdn.bondfire.app/p/quiet-hours/512.jpg', width: 512, height: 512, status: ready, blurhash: null }
+                  artwork: []
                   songCount: 24
                   updatedAt: '2026-11-01T22:10:00Z'
                   savedAt: '2026-10-20T12:00:00Z'

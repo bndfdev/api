@@ -57,19 +57,32 @@ function playlistCount(playlistId) {
 }
 
 /**
- * Each playlist's size and newest addition, in one pass (the library's playlists).
+ * Each playlist's size and newest addition, in one pass (the library's playlists); with `firstSongs`, also the ids
+ * of its first songs in playlist order (position, then id; the `playlist_order` index), for its artwork.
  * @param {string[]} playlistIds
- * @returns {Promise<Map<string, {count: number, lastAddedAt: Date | null}>>} by id (lower case); a playlist with no
- *   items is not in it
+ * @param {{firstSongs?: number}} [options] how many first song ids to keep per playlist (0, the default: none)
+ * @returns {Promise<Map<string, {count: number, lastAddedAt: Date | null, firstSongIds: string[]}>>} by id (lower
+ *   case); a playlist with no items is not in it
  */
-async function playlistStats(playlistIds) {
+async function playlistStats(playlistIds, { firstSongs = 0 } = {}) {
   const wanted = [...new Set(playlistIds.map((id) => String(id).toLowerCase()))].filter((id) => OBJECT_ID.test(id));
   if (wanted.length === 0) return new Map();
-  const rows = await PlaylistItem.aggregate([
-    { $match: { playlistId: { $in: wanted.map((id) => new mongoose.Types.ObjectId(id)) } } },
-    { $group: { _id: '$playlistId', count: { $sum: 1 }, lastAddedAt: { $max: '$addedAt' } } },
-  ]);
-  return new Map(rows.map((row) => [String(row._id), { count: row.count, lastAddedAt: row.lastAddedAt || null }]));
+  const match = { $match: { playlistId: { $in: wanted.map((id) => new mongoose.Types.ObjectId(id)) } } };
+  const group = { _id: '$playlistId', count: { $sum: 1 }, lastAddedAt: { $max: '$addedAt' } };
+  // A $push after a $sort keeps the sorted order, and $slice keeps the first ones (no $firstN: any server version).
+  const rows = await PlaylistItem.aggregate(firstSongs > 0
+    ? [
+      match,
+      { $sort: { playlistId: 1, position: 1, _id: 1 } },
+      { $group: { ...group, songIds: { $push: '$songId' } } },
+      { $project: { count: 1, lastAddedAt: 1, songIds: { $slice: ['$songIds', firstSongs] } } },
+    ]
+    : [match, { $group: group }]);
+  return new Map(rows.map((row) => [String(row._id), {
+    count: row.count,
+    lastAddedAt: row.lastAddedAt || null,
+    firstSongIds: (row.songIds || []).map((id) => String(id).toLowerCase()),
+  }]));
 }
 
 /**

@@ -18,6 +18,9 @@
  *   items counted, `updatedAt` the last add or removal); `savedAt` the playlist's creation for own playlists and
  *   the account's creation for Liked songs; `playedAt` from listens. Liked songs' `updatedAt` is the newer of the
  *   newest like and the last unlike, else the account's creation.
+ * - A playlist entry's `artwork` (the app's mosaic): up to 4 distinct covers of its first 20 songs in playlist order,
+ *   resolved as `Song.image` is (album first, then the song's own). Read for the whole library at once: the first
+ *   song ids come with the playlists' stats, then one read of those songs and one of their albums. Liked songs: [].
  * - Library pages: sorted in memory (a library is small: own playlists, saved ones and one entry), `sort` as the
  *   spec says, ties by id, so the order is total; 1 to 200 (50 by default); a cursor holds the last entry's sort key
  *   and id, is tied to the user and the sort, and is good for 24 hours.
@@ -41,7 +44,7 @@ const defaultItems = require('./repo');
 const defaultLibrary = require('./libraryRepo');
 const defaultPlayer = require('./service');
 const { artworkOf, playlistUpdatedAt } = require('./service');
-const { byId } = require('./songs');
+const { byId, albumIdsOf, albumOf } = require('./songs');
 
 const LIKED_DEFAULT_LIMIT = 20;
 const LIKED_MAX_LIMIT = 50;
@@ -62,6 +65,12 @@ const LOCK_WAIT_MS = 12 * 1000;
 const LOCK_RETRY_MS = 20;
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
 const LIKED_ID = /^liked_[0-9a-f]{24}$/;
+/** A library entry's `artwork`: at most this many covers, from at most this many first songs. */
+const ARTWORK_MAX = 4;
+const ARTWORK_SONGS = 20;
+/** What the artwork reads of a song and of an album (`albumOf` needs the type and owner). */
+const ARTWORK_SONG_FIELDS = Object.freeze({ type: 1, ownerId: 1, albumId: 1, image: 1 });
+const ARTWORK_ALBUM_FIELDS = Object.freeze({ type: 1, ownerId: 1, image: 1 });
 /** What the library reads of a playlist. */
 const PLAYLIST_FIELDS = Object.freeze({ type: 1, ownerId: 1, title: 1, image: 1, createdAt: 1, songsUpdatedAt: 1 });
 
@@ -221,13 +230,48 @@ function createLibraryService({
     }
   }
 
+  /**
+   * Each playlist's `artwork` from its first song ids (`stats` as `items.playlistStats` gives them with
+   * `firstSongs`): the songs' covers in playlist order, as `Song.image` resolves them (the album's artwork, else
+   * the song's own), skipping songs without one (or that no longer exist) and covers already taken, up to
+   * ARTWORK_MAX. Two reads for the whole library, however many playlists: one for the songs, one for their albums.
+   * @param {Map<string, {firstSongIds?: string[]}>} stats
+   * @returns {Promise<Map<string, object[]>>} by playlist id; a playlist without covers is not in it
+   */
+  async function artworkByPlaylist(stats) {
+    const songIds = [...new Set([...stats.values()].flatMap((entry) => entry.firstSongIds || []))];
+    if (songIds.length === 0) return new Map();
+    const songs = (await contents.findByIds(songIds, ARTWORK_SONG_FIELDS)).filter((doc) => doc.type === 'song');
+    const albumIds = albumIdsOf(songs);
+    const albums = byId(albumIds.length > 0 ? await contents.findByIds(albumIds, ARTWORK_ALBUM_FIELDS) : []);
+    const coverOf = new Map(songs.map((doc) => {
+      const album = albumOf(doc, albums);
+      return [idOf(doc), (album && artworkOf(album.image)) || artworkOf(doc.image)];
+    }));
+    const result = new Map();
+    for (const [playlistId, entry] of stats) {
+      const covers = [];
+      const seen = new Set();
+      for (const songId of entry.firstSongIds || []) {
+        const cover = coverOf.get(songId);
+        if (!cover || seen.has(cover.url)) continue;
+        seen.add(cover.url);
+        covers.push(cover);
+        if (covers.length === ARTWORK_MAX) break;
+      }
+      if (covers.length > 0) result.set(playlistId, covers);
+    }
+    return result;
+  }
+
   /** The library entry of a playlist (own or saved), with Date values the sorts compare. */
-  function playlistEntry(playlist, { stats, row, editable }) {
+  function playlistEntry(playlist, { stats, row, editable, artwork }) {
     const created = isDate(playlist.createdAt) ? playlist.createdAt : new Date(0);
     return {
       id: idOf(playlist),
       title: typeof playlist.title === 'string' ? playlist.title : '',
       image: artworkOf(playlist.image),
+      artwork: artwork || [],
       songCount: stats ? stats.count : 0,
       updatedAt: playlistUpdatedAt(playlist, stats ? stats.lastAddedAt : null),
       savedAt: editable || !row || !isDate(row.savedAt) ? created : row.savedAt,
@@ -252,7 +296,11 @@ function createLibraryService({
     const saved = savedIds.length > 0
       ? (await contents.findByIds(savedIds, PLAYLIST_FIELDS)).filter((doc) => doc.type === 'playlist')
       : [];
-    const stats = await items.playlistStats([...own, ...saved].map(idOf));
+    const stats = await items.playlistStats([...own, ...saved].map(idOf), { firstSongs: ARTWORK_SONGS });
+    const artwork = await artworkByPlaylist(stats);
+    const entryOf = (doc, editable) => playlistEntry(doc, {
+      stats: stats.get(idOf(doc)), row: playlistRows.get(idOf(doc)), editable, artwork: artwork.get(idOf(doc)),
+    });
     const likedRow = rows.find((row) => row.kind === 'liked_songs') || null;
     const accountSince = isDate(createdAt) ? createdAt : new Date(0);
     const likedChanges = [likes.newestLikedAt, likedRow && likedRow.unlikedAt].filter(isDate);
@@ -261,6 +309,7 @@ function createLibraryService({
         id: likedSongsIdOf(userId),
         title: LIKED_SONGS_TITLE,
         image: null,
+        artwork: [],
         songCount: likes.count,
         updatedAt: likedChanges.length > 0 ? new Date(Math.max(...likedChanges.map((at) => at.getTime()))) : accountSince,
         savedAt: accountSince,
@@ -268,8 +317,8 @@ function createLibraryService({
         isLikedSongs: true,
         editable: false,
       },
-      ...own.map((doc) => playlistEntry(doc, { stats: stats.get(idOf(doc)), row: playlistRows.get(idOf(doc)), editable: true })),
-      ...saved.map((doc) => playlistEntry(doc, { stats: stats.get(idOf(doc)), row: playlistRows.get(idOf(doc)), editable: false })),
+      ...own.map((doc) => entryOf(doc, true)),
+      ...saved.map((doc) => entryOf(doc, false)),
     ];
   }
 
@@ -468,5 +517,7 @@ module.exports = {
   LOCK_WAIT_MS,
   LIKED_DEFAULT_LIMIT,
   LIBRARY_DEFAULT_LIMIT,
+  ARTWORK_MAX,
+  ARTWORK_SONGS,
   ...createLibraryService(),
 };
