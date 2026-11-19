@@ -142,6 +142,18 @@ the template or the task definition.**
 ECS injects both at container start. `describe-task-definition` shows only
 references (`<secret-arn>:KEY::`), never values.
 
+Social login adds three **optional** runtime variables: `GOOGLE_CLIENT_IDS`
+(comma-separated web, Android and iOS OAuth client IDs), `FACEBOOK_APP_ID` and
+`FACEBOOK_APP_SECRET` (set both Facebook values or neither). The infrastructure
+owners can add these keys to the environment's Secrets Manager runtime JSON
+and wire ECS secret references into the task definition. The Google client IDs
+and Facebook app ID may instead use non-sensitive runtime configuration; the
+Facebook app secret must stay in Secrets Manager. Adding secret JSON keys
+alone does not inject them: ECS needs the corresponding references too.
+This change does not modify the CloudFormation template or provision any
+credentials. Until the variables are injected, those providers remain disabled
+and `GET /v1/config` reports them as off. Apple remains disabled.
+
 ### Create it
 
 ```bash

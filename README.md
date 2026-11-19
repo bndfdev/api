@@ -60,6 +60,15 @@ Notes:
 
 ## Deployment (GitHub Actions + AWS OIDC)
 
+Social login is optional. Set `GOOGLE_CLIENT_IDS` to a comma-separated list of
+Google OAuth client IDs (web, Android and iOS) to enable Google ID token login.
+Set both `FACEBOOK_APP_ID` and `FACEBOOK_APP_SECRET` to enable Facebook access
+token login; keep the secret in the runtime secret store. Leave a provider's
+variables unset to disable it. `GET /v1/config` reports the resulting Google
+and Facebook flags; Apple stays disabled. See `.env.example` for the variables,
+`docs/api/paths/auth.yaml` for `POST /v1/auth/social`, and
+`docs/api/paths/me.yaml` for account linking.
+
 The AWS infrastructure (VPC, ALB, ECS cluster/service, HTTPS, secrets) is created
 with CloudFormation — see [`infra/cloudformation/README.md`](infra/cloudformation/README.md)
 for the step-by-step setup of the dev, QA and prod environments.

@@ -325,6 +325,26 @@ function loadConfig(env = process.env, { validate = true } = {}) {
   const smsProvider = (env.SMS_PROVIDER || '').trim().toLowerCase() || 'console';
   if (smsProvider !== 'console') invalid.push('SMS_PROVIDER (only console is available for now)');
 
+  // --- Social login (optional; unset credentials leave the provider off) ---
+  const googleIdsValue = (env.GOOGLE_CLIENT_IDS || '').trim();
+  let googleClientIds = googleIdsValue ? googleIdsValue.split(',').map((id) => id.trim()) : [];
+  if (googleClientIds.some((id) => !/^[A-Za-z0-9._-]+$/.test(id))) {
+    invalid.push('GOOGLE_CLIENT_IDS (comma-separated client IDs with no empty entries or whitespace inside an ID)');
+    googleClientIds = [];
+  }
+  googleClientIds = [...new Set(googleClientIds)];
+  let facebookAppId = (env.FACEBOOK_APP_ID || '').trim() || undefined;
+  let facebookAppSecret = (env.FACEBOOK_APP_SECRET || '').trim() || undefined;
+  if (Boolean(facebookAppId) !== Boolean(facebookAppSecret)) {
+    invalid.push('FACEBOOK_APP_ID and FACEBOOK_APP_SECRET (set both or neither)');
+    facebookAppId = undefined;
+    facebookAppSecret = undefined;
+  } else if ([facebookAppId, facebookAppSecret].some((value) => value && /[\s|]/.test(value))) {
+    invalid.push('FACEBOOK_APP_ID and FACEBOOK_APP_SECRET (must not contain whitespace or a pipe)');
+    facebookAppId = undefined;
+    facebookAppSecret = undefined;
+  }
+
   // --- Profile photos (avatar and banner) ---
   // Where the processed images are kept. Only `local` (a folder on this server, served at /media) exists for now;
   // object storage (S3 or similar) is a later driver behind the same interface (src/providers/storage).
@@ -423,6 +443,7 @@ function loadConfig(env = process.env, { validate = true } = {}) {
       }),
     }),
     sms: Object.freeze({ provider: smsProvider }),
+    social: Object.freeze({ googleClientIds: Object.freeze(googleClientIds), facebookAppId, facebookAppSecret }),
     phone: Object.freeze({ regions: Object.freeze(phoneRegions), refuseVoip: phoneRefuseVoip }),
     app: Object.freeze({ minimumVersions: Object.freeze(minimumVersions), latestVersions: Object.freeze(latestVersions) }),
     features: Object.freeze({ guestMode, phoneVerificationRequired }),
