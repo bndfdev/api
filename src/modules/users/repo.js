@@ -341,6 +341,16 @@ function findSummaries(ids) {
 }
 
 /**
+ * What an artist's page shows of the account: name, avatar and banner.
+ * @param {string} id
+ * @returns {Promise<object | null>} null for an unknown account or an id in no known format
+ */
+function findArtistProfile(id) {
+  if (!/^[0-9a-f]{24}$/i.test(String(id))) return Promise.resolve(null);
+  return User.findById(id, { name: 1, avatar: 1, banner: 1 }).lean();
+}
+
+/**
  * When the account was made (the library's Liked songs entry has been there since).
  * @param {string} userId
  * @returns {Promise<Date | null>} null for an unknown account or one with no usable date
@@ -352,4 +362,4 @@ async function findCreatedAt(userId) {
   return at instanceof Date && !Number.isNaN(at.getTime()) ? at : null;
 }
 
-module.exports = { findSummaries, findCreatedAt, findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };
+module.exports = { findSummaries, findArtistProfile, findCreatedAt, findImagesWithoutPalette, setImageLook, setImage, removeImage, findByEmail, findById, findByPhone, updateProfile, flagAgeCheck, markOnboardingStep, markOnboardingCompleted, setPassword, changePassword, setEmail, setVerifiedPhone, releaseUnverifiedPhone, removePhone, create, countLoginAttempt, countUnknownLoginAttempt, resetLoginAttempts, replacePasswordHash };

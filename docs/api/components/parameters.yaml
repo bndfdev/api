@@ -116,6 +116,14 @@ SongId:
   schema:
     $ref: './schemas.yaml#/Id'
 
+ArtistId:
+  name: artistId
+  in: path
+  required: true
+  description: An artist's id (`Song.artist.id`, the id of the account that published the song).
+  schema:
+    $ref: './schemas.yaml#/Id'
+
 AlbumId:
   name: albumId
   in: path

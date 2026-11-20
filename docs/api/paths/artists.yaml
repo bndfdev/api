@@ -1,0 +1,133 @@
+# Artist pages and following artists. Design notes: docs/api/PLAYER.md
+# ("Artist page").
+
+artist:
+  get:
+    operationId: getArtist
+    tags: [Artists]
+    summary: Get an artist's page
+    description: |
+      The player's Artist page in one call: the profile (name, avatar,
+      banner, follower counts and whether the viewer follows them) and the
+      releases. An artist is an account that has published at least one
+      song (`Song.artist.id`). Guests allowed (`following` is then
+      `false`).
+
+      - `releases`: the artist's albums and songs, newest first
+        (`releasedAt`, then `id`), at most 200. Hidden items (Hide Content)
+        are left out, as on the Profile; followers-only ones are listed
+        (play them through `GET /songs/{songId}`, which says whether the
+        viewer may). A song on an album is listed too, on its own row.
+      - `plays` are counted listens (the rule is under `POST /me/listens`):
+        a song's `Song.listens`, an album's the sum of its songs'.
+      - `followerCount` and `followingCount` count accounts; `following`
+        is the viewer's. Follow with `PUT /me/following/artists/{artistId}`.
+
+      Errors: `NOT_FOUND` (404: no account with that id, or an account
+      that has published no song).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ArtistId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The artist's page.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Artist'
+            example:
+              id: 6650f1c2a4b7e9d3c1f00a21
+              name: Mara Quillon
+              avatar: { url: 'https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg', width: 512, height: 512, status: ready, blurhash: 'L*J3}y{@OGOHspn~a}a}fQfQfQfQ', palette: { version: 1, seed: '#B0522F', accent: '#A84E2D', neutral: false } }
+              banner: null
+              genre: null
+              followerCount: 1240
+              followingCount: 31
+              following: true
+              releases:
+                - id: 6650f1c2a4b7e9d3c1f00c11
+                  kind: song
+                  title: Kites Over Tallow Bay
+                  releasedAt: '2026-09-01T10:00:00Z'
+                  plays: 48210
+                  songCount: null
+                  image: { url: 'https://cdn.bondfire.app/c/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#2F6FB0', accent: '#2F6FB0', neutral: false } }
+                - id: 6650f1c2a4b7e9d3c1f00c10
+                  kind: album
+                  title: Tallow Bay
+                  releasedAt: '2026-06-01T10:00:00Z'
+                  plays: 72000
+                  songCount: 9
+                  image: { url: 'https://cdn.bondfire.app/c/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#2F6FB0', accent: '#2F6FB0', neutral: false } }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meFollowingArtist:
+  put:
+    operationId: followArtist
+    tags: [Artists]
+    summary: Follow an artist
+    description: |
+      The Artist page's Follow button. Idempotent: following an artist
+      already followed changes nothing (it keeps its first time). The
+      artist's `followerCount` and the viewer's `following` follow.
+      Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `NOT_FOUND` (404: no artist with
+      that id, as for `GET /artists/{artistId}`), `CANNOT_FOLLOW_SELF`
+      (422: the artist is the caller).
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ArtistId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '422':
+        description: The artist is the caller (`CANNOT_FOLLOW_SELF`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/cannot-follow-self
+              title: You can't follow yourself
+              status: 422
+              code: CANNOT_FOLLOW_SELF
+              requestId: req_01J8Z3K5QH
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: unfollowArtist
+    tags: [Artists]
+    summary: Stop following an artist
+    description: |
+      The Artist page's Following button. Idempotent: an artist who is not
+      followed (or no longer exists, or is the caller) answers `204` too,
+      so a follower can always stop following. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/ArtistId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }

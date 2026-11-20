@@ -1,6 +1,6 @@
 # Media player API (spec first)
 
-**Status: Player, Library and Comments built.** The operations tagged Player, Library and Comments in `docs/api/openapi.yaml` are the contract for the app's media player. The Player operations (songs, albums, playlists, playback, transcripts, listens) are built (`src/modules/player`, step 1 of 3), and so are the Library operations (likes, the library's playlists, a song's heart and "+" states, Add to Playlist: `src/modules/player/library.js` and `libraryRoutes.js`, step 2) and the Comments operations (comments, replies, comment likes, deleting: `src/modules/player/comments.js`, `commentsRepo.js` and `commentRoutes.js`, step 3). A `Song`'s `liked` is the viewer's like (always `false` for guests), `commentCount` the song's counter (replies included) and `latestComment` its newest top-level comment (`SOCIAL` in `src/modules/player/service.js`). The data model below is what is built; each step has its own `docs/DB_CHANGES.md` entry for review.
+**Status: Player, Library and Comments built.** The operations tagged Player, Library and Comments in `docs/api/openapi.yaml` are the contract for the app's media player. The Player operations (songs, albums, playlists, playback, transcripts, listens) are built (`src/modules/player`, step 1 of 3), and so are the Library operations (likes, the library's playlists, a song's heart and "+" states, Add to Playlist: `src/modules/player/library.js` and `libraryRoutes.js`, step 2) and the Comments operations (comments, replies, comment likes, deleting: `src/modules/player/comments.js`, `commentsRepo.js` and `commentRoutes.js`, step 3), and the Artists operations (the Artist page and following: "Artist page" below). A `Song`'s `liked` is the viewer's like (always `false` for guests), `commentCount` the song's counter (replies included) and `latestComment` its newest top-level comment (`SOCIAL` in `src/modules/player/service.js`). The data model below is what is built; each step has its own `docs/DB_CHANGES.md` entry for review.
 
 ## Decisions
 
@@ -41,6 +41,10 @@
 | `PlayerComment` | `author.name` → `authorName` (`null`: the app's placeholder), `author.avatar` → `avatar`; the other fields as they are |
 | `TranscriptRepository.transcriptFor(id, language)` | `GET /songs/{id}/transcript?language=`; `404 TRANSCRIPT_NOT_FOUND` → `Ok(null)` |
 | `ListenEvent` (not sent yet) | `POST /me/listens`: `trackId` → `songId`, `listened` → `listenedMs`, `completed`; plus `endedAt` and `source` |
+| `ArtistRepository.artist(id)` | `GET /artists/{id}` (`Artist`) |
+| `ArtistProfile` | `id`, `name`, `genre` as they are; `banner` → `picture`, `avatar` → `avatar`; `followerCount` → `followers`, `followingCount` → `following`, `following` → `isFollowing`; `releases` → `releases` |
+| `ArtistRelease` | `id`, `title`, `releasedAt`, `plays`, `songCount` as they are; `kind` → `kind` (`album`, `song`; skip a kind the app does not know); `image` → `cover`; for a song, `id` → `trackId` |
+| `setFollowing(id, following:)` | `PUT` / `DELETE /me/following/artists/{id}` |
 
 ## Data model (built in steps 1 to 3)
 
@@ -104,6 +108,17 @@ The library is the user's own playlists (`contents`, no row needed), the playlis
 - A reply to a reply is stored under the same top-level comment, and so are its counts (the top-level comment's `replyCount`). A reply posted while its comment is deleted is deleted again and answers `404 COMMENT_NOT_FOUND`; so is a like stored while its comment is deleted.
 - Rate limits: one counter of 10 a minute for posting comments and replies together; listing 120, likes and unlikes 60 each, deletes 30, each its own counter. `Idempotency-Key` replays a post's or reply's `201`.
 
+## Artist page
+
+Built after steps 1 to 3 (tag Artists: `src/modules/player/artists.js`, `artistRoutes.js`, `followsRepo.js`; `docs/DB_CHANGES.md` entry of 2026-11-20).
+
+- **An artist is an account that has published a song** (`Song.artist.id`, hidden songs included); there is no separate artist catalog. Anyone else, and an id in no known format, is `404 NOT_FOUND` (the generic code: no `ARTIST_NOT_FOUND`).
+- **The page is one call:** the profile (`name`, `avatar`, `banner`, `genre`, `followerCount`, `followingCount`, `following`) and the releases, so the page draws at once. `genre` is not stored anywhere yet and is always `null`.
+- **Releases** are the artist's albums and songs that are not hidden, newest first (`createdAt`, then id), at most 200 (paging can come later). Album tracks are listed on their own rows too, so "Popular" (sorted on the device by `plays`) can show a hit from an album. `plays` is `Song.listens`; an album's is the sum of its songs' (all of them, as `GET /albums` lists them), not the album's own `listens` field, which nothing counts. Stories and playlists are not releases yet (`ReleaseKind` can grow).
+- **Following** is a `follows` row per follower and artist. `PUT` and `DELETE` are idempotent and take no `Idempotency-Key`, like the heart. Following yourself is `422 CANNOT_FOLLOW_SELF` (checked before the artist is looked up); following a non-artist is `404`. Unfollowing always answers `204`, so a follower of an account that stopped being an artist can still stop following.
+- **Counts** are counted from `follows` on each view (two index counts); a stored counter can replace them if an artist gets very many followers.
+- **Followers-only songs still play for their artist only:** `mayPlay` does not read `follows` yet (an open question below).
+
 ## Storage
 
 Today every file sits on the API server's disk: `src/providers/storage` has only the `local` driver (`MEDIA_DIR`, served at `/media` by `express.static`, which answers Range requests with `206`). The player is built and tested on that: `/playback` returns the file's `/media/...` URL with `expiresAt` 6 hours ahead, but that URL does not really expire. Real streaming needs object storage and a CDN, which is infrastructure for the seniors. Locally, `tools.local/e2e/seed_player.js` (not in this repo) seeds an album, a single, a playlist, generated audio, artwork and transcripts; for a second (listener) account, a library: two own playlists, a saved playlist and two liked songs; and comments with replies and likes on two songs, by two demo accounts with invented names.
@@ -124,9 +139,9 @@ Today every file sits on the API server's disk: `src/providers/storage` has only
 - **Listen count:** 30 seconds or completed, as drafted? A per-listener daily cap against inflated counts?
 - **Comment length:** 500 characters?
 - **Transcripts:** their source, and the rights to show them.
-- **Hide and Restrict Content:** are hidden songs still playable from playlists and links (drafted: yes)? What does Restrict do to a playlist? There is no follow data yet, so followers-only songs play for their artist only.
+- **Hide and Restrict Content:** are hidden songs still playable from playlists and links (drafted: yes)? What does Restrict do to a playlist? Follows exist now (Artist page), but followers-only songs still play for their artist only: should following open them?
 - **Playlists:** creating, renaming, saving others', deleting, reordering; the same song twice.
-- **Artist page:** `ArtistSummary` is the publishing account for now.
+- **Artist page:** an artist is the publishing account. Where does `genre` come from? Should stories and playlists be releases? Paging past 200 releases?
 - **Server-side queue sync** across devices.
 - **Offline downloads** (longer-lived URLs, protection).
 - **Moderation:** reporting comments, blocking, removing them.
@@ -135,4 +150,4 @@ Today every file sits on the API server's disk: `src/providers/storage` has only
 
 ## Out of scope
 
-Uploading songs and albums; creating or editing playlists; search; artist pages; recommendations; queue sync; offline downloads; notifications for comments and likes; moderation tools; stories.
+Uploading songs and albums; creating or editing playlists; search; followers lists; recommendations; queue sync; offline downloads; notifications for comments and likes; moderation tools; stories.

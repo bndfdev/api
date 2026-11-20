@@ -6,6 +6,7 @@
  * with `ownerId` and ends with `_id` (see the model), so a page costs the same however deep it is, and an item
  * added or hidden meanwhile does not shift the next page.
  */
+const mongoose = require('mongoose');
 const Content = require('../../../models/Content');
 const { addToCounter } = require('../../lib/counter');
 
@@ -155,7 +156,47 @@ async function addComments(songId, delta) {
   });
 }
 
+/**
+ * Whether the owner has published a song (hidden ones count): what makes an account an artist. On `owner_recent`.
+ * @param {string} ownerId
+ * @returns {Promise<boolean>}
+ */
+async function hasSongs(ownerId) {
+  if (!OBJECT_ID.test(String(ownerId))) return false;
+  return (await Content.exists({ ownerId, type: 'song' })) !== null;
+}
+
+/**
+ * An artist's releases for their page: the owner's albums and songs that are not hidden, newest first (`createdAt`,
+ * then id), on the `owner_recent` index.
+ * @param {{ownerId: string, limit: number}} input
+ * @returns {Promise<object[]>}
+ */
+function releases({ ownerId, limit }) {
+  if (!OBJECT_ID.test(String(ownerId))) return Promise.resolve([]);
+  return Content.find({ ownerId, type: { $in: ['album', 'song'] }, hidden: { $ne: true } })
+    .sort({ createdAt: -1, _id: -1 }).limit(limit).lean();
+}
+
+/**
+ * For each of these albums, its songs (the songs `albumSongs` lists: the album owner's songs whose `albumId` is
+ * the album) counted, and their `listens` added up, in one aggregate on the `album_order` index.
+ * @param {{ownerId: string, albumIds: string[]}} input
+ * @returns {Promise<Map<string, {songCount: number, listens: number}>>} by album id, lower case; albums with no
+ *   songs are not in it
+ */
+async function albumStats({ ownerId, albumIds }) {
+  const wanted = [...new Set(albumIds.map((id) => String(id).toLowerCase()))].filter((id) => OBJECT_ID.test(id));
+  if (!OBJECT_ID.test(String(ownerId)) || wanted.length === 0) return new Map();
+  const { ObjectId } = mongoose.Types;
+  const rows = await Content.aggregate([
+    { $match: { albumId: { $in: wanted.map((id) => new ObjectId(id)) }, ownerId: new ObjectId(String(ownerId)), type: 'song' } },
+    { $group: { _id: '$albumId', songCount: { $sum: 1 }, listens: { $sum: '$listens' } } },
+  ]);
+  return new Map(rows.map((row) => [String(row._id), { songCount: row.songCount, listens: row.listens }]));
+}
+
 module.exports = {
   page, count, updateFlags, findOwned, findByIds, albumSongs, ownPlaylists, setPlaylistStats, addListens, addComments,
-  SORTS,
+  hasSongs, releases, albumStats, SORTS,
 };

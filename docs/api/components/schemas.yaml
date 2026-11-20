@@ -168,6 +168,9 @@ ErrorCode:
     - `PLAYLIST_NOT_EDITABLE` (403): a playlist is not the user's own, so songs cannot be added to it or
       taken out of it; `meta.playlistIds` lists them.
     - `COMMENT_NOT_FOUND` (404): the comment does not exist or was deleted.
+
+    Codes of artist pages (tag Artists): an unknown artist is the generic `NOT_FOUND` (404).
+    - `CANNOT_FOLLOW_SELF` (422): the artist to follow is the caller.
   enum:
     # generic
     - MALFORMED_REQUEST
@@ -268,6 +271,8 @@ ErrorCode:
     - PLAYLIST_NOT_FOUND
     - PLAYLIST_NOT_EDITABLE
     - COMMENT_NOT_FOUND
+    # artist pages
+    - CANNOT_FOLLOW_SELF
     # media
     - UPLOAD_NOT_FOUND
     - UPLOAD_EXPIRED
@@ -1620,7 +1625,7 @@ ArtistSummary:
   type: object
   description: |
     Who a song or album is by: the account that published it (`id` is that
-    user's id). An artist page is not specified yet.
+    user's id). Their page is `GET /artists/{artistId}`.
   required: [id, name, image]
   properties:
     id:
@@ -1822,6 +1827,90 @@ Album:
       description: Every song on it, in album order.
       items:
         $ref: '#/Song'
+
+ReleaseKind:
+  type: string
+  description: |
+    What an artist's release is. Only `album` and `song` for now; more kinds
+    (stories, playlists) may be added, so clients skip rows of a kind they
+    do not know.
+  enum: [album, song]
+
+ArtistRelease:
+  type: object
+  description: |
+    One row of an artist's releases. The id is the album's or the song's
+    (`GET /albums/{albumId}`, `GET /songs/{songId}`).
+  required: [id, kind, title, releasedAt, plays, songCount, image]
+  properties:
+    id:
+      $ref: '#/Id'
+    kind:
+      $ref: '#/ReleaseKind'
+    title:
+      type: string
+      examples: ['Tallow Bay']
+    releasedAt:
+      description: When it was published.
+      $ref: '#/Timestamp'
+    plays:
+      type: integer
+      minimum: 0
+      description: Counted listens; for an album, the sum of its songs'.
+    songCount:
+      type: [integer, 'null']
+      minimum: 0
+      description: An album's songs (as `Album.songCount`); `null` for a song.
+    image:
+      description: |
+        The artwork, with `palette` and `blurhash`: an album's own; a song's
+        as `Song.image` (its album's when it is on one, else its own). `null`
+        when there is none.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+
+Artist:
+  type: object
+  description: An artist's page (the account that published the songs) for this viewer.
+  required: [id, name, avatar, banner, genre, followerCount, followingCount, following, releases]
+  properties:
+    id:
+      $ref: '#/Id'
+    name:
+      type: string
+      description: As `ArtistSummary.name` (`''` when the account has no name).
+      examples: ['Mara Quillon']
+    avatar:
+      description: The profile photo (the round picture); `null` when there is none.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    banner:
+      description: The profile banner (the picture at the top); `null` when there is none.
+      oneOf:
+        - $ref: '#/Image'
+        - type: 'null'
+    genre:
+      type: [string, 'null']
+      description: The line over the name. Not stored yet, so always `null` (the app hides the line).
+    followerCount:
+      type: integer
+      minimum: 0
+      description: How many accounts follow the artist.
+    followingCount:
+      type: integer
+      minimum: 0
+      description: How many artists the artist follows.
+    following:
+      type: boolean
+      description: Whether the viewer follows the artist. Always `false` for guests and for the artist themselves.
+    releases:
+      type: array
+      description: Albums and songs, newest first (`releasedAt`, then `id`), at most 200; hidden ones left out.
+      maxItems: 200
+      items:
+        $ref: '#/ArtistRelease'
 
 Playlist:
   type: object

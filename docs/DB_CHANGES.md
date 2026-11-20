@@ -8,6 +8,28 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-11-20: Artist pages and following artists
+
+**Existing data affected:** none. Nothing in existing documents is written; `contents` and `users` are only read. Everything else below is new: one new collection.
+
+**New collection**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `follows` | One account following an artist (`PUT /v1/me/following/artists/{id}`): `followerId` (`users` id), `artistId` (`users` id of an account that has published a song), `followedAt` | `follower_artist` `{followerId: 1, artistId: 1}` unique (an artist once per follower; following twice at once stores one row; "does the viewer follow this artist"; how many artists an account follows, by its prefix); `artist_followers` `{artistId: 1, followedAt: -1, _id: -1}` (how many accounts follow an artist, by its prefix; also ready for a followers list, newest first, read by key) | Unfollowing deletes the row. Account deletion (not built) must delete the rows where the account is the follower or the artist. Rows of an account that is no longer an artist stay until the follower unfollows (which always works); they still count in its `followerCount` if it publishes again. About 100 bytes per row; at most 60 follows a minute per account. |
+
+**What the reads use:** the page reads the account from `users` by `_id` (projection `{name, avatar, banner}`); "has this account published a song" is one `contents` `exists({ownerId, type: 'song'})` (the `owner_recent` index, by `ownerId`); the releases are `contents` `{ownerId, type: {$in: ['album', 'song']}, hidden: {$ne: true}}` sorted `{createdAt: -1, _id: -1}` with a limit of 200 (`owner_recent`, no sort in memory); the albums' song counts and plays are one `$group` over `contents` `{albumId: {$in}, ownerId, type: 'song'}` (`album_order`); the songs' albums by `_id`. The two follow counts are `countDocuments` on `follows` (each on an index prefix), one per page view: fine at today's sizes; an artist with very many followers would want a stored counter later (a `users` field, which would be a new entry here). Nothing is written to `users` or `contents`.
+
+**Writes and concurrency:** one `insertOne` per follow (a duplicate-key error from `follower_artist` means "already followed", and the first `followedAt` is kept) and one `deleteOne` per unfollow. No transactions, no counters.
+
+**Rollback:**
+- Stop the new code.
+- Drop `follows`.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-11-13: Media player, step 3: comments on songs (comments, replies, comment likes)
 
 **Existing data affected:**

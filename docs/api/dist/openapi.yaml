@@ -9,7 +9,7 @@ info:
     edge cases and the migration from today's endpoints are in
     `docs/api/README.md`.
 
-    The media player's endpoints (tags Player, Library and Comments) are
+    The media player's endpoints (tags Player, Library, Artists and Comments) are
     built in `src/modules/player`. Their design notes and data model are
     in `docs/api/PLAYER.md`.
 
@@ -92,7 +92,8 @@ tags:
         song is still described, with `playable: false` for a viewer who may
         not play it, and its audio, transcript and comments answer
         `CONTENT_RESTRICTED` (403). Only the artist's followers may play it;
-        there is no follow data yet, so for now only the artist can.
+        follows (tag Artists) do not open it yet, so for now only the
+        artist can.
       - **Hidden** (Hide Content) takes a song off its artist's Profile
         only: it still answers by id and in albums, playlists and queues.
       - **Audio** is never inside `Song`: `GET /songs/{songId}/playback`
@@ -112,6 +113,17 @@ tags:
         `PUT /me/library/songs/{songId}/playlists` sets the exact set of
         playlists holding a song in one call, all or nothing.
       - Creating, renaming and saving playlists are not specified yet.
+  - name: Artists
+    description: |
+      The player's Artist page and following artists (design notes:
+      `docs/api/PLAYER.md`, "Artist page").
+
+      - An artist is an account that has published at least one song; its
+        id is `Song.artist.id`. Anyone else is `NOT_FOUND` (404).
+      - Reading a page is open to guests; following needs an account
+        (`GUEST_NOT_ALLOWED`). Nobody can follow themselves
+        (`CANNOT_FOLLOW_SELF`).
+      - Following does not unlock followers-only songs yet (see Player).
   - name: Comments
     description: |
       Comments on songs: the player drawer's Comments tab and the pill
@@ -4176,6 +4188,192 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '500':
           $ref: '#/components/responses/InternalError'
+  /artists/{artistId}:
+    get:
+      operationId: getArtist
+      tags:
+        - Artists
+      summary: Get an artist's page
+      description: |
+        The player's Artist page in one call: the profile (name, avatar,
+        banner, follower counts and whether the viewer follows them) and the
+        releases. An artist is an account that has published at least one
+        song (`Song.artist.id`). Guests allowed (`following` is then
+        `false`).
+
+        - `releases`: the artist's albums and songs, newest first
+          (`releasedAt`, then `id`), at most 200. Hidden items (Hide Content)
+          are left out, as on the Profile; followers-only ones are listed
+          (play them through `GET /songs/{songId}`, which says whether the
+          viewer may). A song on an album is listed too, on its own row.
+        - `plays` are counted listens (the rule is under `POST /me/listens`):
+          a song's `Song.listens`, an album's the sum of its songs'.
+        - `followerCount` and `followingCount` count accounts; `following`
+          is the viewer's. Follow with `PUT /me/following/artists/{artistId}`.
+
+        Errors: `NOT_FOUND` (404: no account with that id, or an account
+        that has published no song).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/ArtistId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The artist's page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artist'
+              example:
+                id: 6650f1c2a4b7e9d3c1f00a21
+                name: Mara Quillon
+                avatar:
+                  url: https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg
+                  width: 512
+                  height: 512
+                  status: ready
+                  blurhash: L*J3}y{@OGOHspn~a}a}fQfQfQfQ
+                  palette:
+                    version: 1
+                    seed: '#B0522F'
+                    accent: '#A84E2D'
+                    neutral: false
+                banner: null
+                genre: null
+                followerCount: 1240
+                followingCount: 31
+                following: true
+                releases:
+                  - id: 6650f1c2a4b7e9d3c1f00c11
+                    kind: song
+                    title: Kites Over Tallow Bay
+                    releasedAt: '2026-09-01T10:00:00Z'
+                    plays: 48210
+                    songCount: null
+                    image:
+                      url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#2F6FB0'
+                        accent: '#2F6FB0'
+                        neutral: false
+                  - id: 6650f1c2a4b7e9d3c1f00c10
+                    kind: album
+                    title: Tallow Bay
+                    releasedAt: '2026-06-01T10:00:00Z'
+                    plays: 72000
+                    songCount: 9
+                    image:
+                      url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#2F6FB0'
+                        accent: '#2F6FB0'
+                        neutral: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/following/artists/{artistId}:
+    put:
+      operationId: followArtist
+      tags:
+        - Artists
+      summary: Follow an artist
+      description: |
+        The Artist page's Follow button. Idempotent: following an artist
+        already followed changes nothing (it keeps its first time). The
+        artist's `followerCount` and the viewer's `following` follow.
+        Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `NOT_FOUND` (404: no artist with
+        that id, as for `GET /artists/{artistId}`), `CANNOT_FOLLOW_SELF`
+        (422: the artist is the caller).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/ArtistId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The artist is the caller (`CANNOT_FOLLOW_SELF`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/cannot-follow-self
+                title: You can't follow yourself
+                status: 422
+                code: CANNOT_FOLLOW_SELF
+                requestId: req_01J8Z3K5QH
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: unfollowArtist
+      tags:
+        - Artists
+      summary: Stop following an artist
+      description: |
+        The Artist page's Following button. Idempotent: an artist who is not
+        followed (or no longer exists, or is the caller) answers `204` too,
+        so a follower can always stop following. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/ArtistId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /songs/{songId}/comments:
     get:
       operationId: listSongComments
@@ -4835,6 +5033,9 @@ components:
         - `PLAYLIST_NOT_EDITABLE` (403): a playlist is not the user's own, so songs cannot be added to it or
           taken out of it; `meta.playlistIds` lists them.
         - `COMMENT_NOT_FOUND` (404): the comment does not exist or was deleted.
+
+        Codes of artist pages (tag Artists): an unknown artist is the generic `NOT_FOUND` (404).
+        - `CANNOT_FOLLOW_SELF` (422): the artist to follow is the caller.
       enum:
         - MALFORMED_REQUEST
         - VALIDATION_FAILED
@@ -4922,6 +5123,7 @@ components:
         - PLAYLIST_NOT_FOUND
         - PLAYLIST_NOT_EDITABLE
         - COMMENT_NOT_FOUND
+        - CANNOT_FOLLOW_SELF
         - UPLOAD_NOT_FOUND
         - UPLOAD_EXPIRED
         - UPLOAD_INCOMPLETE
@@ -6540,7 +6742,7 @@ components:
       type: object
       description: |
         Who a song or album is by: the account that published it (`id` is that
-        user's id). An artist page is not specified yet.
+        user's id). Their page is `GET /artists/{artistId}`.
       required:
         - id
         - name
@@ -7167,6 +7369,111 @@ components:
           maxItems: 500
           items:
             $ref: '#/components/schemas/Id'
+    ReleaseKind:
+      type: string
+      description: |
+        What an artist's release is. Only `album` and `song` for now; more kinds
+        (stories, playlists) may be added, so clients skip rows of a kind they
+        do not know.
+      enum:
+        - album
+        - song
+    ArtistRelease:
+      type: object
+      description: |
+        One row of an artist's releases. The id is the album's or the song's
+        (`GET /albums/{albumId}`, `GET /songs/{songId}`).
+      required:
+        - id
+        - kind
+        - title
+        - releasedAt
+        - plays
+        - songCount
+        - image
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        kind:
+          $ref: '#/components/schemas/ReleaseKind'
+        title:
+          type: string
+          examples:
+            - Tallow Bay
+        releasedAt:
+          description: When it was published.
+          $ref: '#/components/schemas/Timestamp'
+        plays:
+          type: integer
+          minimum: 0
+          description: Counted listens; for an album, the sum of its songs'.
+        songCount:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+          description: An album's songs (as `Album.songCount`); `null` for a song.
+        image:
+          description: |
+            The artwork, with `palette` and `blurhash`: an album's own; a song's
+            as `Song.image` (its album's when it is on one, else its own). `null`
+            when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+    Artist:
+      type: object
+      description: An artist's page (the account that published the songs) for this viewer.
+      required:
+        - id
+        - name
+        - avatar
+        - banner
+        - genre
+        - followerCount
+        - followingCount
+        - following
+        - releases
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+          description: As `ArtistSummary.name` (`''` when the account has no name).
+          examples:
+            - Mara Quillon
+        avatar:
+          description: The profile photo (the round picture); `null` when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        banner:
+          description: The profile banner (the picture at the top); `null` when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        genre:
+          type:
+            - string
+            - 'null'
+          description: The line over the name. Not stored yet, so always `null` (the app hides the line).
+        followerCount:
+          type: integer
+          minimum: 0
+          description: How many accounts follow the artist.
+        followingCount:
+          type: integer
+          minimum: 0
+          description: How many artists the artist follows.
+        following:
+          type: boolean
+          description: Whether the viewer follows the artist. Always `false` for guests and for the artist themselves.
+        releases:
+          type: array
+          description: Albums and songs, newest first (`releasedAt`, then `id`), at most 200; hidden ones left out.
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ArtistRelease'
     CommentPage:
       type: object
       required:
@@ -7384,6 +7691,13 @@ components:
       in: path
       required: true
       description: A playlist's id (`Content.id` of an item of type `playlist`).
+      schema:
+        $ref: '#/components/schemas/Id'
+    ArtistId:
+      name: artistId
+      in: path
+      required: true
+      description: An artist's id (`Song.artist.id`, the id of the account that published the song).
       schema:
         $ref: '#/components/schemas/Id'
     CommentId:

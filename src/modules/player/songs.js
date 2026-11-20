@@ -12,7 +12,8 @@ const followersOnlyOf = (song, album) => song.followersOnly === true || Boolean(
 
 /**
  * Whether the viewer may play the song: anyone, unless it is followers-only. Then only the artist's followers may,
- * and there is no follow data yet (docs/api/PLAYER.md), so only the artist (the account that published it) can.
+ * and follows (`follows`, ./artists.js) do not open it yet (docs/api/PLAYER.md), so only the artist (the account
+ * that published it) can.
  * Guests never can.
  * @param {{userId: string, accountType: string} | undefined} auth `req.auth`
  */

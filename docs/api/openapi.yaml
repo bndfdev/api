@@ -9,7 +9,7 @@ info:
     edge cases and the migration from today's endpoints are in
     `docs/api/README.md`.
 
-    The media player's endpoints (tags Player, Library and Comments) are
+    The media player's endpoints (tags Player, Library, Artists and Comments) are
     built in `src/modules/player`. Their design notes and data model are
     in `docs/api/PLAYER.md`.
 
@@ -95,7 +95,8 @@ tags:
         song is still described, with `playable: false` for a viewer who may
         not play it, and its audio, transcript and comments answer
         `CONTENT_RESTRICTED` (403). Only the artist's followers may play it;
-        there is no follow data yet, so for now only the artist can.
+        follows (tag Artists) do not open it yet, so for now only the
+        artist can.
       - **Hidden** (Hide Content) takes a song off its artist's Profile
         only: it still answers by id and in albums, playlists and queues.
       - **Audio** is never inside `Song`: `GET /songs/{songId}/playback`
@@ -115,6 +116,17 @@ tags:
         `PUT /me/library/songs/{songId}/playlists` sets the exact set of
         playlists holding a song in one call, all or nothing.
       - Creating, renaming and saving playlists are not specified yet.
+  - name: Artists
+    description: |
+      The player's Artist page and following artists (design notes:
+      `docs/api/PLAYER.md`, "Artist page").
+
+      - An artist is an account that has published at least one song; its
+        id is `Song.artist.id`. Anyone else is `NOT_FOUND` (404).
+      - Reading a page is open to guests; following needs an account
+        (`GUEST_NOT_ALLOWED`). Nobody can follow themselves
+        (`CANNOT_FOLLOW_SELF`).
+      - Following does not unlock followers-only songs yet (see Player).
   - name: Comments
     description: |
       Comments on songs: the player drawer's Comments tab and the pill
@@ -255,6 +267,12 @@ paths:
     $ref: './paths/library.yaml#/meLibrarySong'
   /me/library/songs/{songId}/playlists:
     $ref: './paths/library.yaml#/meLibrarySongPlaylists'
+
+  # Media player: artist pages and following
+  /artists/{artistId}:
+    $ref: './paths/artists.yaml#/artist'
+  /me/following/artists/{artistId}:
+    $ref: './paths/artists.yaml#/meFollowingArtist'
 
   # Media player: comments
   /songs/{songId}/comments:
