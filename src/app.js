@@ -25,6 +25,7 @@ const { router: defaultPlayerRouter } = require('./modules/player/routes');
 const { router: defaultLibraryRouter } = require('./modules/player/libraryRoutes');
 const { router: defaultCommentsRouter } = require('./modules/player/commentRoutes');
 const { router: defaultArtistsRouter } = require('./modules/player/artistRoutes');
+const { router: defaultSocialRouter } = require('./modules/social/routes');
 const { storage: defaultStorage } = require('./providers/storage');
 const { clientVersionGate: defaultVersionGate } = require('./middleware/clientVersion');
 
@@ -39,7 +40,7 @@ const ROOT = path.join(__dirname, '..');
  *   notificationSettingsRouter?: import('express').Router, contentRouter?: import('express').Router, versionGate?: Function,
  *   storage?: object, handPickedRouter?: import('express').Router, playerRouter?: import('express').Router,
  *   libraryRouter?: import('express').Router, commentsRouter?: import('express').Router,
- *   artistsRouter?: import('express').Router}} [options]
+ *   artistsRouter?: import('express').Router, socialRouter?: import('express').Router}} [options]
  *   `extend` is a hook used only by tests to add routes after the legacy
  *   mounts and before the /v1 404 and error handlers. `trustProxy` overrides
  *   config.trustProxy (tests). `authRouter` replaces the sign-up and login
@@ -50,7 +51,8 @@ const ROOT = path.join(__dirname, '..');
  *   check. `storage` is where profile photos are kept; its folder is served at /media when it is local.
  *   `handPickedRouter` replaces the Profile's hand-picked routes, and `playerRouter` the media player's (songs, albums,
  *   playlists, playback, transcripts and listens), `libraryRouter` the listener's library (likes, the library's
- *   playlists, Add to Playlist), `commentsRouter` the comments on songs, `artistsRouter` artist pages and following.
+ *   playlists, Add to Playlist), `commentsRouter` the comments on songs, `artistsRouter` artist pages and following,
+ *   and `socialRouter` social login and linked identities (POST /auth/social, GET/POST /me/identities).
  */
 function createApp({
   extend,
@@ -70,6 +72,7 @@ function createApp({
   libraryRouter = defaultLibraryRouter,
   commentsRouter = defaultCommentsRouter,
   artistsRouter = defaultArtistsRouter,
+  socialRouter = defaultSocialRouter,
   versionGate = defaultVersionGate,
   storage = defaultStorage,
 } = {}) {
@@ -195,6 +198,7 @@ function createApp({
   v1.use(libraryRouter);
   v1.use(commentsRouter);
   v1.use(artistsRouter);
+  v1.use(socialRouter);
   v1.use(notFound);
   app.use('/v1', v1);
 

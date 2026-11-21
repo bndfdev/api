@@ -12,8 +12,9 @@
  * counts towards the same lock as login (5 failures in 15 minutes lock it for 15 minutes, 423 ACCOUNT_LOCKED),
  * so a stolen session cannot be used to guess the password faster than login allows.
  *
- * Social re-authentication ("a fresh provider credential") needs the provider checks of the social login PR;
- * until then it is refused with 422 SOCIAL_PROVIDER_UNSUPPORTED.
+ * Social re-authentication checks a fresh provider credential (src/providers/social) and accepts it only when
+ * that provider account is already linked to the signed-in account; a provider that is off is 422
+ * SOCIAL_PROVIDER_UNSUPPORTED.
  */
 const { logger: defaultLogger } = require('../../lib/logger');
 const { ApiError } = require('../../lib/problem');
@@ -44,11 +45,6 @@ const passwordReused = () => new ApiError({
   status: 422, code: 'VALIDATION_FAILED', title: 'Some details need fixing',
   errors: [{ field: '/newPassword', code: 'PASSWORD_REUSED', message: 'Choose a password you have not used for this account.' }],
 });
-const socialUnsupported = () => new ApiError({
-  status: 422, code: 'SOCIAL_PROVIDER_UNSUPPORTED', title: 'Sign-in method not available',
-  detail: 'Confirming with Apple, Google or Facebook is not available yet.',
-  errors: [{ field: '/social', code: 'SOCIAL_PROVIDER_UNSUPPORTED', message: 'Confirming with Apple, Google or Facebook is not available yet.' }],
-});
 // The access token's account no longer exists: the same answer requireAuth gives for a session that is gone.
 const sessionRevoked = () => new ApiError({
   status: 401, code: 'SESSION_REVOKED', title: 'Session revoked', detail: 'This session was signed out. Sign in again.',
@@ -68,7 +64,11 @@ function createCredentialsService({
   passwords = defaultPasswords,
   emailProvider,
   logger = defaultLogger,
+  verifySocial,
 } = {}) {
+  // Social credentials are checked with the provider, built on first use (config decides which are on).
+  let socialVerifier = verifySocial;
+  const socialCheck = () => (socialVerifier ??= require('../../providers/social').createSocialVerifier());
   // The "password changed" notice goes through the email provider; built on first use, like the auth service's.
   let mailer = emailProvider;
   const notices = () => (mailer ??= createEmailProvider());
@@ -115,9 +115,15 @@ function createCredentialsService({
    * @returns {Promise<object>} `ReauthToken`
    */
   async function reauthenticate({ auth, password, social }) {
-    if (social !== undefined) throw socialUnsupported();
     const user = await signedInUser(auth.userId);
-    await checkPassword(user, password, '/password');
+    if (social !== undefined) {
+      const identity = await socialCheck()(social);
+      // Only an identity already linked to this account confirms it is them.
+      const linked = (user.socialIdentities || []).some((i) => i.provider === identity.provider && i.providerUserId === identity.providerUserId);
+      if (!linked) throw new ApiError({ status: 401, code: 'SOCIAL_TOKEN_INVALID', title: 'Sign-in credential is invalid' });
+    } else {
+      await checkPassword(user, password, '/password');
+    }
     const { reauthToken, expiresAt } = await reauthTokens.issue({ userId: String(user._id), sessionId: auth.sessionId });
     return { reauthToken, expiresAt: iso(expiresAt) };
   }

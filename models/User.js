@@ -24,8 +24,18 @@ function imageSchema() {
 }
 
 const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+  email: { type: String, unique: true, sparse: true },
+  password: { type: String },
+  // Provider credentials are never persisted; only the verified identity and optional verified email.
+  socialIdentities: {
+    type: [new mongoose.Schema({
+      provider: { type: String, enum: ['google', 'facebook', 'apple'], required: true },
+      providerUserId: { type: String, required: true },
+      email: String,
+      linkedAt: { type: Date, required: true },
+    }, { _id: false })],
+    default: undefined,
+  },
   name: { type: String },
   phone: { type: String, unique: true, sparse: true },
   dateOfBirth: { type: String },
@@ -122,5 +132,9 @@ const userSchema = new mongoose.Schema({
 // Finds a user by email whatever the case it was stored in (older users may have mixed case). Not unique:
 // it is only for lookups. Used by src/modules/users/repo.js, whose queries must give the same collation.
 userSchema.index({ email: 1 }, { name: 'email_case_insensitive', collation: { locale: 'en', strength: 2 } });
+userSchema.index(
+  { 'socialIdentities.provider': 1, 'socialIdentities.providerUserId': 1 },
+  { name: 'social_identity_unique', unique: true, partialFilterExpression: { 'socialIdentities.providerUserId': { $type: 'string' } } },
+);
 
 module.exports = mongoose.models.User || mongoose.model('User', userSchema);

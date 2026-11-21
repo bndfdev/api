@@ -788,8 +788,17 @@ SocialCredential:
     What the native provider SDK returned on the phone. The server verifies
     it with the provider; the app never sends a provider password.
     - apple: `idToken` (+ `authorizationCode` so the server can revoke the Apple token on account deletion) and `nonce`.
-    - google: `idToken` (audience = our iOS/Android/web client IDs).
-    - facebook: `accessToken` (checked with the Graph API `debug_token`) or a Limited Login `idToken` with `nonce` on iOS.
+    - google: `idToken` (audience = our iOS/Android/web client IDs). When
+      either the request or JWT contains a nonce, both must be present and
+      the JWT nonce must equal the lowercase hex SHA-256 of the raw nonce.
+      An email is accepted only when `email_verified` is boolean true;
+      an email without that proof is `SOCIAL_EMAIL_UNVERIFIED`.
+    - facebook: `accessToken` (checked with the Graph API `debug_token`).
+      Limited Login `idToken` is reserved for a later release and currently
+      returns `SOCIAL_TOKEN_INVALID`. Graph email is not proof of email
+      ownership and is ignored: these accounts follow the no-email rule.
+    Disabled providers (including Apple for now) return
+    `SOCIAL_PROVIDER_UNSUPPORTED` before credential-form checks.
   required: [provider]
   additionalProperties: false
   properties:

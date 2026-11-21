@@ -77,6 +77,26 @@ test('config switches show up in /config', async () => {
   assert.equal(body.features.phoneVerificationRequired, false);
 });
 
+test('GET /config social flags follow configured providers while Apple stays disabled', async () => {
+  for (const social of [
+    { googleClientIds: [] },
+    { googleClientIds: ['client'] },
+    { googleClientIds: [], facebookAppId: 'app-id', facebookAppSecret: 'app-secret' },
+    { googleClientIds: ['client'], facebookAppId: 'app-id', facebookAppSecret: 'app-secret' },
+    { googleClientIds: [], facebookAppId: 'app-id' },
+  ]) {
+    const res = await request(appWith({ social })).get('/v1/config').set(CLIENT);
+    assert.equal(res.status, 200, res.text);
+    assertMatchesSpec('AppConfig', res.body);
+    assert.deepEqual(res.body.features.socialLogin, {
+      apple: false, google: social.googleClientIds.length > 0,
+      facebook: Boolean(social.facebookAppId && social.facebookAppSecret),
+    });
+    assert.equal(res.body.social, undefined, 'provider credentials stay private');
+    assert.ok(!JSON.stringify(res.body).includes('app-secret'));
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Minimum app version
 // ---------------------------------------------------------------------------

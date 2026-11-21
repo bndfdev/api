@@ -49,6 +49,10 @@ const settingsOf = (doc) => ({
  * `mobileNumberVerified` is not enough: it set it after a fixed code.
  */
 const phoneProved = (user) => typeof user.phone === 'string' && user.phoneVerifiedAt instanceof Date;
+/** The providers linked to the account (google, facebook, apple), in the order they were linked. */
+const socialProviders = (user) => (Array.isArray(user.socialIdentities) ? [...new Set(user.socialIdentities.map((i) => i.provider))] : []);
+/** Steps a social sign-up never asks for (spec, POST /auth/social): it starts at date of birth. */
+const SOCIAL_SKIPS = Object.freeze(['email_verified', 'password_set', 'phone_verified']);
 const timeOrNull = (value) => (value instanceof Date && !Number.isNaN(value.getTime()) ? iso(value) : null);
 
 const HEX_COLOUR = /^#[0-9A-F]{6}$/;
@@ -123,8 +127,10 @@ function buildOnboarding(user, { termsUpToDate = false, phoneVerificationRequire
     date_of_birth: timeOrNull(user.dateOfBirthSetAt),
     interests: timeOrNull(user.interestsUpdatedAt),
   };
+  const social = socialProviders(user).length > 0;
   const steps = ONBOARDING_STEPS.map(({ step, skippable }) => {
     const mark = stored(user, step);
+    if (social && !done[step] && SOCIAL_SKIPS.includes(step)) return { step, status: 'skipped', skippable, updatedAt: null };
     if (step === 'phone_verified' && !phoneVerificationRequired) {
       return { step, status: done[step] ? 'completed' : 'skipped', skippable: true, updatedAt: when[step] || null };
     }
@@ -165,7 +171,7 @@ function toUserResponse(user, { consents = NO_CONSENTS, phoneVerificationRequire
     // Photos set through v1 only; the old API's `profileImage` / `profileBanner` paths are not `Image`s.
     avatar: toImage(user.avatar, (key) => storage.publicUrl(key)),
     banner: toImage(user.banner, (key) => storage.publicUrl(key)),
-    loginMethods: typeof user.password === 'string' && user.password !== '' ? ['password'] : [],
+    loginMethods: [...(typeof user.password === 'string' && user.password !== '' ? ['password'] : []), ...socialProviders(user)],
     onboarding: buildOnboarding(user, { termsUpToDate: consents.termsUpToDate, phoneVerificationRequired }),
     consents: { ...consents },
     createdAt: iso(createdAt),

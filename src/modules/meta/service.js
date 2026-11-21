@@ -68,8 +68,11 @@ function createMetaService({ config = defaultConfig, legal = defaultLegal } = {}
       features: {
         guestMode: config.features.guestMode,
         phoneVerificationRequired: config.features.phoneVerificationRequired,
-        // TODO(social login PR): switched on per provider once POST /auth/social exists.
-        socialLogin: { apple: false, google: false, facebook: false },
+        socialLogin: {
+          apple: false,
+          google: (config.social?.googleClientIds?.length || 0) > 0,
+          facebook: Boolean(config.social?.facebookAppId && config.social?.facebookAppSecret),
+        },
       },
       limits: { ...LIMITS },
     };
