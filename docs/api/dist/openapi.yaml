@@ -2,12 +2,16 @@ openapi: 3.1.0
 info:
   title: Bondfire API
   version: 1.0.0-draft.1
-  summary: Accounts, onboarding, profile and catalog for the Bondfire app.
+  summary: Accounts, onboarding, profile, catalog and the media player for the Bondfire app.
   description: |
     **Status: draft for review.** Contract between the Bondfire app and the
     `api` server for everything the onboarding flow needs. Design notes,
     edge cases and the migration from today's endpoints are in
     `docs/api/README.md`.
+
+    The media player's endpoints (tags Player, Library, Artists and Comments) are
+    built in `src/modules/player`. Their design notes and data model are
+    in `docs/api/PLAYER.md`.
 
     ## Conventions (apply to every endpoint)
 
@@ -28,7 +32,8 @@ info:
     - **Errors** are RFC 9457 problem details (`application/problem+json`)
       with a stable `code`. Branch on `code`, never on text.
     - **Retries:** send `Idempotency-Key` (UUID) on calls that send codes,
-      create accounts or upload, and reuse it when retrying the same action.
+      create accounts, upload, post comments or report listens, and reuse it
+      when retrying the same action.
     - **Rate limits:** `429` with `Retry-After` (seconds). Limits per
       operation are listed under `x-rate-limit`.
     - **Pagination:** cursor based (`limit`, `cursor` → `page.nextCursor`,
@@ -74,6 +79,66 @@ tags:
     description: Signed-in devices and linked sign-in methods.
   - name: Devices
     description: Push notification registration.
+  - name: Player
+    description: |
+      Listening: songs, albums, playlists, playback addresses, transcripts
+      and listens (design notes and data model: `docs/api/PLAYER.md`).
+
+      - Songs, albums and playlists are `Content` items, with the same ids
+        as `GET /me/content`. An unknown id, or one of another type, is
+        `CONTENT_NOT_FOUND` (404).
+      - Guests can listen: every Player operation accepts a guest token.
+      - **Followers-only** (Restrict Content on the song or its album): the
+        song is still described, with `playable: false` for a viewer who may
+        not play it, and its audio, transcript and comments answer
+        `CONTENT_RESTRICTED` (403). Only the artist's followers may play it;
+        follows (tag Artists) do not open it yet, so for now only the
+        artist can.
+      - **Hidden** (Hide Content) takes a song off its artist's Profile
+        only: it still answers by id and in albums, playlists and queues.
+      - **Audio** is never inside `Song`: `GET /songs/{songId}/playback`
+        gives a short-lived URL (6 hours, HTTP Range) right before playing.
+      - **Artwork** (`Song.image`, the album's when the song is on one)
+        carries `palette` and `blurhash` like profile photos.
+      - Lengths are milliseconds (`durationMs`), unlike `Content.durationSec`.
+  - name: Library
+    description: |
+      The listener's likes and playlists, as the player's heart and Add to
+      Playlist need them. Accounts only: guests get `403 GUEST_NOT_ALLOWED`.
+
+      - Liking a song puts it in the library's **Liked songs** entry
+        (`isLikedSongs: true`): one per account, filled by the heart only,
+        listed by `GET /me/liked-songs`. The app words its name.
+      - Only the user's own playlists are `editable` and can take songs.
+        `PUT /me/library/songs/{songId}/playlists` sets the exact set of
+        playlists holding a song in one call, all or nothing.
+      - Creating, renaming and saving playlists are not specified yet.
+  - name: Artists
+    description: |
+      The player's Artist page and following artists (design notes:
+      `docs/api/PLAYER.md`, "Artist page").
+
+      - An artist is an account that has published at least one song; its
+        id is `Song.artist.id`. Anyone else is `NOT_FOUND` (404).
+      - Reading a page is open to guests; following needs an account
+        (`GUEST_NOT_ALLOWED`). Nobody can follow themselves
+        (`CANNOT_FOLLOW_SELF`).
+      - Following does not unlock followers-only songs yet (see Player).
+  - name: Comments
+    description: |
+      Comments on songs: the player drawer's Comments tab and the pill
+      under the player. Reading is open to guests; posting, liking and
+      deleting need an account (`GUEST_NOT_ALLOWED`).
+
+      - Replies are one level deep: a reply to a reply is attached to the
+        same top-level comment.
+      - Comments are listed newest first, each with its first 3 replies
+        (oldest first); more replies are paged separately, oldest first.
+      - `commentCount` (on `Song` and on comment pages) includes replies;
+        `page.total` counts only what that list pages through.
+      - Text is trimmed, then 1 to 500 characters.
+      - A followers-only song's comments answer `CONTENT_RESTRICTED` to a
+        viewer who may not play it.
 paths:
   /health:
     servers:
@@ -2832,6 +2897,1928 @@ paths:
           $ref: '#/components/responses/UpgradeRequired'
         '500':
           $ref: '#/components/responses/InternalError'
+  /songs:
+    get:
+      operationId: listSongs
+      tags:
+        - Player
+      summary: Get several songs by id
+      description: |
+        For restoring a saved queue and drawing lists: 1 to 50 song ids,
+        comma separated (`?ids=a,b,c`). The answer keeps the order asked.
+        Ids that are unknown or not songs are left out without an error, and
+        an id asked twice is answered once, at its first place. Guests
+        allowed.
+
+        Errors: `VALIDATION_FAILED` (422, no ids or more than 50).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          description: Song ids, comma separated (1 to 50).
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 50
+            items:
+              $ref: '#/components/schemas/Id'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The songs found, in the order asked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SongList'
+              example:
+                data:
+                  - id: 6650f1c2a4b7e9d3c1f00c21
+                    title: Northbound Hum
+                    artist:
+                      id: 6650f1c2a4b7e9d3c1f00a22
+                      name: Theo Brannick
+                      image: null
+                    album: null
+                    image:
+                      url: https://cdn.bondfire.app/c/northbound-hum/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#FFFFFF'
+                        accent: '#747676'
+                        neutral: true
+                    durationMs: 176500
+                    waveform:
+                      - 0.02
+                      - 0.33
+                      - 0.61
+                      - 0.66
+                      - 0.7
+                      - 0.57
+                      - 0.25
+                      - 0.23
+                      - 0.48
+                      - 0.58
+                      - 0.58
+                      - 0.77
+                      - 0.9
+                      - 0.64
+                      - 0.2
+                      - 0.02
+                    transcriptLanguages: []
+                    listens: 913
+                    commentCount: 0
+                    latestComment: null
+                    liked: false
+                    followersOnly: false
+                    playable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /songs/{songId}:
+    get:
+      operationId: getSong
+      tags:
+        - Player
+      summary: Get a song
+      description: |
+        Everything the player shows for one song: title, artist (and their
+        photo, used when there is no artwork), album, artwork with `palette`
+        and `blurhash`, length, waveform, transcript languages, counts, the
+        latest comment (the pill) and the viewer's heart. Guests allowed
+        (`liked` is then `false`).
+
+        - A followers-only song is still described, with `playable: false`
+          for a viewer who may not play it; only its audio, transcript and
+          comments are withheld (`CONTENT_RESTRICTED`).
+        - A hidden song (Hide Content) still answers: hiding takes it off its
+          artist's Profile, not out of albums, playlists or queues.
+        - To play it, get `GET /songs/{songId}/playback`.
+
+        Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not a song).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The song.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Song'
+              example:
+                id: 6650f1c2a4b7e9d3c1f00c11
+                title: Kites Over Tallow Bay
+                artist:
+                  id: 6650f1c2a4b7e9d3c1f00a21
+                  name: Mara Quillon
+                  image:
+                    url: https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg
+                    width: 512
+                    height: 512
+                    status: ready
+                    blurhash: L*J3}y{@OGOHspn~a}a}fQfQfQfQ
+                    palette:
+                      version: 1
+                      seed: '#B0522F'
+                      accent: '#A84E2D'
+                      neutral: false
+                album:
+                  id: 6650f1c2a4b7e9d3c1f00c10
+                  title: Tallow Bay
+                image:
+                  url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                  width: 512
+                  height: 512
+                  status: ready
+                  blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                  palette:
+                    version: 1
+                    seed: '#2F6FB0'
+                    accent: '#2F6FB0'
+                    neutral: false
+                durationMs: 214380
+                waveform:
+                  - 0.02
+                  - 0.03
+                  - 0.05
+                  - 0.07
+                  - 0.13
+                  - 0.18
+                  - 0.17
+                  - 0.2
+                  - 0.3
+                  - 0.33
+                  - 0.29
+                  - 0.38
+                  - 0.5
+                  - 0.46
+                  - 0.44
+                  - 0.59
+                  - 0.68
+                  - 0.58
+                  - 0.6
+                  - 0.8
+                  - 0.82
+                  - 0.68
+                  - 0.76
+                  - 0.91
+                  - 0.79
+                  - 0.65
+                  - 0.79
+                  - 0.86
+                  - 0.68
+                  - 0.63
+                  - 0.79
+                  - 0.77
+                  - 0.58
+                  - 0.61
+                  - 0.75
+                  - 0.64
+                  - 0.48
+                  - 0.59
+                  - 0.68
+                  - 0.5
+                  - 0.41
+                  - 0.57
+                  - 0.57
+                  - 0.37
+                  - 0.37
+                  - 0.53
+                  - 0.45
+                  - 0.27
+                  - 0.37
+                  - 0.48
+                  - 0.33
+                  - 0.22
+                  - 0.38
+                  - 0.42
+                  - 0.23
+                  - 0.22
+                  - 0.4
+                  - 0.36
+                  - 0.19
+                  - 0.27
+                  - 0.42
+                  - 0.31
+                  - 0.2
+                  - 0.36
+                  - 0.44
+                  - 0.28
+                  - 0.26
+                  - 0.45
+                  - 0.45
+                  - 0.29
+                  - 0.37
+                  - 0.55
+                  - 0.47
+                  - 0.35
+                  - 0.51
+                  - 0.63
+                  - 0.48
+                  - 0.45
+                  - 0.64
+                  - 0.68
+                  - 0.52
+                  - 0.57
+                  - 0.76
+                  - 0.7
+                  - 0.57
+                  - 0.7
+                  - 0.84
+                  - 0.7
+                  - 0.63
+                  - 0.82
+                  - 0.87
+                  - 0.69
+                  - 0.71
+                  - 0.89
+                  - 0.85
+                  - 0.68
+                  - 0.78
+                  - 0.92
+                  - 0.79
+                  - 0.68
+                  - 0.83
+                  - 0.89
+                  - 0.7
+                  - 0.67
+                  - 0.84
+                  - 0.8
+                  - 0.62
+                  - 0.67
+                  - 0.81
+                  - 0.68
+                  - 0.54
+                  - 0.66
+                  - 0.69
+                  - 0.48
+                  - 0.39
+                  - 0.48
+                  - 0.43
+                  - 0.26
+                  - 0.25
+                  - 0.3
+                  - 0.21
+                  - 0.12
+                  - 0.14
+                  - 0.13
+                  - 0.07
+                  - 0.03
+                  - 0.03
+                  - 0.02
+                transcriptLanguages:
+                  - en
+                  - es
+                listens: 48210
+                commentCount: 549
+                latestComment:
+                  id: 6650f1c2a4b7e9d3c1f00e01
+                  parentId: null
+                  author:
+                    id: 6650f1c2a4b7e9d3c1f00a12
+                    name: Amelia Jane
+                    avatar: null
+                  text: The second half of this one stays with me all day.
+                  createdAt: '2026-11-12T18:40:00Z'
+                  likeCount: 12
+                  likedByMe: false
+                  replyCount: 1
+                  replies: []
+                  isMine: false
+                liked: true
+                followersOnly: false
+                playable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /songs/{songId}/playback:
+    get:
+      operationId: getSongPlayback
+      tags:
+        - Player
+      summary: Get the address to stream a song from
+      description: |
+        Called right before a song plays. `url` works for 6 hours
+        (`expiresAt`) and answers HTTP Range requests, so the player can seek
+        and resume with a plain URL. Fetch a new one when it has expired (it
+        then answers 403); never store or share it. Fetching it does not
+        count a listen (`POST /me/listens` does). Guests allowed.
+
+        Errors: `CONTENT_RESTRICTED` (403, followers-only and the viewer may
+        not play it), `CONTENT_NOT_FOUND` (404), `AUDIO_UNAVAILABLE` (409, no
+        audio yet, or still being processed).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: Where to stream it from, for the next 6 hours.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Playback'
+              example:
+                url: https://cdn.bondfire.app/audio/6650f1c2a4b7e9d3c1f00c11/128k.m4a?exp=1794600000&sig=Qm9uZGZpcmVTaWc
+                expiresAt: '2026-11-13T16:00:00Z'
+                mimeType: audio/mp4
+                sizeBytes: 3473920
+                durationMs: 214380
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/content-restricted
+                title: Only followers can play this
+                status: 403
+                code: CONTENT_RESTRICTED
+                requestId: req_01J8Z3K5QH
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The song has no audio yet, or it is still being processed (`AUDIO_UNAVAILABLE`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/audio-unavailable
+                title: This song is not ready to play yet
+                status: 409
+                code: AUDIO_UNAVAILABLE
+                requestId: req_01J8Z3K5QH
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /songs/{songId}/transcript:
+    get:
+      operationId: getSongTranscript
+      tags:
+        - Player
+      summary: Get a song's timed transcript
+      description: |
+        The words of the song with their times, for the player's live
+        transcript, in the shape the app parses (`TimedTranscript.fromJson`).
+        Guests allowed.
+
+        - `language` picks one of `Song.transcriptLanguages`. Without it, the
+          server picks from `Accept-Language`: the first language there (in
+          order of preference, matched on the main subtag, so `es-MX` finds
+          `es`) that the song has a transcript in, a translation or the
+          original; when none matches, the original.
+        - `translatedFrom` is the original's language when the text is a
+          translation (the "Translated from English" pill), else `null`.
+          `availableLanguages` lists every language, the original first.
+        - A line has either `words`, each with its own times, or one `text`
+          with the line's times. Times are whole milliseconds from the start
+          of the song; words never go back in time, and no `endMs` is before
+          its `startMs`.
+
+        Errors: `CONTENT_RESTRICTED` (403, followers-only and the viewer may
+        not play it), `CONTENT_NOT_FOUND` (404), `TRANSCRIPT_NOT_FOUND` (404,
+        none in that language or none at all; the app hides the flip button).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - name: language
+          in: query
+          required: false
+          description: The transcript language wanted. Omit it to let `Accept-Language` decide.
+          schema:
+            $ref: '#/components/schemas/TranscriptLanguage'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - name: Accept-Language
+          in: header
+          required: false
+          description: Picks the transcript language when `language` is not sent (and the language of error titles).
+          schema:
+            type: string
+            examples:
+              - es-MX, es;q=0.9, en;q=0.8
+      responses:
+        '200':
+          description: The transcript.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transcript'
+              examples:
+                original:
+                  summary: The original, timed word by word
+                  value:
+                    language: en
+                    translatedFrom: null
+                    availableLanguages:
+                      - en
+                      - es
+                    lines:
+                      - words:
+                          - text: We
+                            startMs: 12400
+                            endMs: 12620
+                          - text: fly
+                            startMs: 12620
+                            endMs: 12980
+                          - text: paper
+                            startMs: 12980
+                            endMs: 13410
+                          - text: kites
+                            startMs: 13410
+                            endMs: 13900
+                          - text: at
+                            startMs: 13900
+                            endMs: 14050
+                          - text: noon
+                            startMs: 14050
+                            endMs: 14800
+                      - text: Over the bay the gulls reply
+                        startMs: 15200
+                        endMs: 18900
+                translation:
+                  summary: A translation, timed line by line
+                  value:
+                    language: es
+                    translatedFrom: en
+                    availableLanguages:
+                      - en
+                      - es
+                    lines:
+                      - text: Volamos cometas de papel al mediodía
+                        startMs: 12400
+                        endMs: 14800
+                      - text: Sobre la bahía responden las gaviotas
+                        startMs: 15200
+                        endMs: 18900
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: No such song (`CONTENT_NOT_FOUND`), or no transcript in that language (`TRANSCRIPT_NOT_FOUND`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/transcript-not-found
+                title: No transcript in this language
+                status: 404
+                code: TRANSCRIPT_NOT_FOUND
+                requestId: req_01J8Z3K5QH
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /albums/{albumId}:
+    get:
+      operationId: getAlbum
+      tags:
+        - Player
+      summary: Get an album and its songs
+      description: |
+        "Go to album" and the album page: the album and every song on it, in
+        album order. Guests allowed.
+
+        Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not an album).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/AlbumId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The album.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Album'
+              example:
+                id: 6650f1c2a4b7e9d3c1f00c10
+                title: Tallow Bay
+                artist:
+                  id: 6650f1c2a4b7e9d3c1f00a21
+                  name: Mara Quillon
+                  image:
+                    url: https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg
+                    width: 512
+                    height: 512
+                    status: ready
+                    blurhash: L*J3}y{@OGOHspn~a}a}fQfQfQfQ
+                    palette:
+                      version: 1
+                      seed: '#B0522F'
+                      accent: '#A84E2D'
+                      neutral: false
+                image:
+                  url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                  width: 512
+                  height: 512
+                  status: ready
+                  blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                  palette:
+                    version: 1
+                    seed: '#2F6FB0'
+                    accent: '#2F6FB0'
+                    neutral: false
+                year: 2026
+                durationMs: 388040
+                songCount: 2
+                songs:
+                  - id: 6650f1c2a4b7e9d3c1f00c12
+                    title: Low Tide Letters
+                    artist:
+                      id: 6650f1c2a4b7e9d3c1f00a21
+                      name: Mara Quillon
+                      image:
+                        url: https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg
+                        width: 512
+                        height: 512
+                        status: ready
+                        blurhash: L*J3}y{@OGOHspn~a}a}fQfQfQfQ
+                        palette:
+                          version: 1
+                          seed: '#B0522F'
+                          accent: '#A84E2D'
+                          neutral: false
+                    album:
+                      id: 6650f1c2a4b7e9d3c1f00c10
+                      title: Tallow Bay
+                    image:
+                      url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#2F6FB0'
+                        accent: '#2F6FB0'
+                        neutral: false
+                    durationMs: 187040
+                    waveform:
+                      - 0.02
+                      - 0.33
+                      - 0.61
+                      - 0.66
+                      - 0.7
+                      - 0.57
+                      - 0.25
+                      - 0.23
+                      - 0.48
+                      - 0.58
+                      - 0.58
+                      - 0.77
+                      - 0.9
+                      - 0.64
+                      - 0.2
+                      - 0.02
+                    transcriptLanguages:
+                      - en
+                    listens: 30544
+                    commentCount: 0
+                    latestComment: null
+                    liked: false
+                    followersOnly: false
+                    playable: true
+                  - id: 6650f1c2a4b7e9d3c1f00c13
+                    title: Salt and Static
+                    artist:
+                      id: 6650f1c2a4b7e9d3c1f00a21
+                      name: Mara Quillon
+                      image:
+                        url: https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg
+                        width: 512
+                        height: 512
+                        status: ready
+                        blurhash: L*J3}y{@OGOHspn~a}a}fQfQfQfQ
+                        palette:
+                          version: 1
+                          seed: '#B0522F'
+                          accent: '#A84E2D'
+                          neutral: false
+                    album:
+                      id: 6650f1c2a4b7e9d3c1f00c10
+                      title: Tallow Bay
+                    image:
+                      url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#2F6FB0'
+                        accent: '#2F6FB0'
+                        neutral: false
+                    durationMs: 201000
+                    waveform: null
+                    transcriptLanguages: []
+                    listens: 0
+                    commentCount: 0
+                    latestComment: null
+                    liked: false
+                    followersOnly: false
+                    playable: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /playlists/{playlistId}:
+    get:
+      operationId: getPlaylist
+      tags:
+        - Player
+      summary: Get a playlist's header
+      description: |
+        The playlist page's header: title, owner, picture, size and length.
+        Its songs are paged by `GET /playlists/{playlistId}/songs`. Guests
+        allowed. The Liked songs entry of a library is not a playlist here:
+        read it with `GET /me/liked-songs`.
+
+        Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not a playlist).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/PlaylistId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The playlist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Playlist'
+              example:
+                id: 6650f1c2a4b7e9d3c1f00d01
+                title: Rainy Commute
+                owner:
+                  id: 6650f1c2a4b7e9d3c1f00a12
+                  name: Amelia Jane
+                  avatar: null
+                image: null
+                songCount: 37
+                durationMs: 8123000
+                updatedAt: '2026-11-10T08:05:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /playlists/{playlistId}/songs:
+    get:
+      operationId: listPlaylistSongs
+      tags:
+        - Player
+      summary: List a playlist's songs
+      description: |
+        The songs of a playlist in playlist order (a song added later comes
+        last). A song is in a playlist at most once. `page.total` is the
+        playlist's `songCount`. A cursor only works for the same playlist and
+        for 24 hours (`CURSOR_INVALID`). Guests allowed.
+
+        Errors: `CONTENT_NOT_FOUND` (404, also for an id that is not a
+        playlist), `CURSOR_INVALID` (422).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/PlaylistId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: A page of the playlist's songs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SongPage'
+              example:
+                data:
+                  - id: 6650f1c2a4b7e9d3c1f00c31
+                    title: Glasshouse Weather
+                    artist:
+                      id: 6650f1c2a4b7e9d3c1f00a22
+                      name: Theo Brannick
+                      image: null
+                    album: null
+                    image: null
+                    durationMs: 243900
+                    waveform:
+                      - 0.02
+                      - 0.33
+                      - 0.61
+                      - 0.66
+                      - 0.7
+                      - 0.57
+                      - 0.25
+                      - 0.23
+                      - 0.48
+                      - 0.58
+                      - 0.58
+                      - 0.77
+                      - 0.9
+                      - 0.64
+                      - 0.2
+                      - 0.02
+                    transcriptLanguages:
+                      - en
+                    listens: 2210
+                    commentCount: 4
+                    latestComment: null
+                    liked: false
+                    followersOnly: true
+                    playable: false
+                page:
+                  nextCursor: eyJvIjoyMH0
+                  hasMore: true
+                  total: 37
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/listens:
+    post:
+      operationId: recordListens
+      tags:
+        - Player
+      summary: Report listens
+      description: |
+        The app sends one event each time a song stops being the current one
+        (it finished, was skipped or replaced, or the app closed), and may
+        hold events to send several at once (1 to 50 per call). Guests
+        allowed.
+
+        - A listen counts towards `Song.listens` when `listenedMs` is at
+          least 30000 (30 seconds) or `completed` is `true` (the rule is an
+          open question, see `docs/api/PLAYER.md`). Counting happens after
+          the answer: `202` only says the batch was received.
+        - A `playlist` or `liked_songs` `source` moves that entry's
+          `playedAt` in the listener's library ("Recently played").
+        - Events for unknown songs or songs the listener may not play, and
+          events whose `endedAt` is more than 30 days old or more than 5
+          minutes in the future, are dropped without an error, so one bad
+          event never blocks the rest.
+        - An event sent again (same listener, song and `endedAt`) is
+          ignored, so a resend never counts twice. Send `Idempotency-Key` too.
+
+        Errors: `VALIDATION_FAILED` (422, a batch in another shape);
+        `IDEMPOTENCY_IN_PROGRESS` (409) and `IDEMPOTENCY_KEY_REUSED` (422) as
+        described on `Idempotency-Key`.
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListenBatch'
+            example:
+              events:
+                - songId: 6650f1c2a4b7e9d3c1f00c12
+                  listenedMs: 187040
+                  completed: true
+                  endedAt: '2026-11-13T09:58:12Z'
+                  source:
+                    type: album
+                    id: 6650f1c2a4b7e9d3c1f00c10
+                - songId: 6650f1c2a4b7e9d3c1f00c11
+                  listenedMs: 8200
+                  completed: false
+                  endedAt: '2026-11-13T09:58:21Z'
+                  source:
+                    type: liked_songs
+      responses:
+        '202':
+          description: Received. No body; listens are counted afterwards.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/RequestId'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/liked-songs:
+    get:
+      operationId: listLikedSongs
+      tags:
+        - Library
+      summary: List the Liked songs
+      description: |
+        The Liked songs playlist: every song the user liked, the most
+        recently liked first, each with `likedAt` (the Liked songs screen and
+        the covers of its shortcut). A song stays listed when it later becomes
+        followers-only or loses its audio, with `playable: false`. A cursor
+        only works for 24 hours (`CURSOR_INVALID`). Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: A page of liked songs, the most recently liked first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LikedSongPage'
+              example:
+                data:
+                  - id: 6650f1c2a4b7e9d3c1f00c21
+                    title: Northbound Hum
+                    artist:
+                      id: 6650f1c2a4b7e9d3c1f00a22
+                      name: Theo Brannick
+                      image: null
+                    album: null
+                    image:
+                      url: https://cdn.bondfire.app/c/northbound-hum/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#FFFFFF'
+                        accent: '#747676'
+                        neutral: true
+                    durationMs: 176500
+                    waveform:
+                      - 0.02
+                      - 0.33
+                      - 0.61
+                      - 0.66
+                      - 0.7
+                      - 0.57
+                      - 0.25
+                      - 0.23
+                      - 0.48
+                      - 0.58
+                      - 0.58
+                      - 0.77
+                      - 0.9
+                      - 0.64
+                      - 0.2
+                      - 0.02
+                    transcriptLanguages: []
+                    listens: 913
+                    commentCount: 0
+                    latestComment: null
+                    liked: true
+                    followersOnly: false
+                    playable: true
+                    likedAt: '2026-11-12T21:03:00Z'
+                page:
+                  nextCursor: null
+                  hasMore: false
+                  total: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/liked-songs/{songId}:
+    put:
+      operationId: likeSong
+      tags:
+        - Library
+      summary: Like a song
+      description: |
+        The player's heart: puts the song in Liked songs. Idempotent: liking
+        a liked song changes nothing (it keeps its `likedAt`). The Liked songs
+        entry's `songCount` and `updatedAt` follow. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+        an id that is not a song).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: unlikeSong
+      tags:
+        - Library
+      summary: Unlike a song
+      description: |
+        Takes the song out of Liked songs. Idempotent: a song that is not
+        liked (or no longer exists) answers `204` too. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/library/playlists:
+    get:
+      operationId: listLibraryPlaylists
+      tags:
+        - Library
+      summary: List the playlists in the user's library
+      description: |
+        Add to Playlist and the library: the user's own playlists, playlists
+        saved from others, and the Liked songs entry (`isLikedSongs: true`,
+        exactly one, there even when empty). Accounts only.
+
+        - `limit` goes up to 200 so the app can load the whole library in a
+          call or two; it sorts and searches on the device.
+        - `sort`: `recently_updated` (the default; `updatedAt`, newest
+          first), `recently_played` (`playedAt`, newest first, never played
+          last), `recently_saved` (`savedAt`, newest first) or `title` (A to
+          Z, ignoring case and accents). Liked songs is sorted like any other
+          entry. Ties keep a stable order.
+        - Only `editable` playlists (the user's own) can take songs; Liked
+          songs is filled by the heart only.
+        - A cursor only works for the same `sort` and for 24 hours
+          (`CURSOR_INVALID`).
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - recently_updated
+              - recently_played
+              - recently_saved
+              - title
+            default: recently_updated
+        - name: limit
+          in: query
+          required: false
+          description: Page size (up to 200, so the whole library fits in a call or two).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: A page of the library's playlists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryPlaylistPage'
+              example:
+                data:
+                  - id: liked_6650f1c2a4b7e9d3c1f00a12
+                    title: Liked songs
+                    image: null
+                    artwork: []
+                    songCount: 128
+                    updatedAt: '2026-11-12T21:03:00Z'
+                    savedAt: '2026-09-27T10:15:00Z'
+                    playedAt: '2026-11-13T09:58:21Z'
+                    isLikedSongs: true
+                    editable: false
+                  - id: 6650f1c2a4b7e9d3c1f00d01
+                    title: Rainy Commute
+                    image: null
+                    artwork:
+                      - url: https://cdn.bondfire.app/c/northbound-hum/512.jpg
+                        width: 512
+                        height: 512
+                        status: ready
+                        blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                        palette:
+                          version: 1
+                          seed: '#FFFFFF'
+                          accent: '#747676'
+                          neutral: true
+                      - url: https://cdn.bondfire.app/a/tallow-bay/512.jpg
+                        width: 512
+                        height: 512
+                        status: ready
+                        blurhash: null
+                        palette: null
+                    songCount: 37
+                    updatedAt: '2026-11-10T08:05:00Z'
+                    savedAt: '2026-10-02T17:30:00Z'
+                    playedAt: '2026-11-11T07:45:00Z'
+                    isLikedSongs: false
+                    editable: true
+                  - id: 6650f1c2a4b7e9d3c1f00d02
+                    title: Quiet Hours
+                    image:
+                      url: https://cdn.bondfire.app/p/quiet-hours/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: null
+                    artwork: []
+                    songCount: 24
+                    updatedAt: '2026-11-01T22:10:00Z'
+                    savedAt: '2026-10-20T12:00:00Z'
+                    playedAt: null
+                    isLikedSongs: false
+                    editable: false
+                page:
+                  nextCursor: null
+                  hasMore: false
+                  total: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/library/songs/{songId}:
+    get:
+      operationId: getSongLibraryState
+      tags:
+        - Library
+      summary: Get a song's heart and playlist states
+      description: |
+        One call for the player's heart and "+" button: whether the song is
+        in Liked songs, and which of the user's editable playlists hold it
+        (Liked songs not included). Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+        an id that is not a song).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The song's states in the user's library.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SongLibraryState'
+              example:
+                liked: true
+                playlistIds:
+                  - 6650f1c2a4b7e9d3c1f00d01
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/library/songs/{songId}/playlists:
+    put:
+      operationId: setSongPlaylists
+      tags:
+        - Library
+      summary: Set which playlists hold a song
+      description: |
+        Save on Add to Playlist: makes `playlistIds` exactly the set of the
+        user's playlists, other than Liked songs, that hold the song. The
+        song is added at the end of the new ones and taken out of the
+        others, all or nothing. Answers with the saved set. Accounts only.
+
+        - The Liked songs id is ignored if sent (the heart owns it), and so
+          are duplicates. `[]` takes the song out of every playlist.
+        - Each playlist that changes gets a new `updatedAt` and `songCount`.
+        - Idempotent: the same set again changes nothing, so no
+          `Idempotency-Key` is needed.
+        - Unknown ids are reported before ones the user cannot edit. Nothing
+          is saved when the request fails.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `PLAYLIST_NOT_EDITABLE` (403, a
+        playlist that is not the user's own; `meta.playlistIds`),
+        `CONTENT_NOT_FOUND` (404, the song), `PLAYLIST_NOT_FOUND` (404, ids
+        that are not playlists in the user's library; `meta.playlistIds`).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SongPlaylists'
+            example:
+              playlistIds:
+                - 6650f1c2a4b7e9d3c1f00d01
+                - 6650f1c2a4b7e9d3c1f00d04
+      responses:
+        '200':
+          description: The saved set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SongPlaylists'
+              example:
+                playlistIds:
+                  - 6650f1c2a4b7e9d3c1f00d01
+                  - 6650f1c2a4b7e9d3c1f00d04
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No such song (`CONTENT_NOT_FOUND`), or ids that are not playlists in the user's library (`PLAYLIST_NOT_FOUND`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/playlist-not-found
+                title: Some playlists were not found
+                status: 404
+                code: PLAYLIST_NOT_FOUND
+                requestId: req_01J8Z3K5QH
+                meta:
+                  playlistIds:
+                    - 6650f1c2a4b7e9d3c1f00d09
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /artists/{artistId}:
+    get:
+      operationId: getArtist
+      tags:
+        - Artists
+      summary: Get an artist's page
+      description: |
+        The player's Artist page in one call: the profile (name, avatar,
+        banner, follower counts and whether the viewer follows them) and the
+        releases. An artist is an account that has published at least one
+        song (`Song.artist.id`). Guests allowed (`following` is then
+        `false`).
+
+        - `releases`: the artist's albums and songs, newest first
+          (`releasedAt`, then `id`), at most 200. Hidden items (Hide Content)
+          are left out, as on the Profile; followers-only ones are listed
+          (play them through `GET /songs/{songId}`, which says whether the
+          viewer may). A song on an album is listed too, on its own row.
+        - `plays` are counted listens (the rule is under `POST /me/listens`):
+          a song's `Song.listens`, an album's the sum of its songs'.
+        - `followerCount` and `followingCount` count accounts; `following`
+          is the viewer's. Follow with `PUT /me/following/artists/{artistId}`.
+
+        Errors: `NOT_FOUND` (404: no account with that id, or an account
+        that has published no song).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/ArtistId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The artist's page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Artist'
+              example:
+                id: 6650f1c2a4b7e9d3c1f00a21
+                name: Mara Quillon
+                avatar:
+                  url: https://cdn.bondfire.app/a/6650f1c2a4b7e9d3c1f00a21/512.jpg
+                  width: 512
+                  height: 512
+                  status: ready
+                  blurhash: L*J3}y{@OGOHspn~a}a}fQfQfQfQ
+                  palette:
+                    version: 1
+                    seed: '#B0522F'
+                    accent: '#A84E2D'
+                    neutral: false
+                banner: null
+                genre: null
+                followerCount: 1240
+                followingCount: 31
+                following: true
+                releases:
+                  - id: 6650f1c2a4b7e9d3c1f00c11
+                    kind: song
+                    title: Kites Over Tallow Bay
+                    releasedAt: '2026-09-01T10:00:00Z'
+                    plays: 48210
+                    songCount: null
+                    image:
+                      url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#2F6FB0'
+                        accent: '#2F6FB0'
+                        neutral: false
+                  - id: 6650f1c2a4b7e9d3c1f00c10
+                    kind: album
+                    title: Tallow Bay
+                    releasedAt: '2026-06-01T10:00:00Z'
+                    plays: 72000
+                    songCount: 9
+                    image:
+                      url: https://cdn.bondfire.app/c/tallow-bay/512.jpg
+                      width: 512
+                      height: 512
+                      status: ready
+                      blurhash: LEHV6nWB2yk8pyo0adR*.7kCMdnj
+                      palette:
+                        version: 1
+                        seed: '#2F6FB0'
+                        accent: '#2F6FB0'
+                        neutral: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /me/following/artists/{artistId}:
+    put:
+      operationId: followArtist
+      tags:
+        - Artists
+      summary: Follow an artist
+      description: |
+        The Artist page's Follow button. Idempotent: following an artist
+        already followed changes nothing (it keeps its first time). The
+        artist's `followerCount` and the viewer's `following` follow.
+        Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403), `NOT_FOUND` (404: no artist with
+        that id, as for `GET /artists/{artistId}`), `CANNOT_FOLLOW_SELF`
+        (422: the artist is the caller).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/ArtistId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The artist is the caller (`CANNOT_FOLLOW_SELF`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: https://api.bondfire.app/errors/cannot-follow-self
+                title: You can't follow yourself
+                status: 422
+                code: CANNOT_FOLLOW_SELF
+                requestId: req_01J8Z3K5QH
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: unfollowArtist
+      tags:
+        - Artists
+      summary: Stop following an artist
+      description: |
+        The Artist page's Following button. Idempotent: an artist who is not
+        followed (or no longer exists, or is the caller) answers `204` too,
+        so a follower can always stop following. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED` (403).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/ArtistId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /songs/{songId}/comments:
+    get:
+      operationId: listSongComments
+      tags:
+        - Comments
+      summary: List a song's comments
+      description: |
+        The Comments tab: top-level comments, newest first, each with
+        `replyCount` and its first replies (up to 3, oldest first). More
+        replies come from `GET /comments/{commentId}/replies`. The app loads
+        3, then pages of 10 (`limit`). Guests allowed.
+
+        - `commentCount` counts every comment, replies included (the tab
+          label); `page.total` counts the top-level comments only.
+        - A cursor only works for the same song and for 24 hours
+          (`CURSOR_INVALID`).
+
+        Errors: `CONTENT_RESTRICTED` (403, followers-only song the viewer may
+        not play), `CONTENT_NOT_FOUND` (404), `CURSOR_INVALID` (422).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: A page of top-level comments, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentPage'
+              example:
+                data:
+                  - id: 6650f1c2a4b7e9d3c1f00e01
+                    parentId: null
+                    author:
+                      id: 6650f1c2a4b7e9d3c1f00a12
+                      name: Amelia Jane
+                      avatar: null
+                    text: The second half of this one stays with me all day.
+                    createdAt: '2026-11-12T18:40:00Z'
+                    likeCount: 12
+                    likedByMe: false
+                    replyCount: 1
+                    replies:
+                      - id: 6650f1c2a4b7e9d3c1f00e02
+                        parentId: 6650f1c2a4b7e9d3c1f00e01
+                        author:
+                          id: 6650f1c2a4b7e9d3c1f00a23
+                          name: null
+                          avatar: null
+                        text: Same here, it was on repeat on my walk home.
+                        createdAt: '2026-11-12T19:02:00Z'
+                        likeCount: 3
+                        likedByMe: true
+                        replyCount: 0
+                        isMine: true
+                    isMine: false
+                page:
+                  nextCursor: eyJvIjoxfQ
+                  hasMore: true
+                  total: 412
+                commentCount: 549
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: postSongComment
+      tags:
+        - Comments
+      summary: Comment on a song
+      description: |
+        Posts a top-level comment as the signed-in user. `text` is trimmed
+        (line breaks inside are kept) and must then be 1 to 500 characters.
+        Answers with the comment as saved (`isMine: true`, no replies). At
+        most 10 a minute per account, comments and replies together.
+        Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+        `CONTENT_NOT_FOUND` (404), `VALIDATION_FAILED` (422, blank or too
+        long; `field` `/text`); `IDEMPOTENCY_IN_PROGRESS` (409) and
+        `IDEMPOTENCY_KEY_REUSED` (422) as described on `Idempotency-Key`.
+      x-rate-limit:
+        - key: account
+          limit: 10
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/SongId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentCreate'
+            example:
+              text: The quiet bridge before the last chorus is perfect.
+      responses:
+        '201':
+          description: The comment as saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+              example:
+                id: 6650f1c2a4b7e9d3c1f00e05
+                parentId: null
+                author:
+                  id: 6650f1c2a4b7e9d3c1f00a12
+                  name: Amelia Jane
+                  avatar: null
+                text: The quiet bridge before the last chorus is perfect.
+                createdAt: '2026-11-13T10:01:00Z'
+                likeCount: 0
+                likedByMe: false
+                replyCount: 0
+                replies: []
+                isMine: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /comments/{commentId}:
+    delete:
+      operationId: deleteComment
+      tags:
+        - Comments
+      summary: Delete a comment or a reply
+      description: |
+        For its author, and for the song's owner (the artist, `Song.artist.id`).
+        Deleting a top-level comment deletes its replies too; `commentCount`
+        and `replyCount` drop at once. A comment already deleted is
+        `COMMENT_NOT_FOUND`, which the app treats as done. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED`, `FORBIDDEN` (403, someone else's comment
+        on someone else's song), `COMMENT_NOT_FOUND` (404).
+      x-rate-limit:
+        - key: account
+          limit: 30
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/CommentId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /comments/{commentId}/replies:
+    get:
+      operationId: listCommentReplies
+      tags:
+        - Comments
+      summary: List a comment's replies
+      description: |
+        "View more replies" under a comment: its replies, oldest first. The
+        first page starts at the oldest reply, so it repeats the ones the
+        comment already carries; the app skips those it has. A reply has no
+        replies of its own (its list is empty). `page.total` is the
+        comment's `replyCount`. Guests allowed.
+
+        Errors: `CONTENT_RESTRICTED` (403, the song is followers-only and the
+        viewer may not play it), `COMMENT_NOT_FOUND` (404), `CURSOR_INVALID`
+        (422).
+      x-rate-limit:
+        - key: account
+          limit: 120
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/CommentId'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: A page of replies, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentReplyPage'
+              example:
+                data:
+                  - id: 6650f1c2a4b7e9d3c1f00e02
+                    parentId: 6650f1c2a4b7e9d3c1f00e01
+                    author:
+                      id: 6650f1c2a4b7e9d3c1f00a23
+                      name: null
+                      avatar: null
+                    text: Same here, it was on repeat on my walk home.
+                    createdAt: '2026-11-12T19:02:00Z'
+                    likeCount: 3
+                    likedByMe: false
+                    replyCount: 0
+                    isMine: false
+                page:
+                  nextCursor: null
+                  hasMore: false
+                  total: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: postCommentReply
+      tags:
+        - Comments
+      summary: Reply to a comment
+      description: |
+        Replies are one level deep: replying to a reply adds the new reply to
+        the same top-level comment, and the answer's `parentId` says which.
+        Same text rules and limit as `POST /songs/{songId}/comments` (10 a
+        minute, comments and replies together). Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+        `COMMENT_NOT_FOUND` (404), `VALIDATION_FAILED` (422, blank or too
+        long; `field` `/text`); `IDEMPOTENCY_IN_PROGRESS` (409) and
+        `IDEMPOTENCY_KEY_REUSED` (422) as described on `Idempotency-Key`.
+      x-rate-limit:
+        - key: account
+          limit: 10
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/CommentId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommentCreate'
+            example:
+              text: Agreed, that part gets me every time.
+      responses:
+        '201':
+          description: The reply as saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+              example:
+                id: 6650f1c2a4b7e9d3c1f00e06
+                parentId: 6650f1c2a4b7e9d3c1f00e01
+                author:
+                  id: 6650f1c2a4b7e9d3c1f00a12
+                  name: Amelia Jane
+                  avatar: null
+                text: Agreed, that part gets me every time.
+                createdAt: '2026-11-13T10:03:00Z'
+                likeCount: 0
+                likedByMe: false
+                replyCount: 0
+                isMine: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /comments/{commentId}/like:
+    put:
+      operationId: likeComment
+      tags:
+        - Comments
+      summary: Like a comment or a reply
+      description: |
+        Idempotent: liking it again changes nothing. Answers with its likes
+        after the change. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+        `COMMENT_NOT_FOUND` (404).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/CommentId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The comment's likes after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentLike'
+              example:
+                likeCount: 13
+                likedByMe: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: unlikeComment
+      tags:
+        - Comments
+      summary: Unlike a comment or a reply
+      description: |
+        Idempotent: unliking one not liked changes nothing. Answers with its
+        likes after the change. Accounts only.
+
+        Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+        `COMMENT_NOT_FOUND` (404).
+      x-rate-limit:
+        - key: account
+          limit: 60
+          window: 1m
+      parameters:
+        - $ref: '#/components/parameters/CommentId'
+        - $ref: '#/components/parameters/ClientPlatform'
+        - $ref: '#/components/parameters/ClientVersion'
+      responses:
+        '200':
+          description: The comment's likes after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentLike'
+              example:
+                likeCount: 12
+                likedByMe: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '426':
+          $ref: '#/components/responses/UpgradeRequired'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
   securitySchemes:
     bearerAuth:
@@ -3059,6 +5046,20 @@ components:
       description: |
         Stable, machine-readable error code. New codes may be added in v1;
         clients must treat unknown codes by their HTTP status.
+
+        Codes of the media player (tags Player, Library and Comments):
+        - `CONTENT_NOT_FOUND` (404): no song, album or playlist with that id (or the id is of another type).
+        - `CONTENT_RESTRICTED` (403): the song is followers-only and the viewer may not play it, so its audio,
+          transcript and comments are withheld.
+        - `AUDIO_UNAVAILABLE` (409): the song has no audio yet, or its audio is still being processed.
+        - `TRANSCRIPT_NOT_FOUND` (404): the song has no transcript in that language, or none at all.
+        - `PLAYLIST_NOT_FOUND` (404): an id is not a playlist in the user's library; `meta.playlistIds` lists them.
+        - `PLAYLIST_NOT_EDITABLE` (403): a playlist is not the user's own, so songs cannot be added to it or
+          taken out of it; `meta.playlistIds` lists them.
+        - `COMMENT_NOT_FOUND` (404): the comment does not exist or was deleted.
+
+        Codes of artist pages (tag Artists): an unknown artist is the generic `NOT_FOUND` (404).
+        - `CANNOT_FOLLOW_SELF` (422): the artist to follow is the caller.
       enum:
         - MALFORMED_REQUEST
         - VALIDATION_FAILED
@@ -3140,6 +5141,13 @@ components:
         - CURSOR_INVALID
         - CONTENT_NOT_FOUND
         - HAND_PICKED_INVALID
+        - CONTENT_RESTRICTED
+        - AUDIO_UNAVAILABLE
+        - TRANSCRIPT_NOT_FOUND
+        - PLAYLIST_NOT_FOUND
+        - PLAYLIST_NOT_EDITABLE
+        - COMMENT_NOT_FOUND
+        - CANNOT_FOLLOW_SELF
         - UPLOAD_NOT_FOUND
         - UPLOAD_EXPIRED
         - UPLOAD_INCOMPLETE
@@ -3350,9 +5358,10 @@ components:
     ImagePalette:
       type: object
       description: |
-        The colours of an avatar or banner, worked out once at upload by colour rules v1 from the picture exactly
-        as shown (the crop, with transparency flattened onto black). The app takes its personal colour from the
-        banner's palette: `accent` on primary buttons, selected tags and switches. The rules group the picture's
+        The colours of an avatar, banner or piece of song or album artwork, worked out once at upload by colour
+        rules v1 from the picture exactly as shown (the crop, with transparency flattened onto black). The app
+        takes its personal colour from the banner's palette: `accent` on primary buttons, selected tags and
+        switches; the player takes its colours from the artwork's palette the same way. The rules group the picture's
         colours (Material colour utilities), pick the main colour family that covers at least 5% of the picture,
         and adjust its tone, keeping its hue, so that white text on it reads at 4.5:1 and it stands out 3:1 from
         the page background (black at 80% over the blurred banner). A yellow that would turn olive at that tone
@@ -3422,8 +5431,9 @@ components:
             - 'null'
           description: |
             Tiny placeholder to paint while the image loads: a BlurHash with 4x3 components (28 characters) of the
-            picture as shown, worked out at upload. Filled for avatars and banners; `null` for ones stored before
-            this was added, until the backfill has run, and for other images (artwork) for now.
+            picture as shown, worked out at upload. Filled for avatars and banners, and for song and album artwork
+            too (`Song.image`, `Album.image`; worked out when the artwork is uploaded, see `docs/api/PLAYER.md`).
+            `null` for images stored before this was added, until the backfill has run.
           examples:
             - L*J3}y{@OGOHspn~a}a}fQfQfQfQ
         palette:
@@ -3432,9 +5442,9 @@ components:
             - type: 'null'
           description: |
             The picture's colours, worked out at upload by colour rules v1 (see `ImagePalette`). Filled for avatars
-            and banners; `null` (or absent) for ones stored before this was added, until the backfill has run, and
-            for other images (artwork) for now. When it is `null` the app works the colours out itself with the same
-            rules.
+            and banners, and for song and album artwork too (worked out when the artwork is uploaded); `null` (or
+            absent) for images stored before this was added, until the backfill has run. When it is `null` the app
+            works the colours out itself with the same rules.
         variants:
           type: object
           description: Resized copies keyed by width in pixels.
@@ -4761,6 +6771,798 @@ components:
         notificationsEnabled:
           type: boolean
           description: Mirrors the OS permission so the server does not send to a silenced device.
+    ArtistSummary:
+      type: object
+      description: |
+        Who a song or album is by: the account that published it (`id` is that
+        user's id). Their page is `GET /artists/{artistId}`.
+      required:
+        - id
+        - name
+        - image
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+          examples:
+            - Mara Quillon
+        image:
+          description: The artist's profile photo. The player shows it when the song has no artwork.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+    AlbumSummary:
+      type: object
+      description: The album a song is on (the player header and "Go to album").
+      required:
+        - id
+        - title
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        title:
+          type: string
+          examples:
+            - Tallow Bay
+    TranscriptLanguage:
+      type: string
+      description: |
+        BCP 47 tag of a language a song's transcript is written in. Any
+        language, not only the app's `supportedLanguages`.
+      pattern: ^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$
+      examples:
+        - en
+        - es
+        - pt-BR
+    UserSummary:
+      type: object
+      description: Another account as lists show it (a comment's author, a playlist's owner).
+      required:
+        - id
+        - name
+        - avatar
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type:
+            - string
+            - 'null'
+          description: '`null` when the account has no name yet; the app shows its own placeholder.'
+          examples:
+            - Amelia Jane
+        avatar:
+          description: The profile photo; `null` draws the placeholder circle.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+    Comment:
+      type: object
+      description: |
+        A comment on a song, or a reply to one. Replies are one level deep:
+        they have no replies of their own.
+      required:
+        - id
+        - parentId
+        - author
+        - text
+        - createdAt
+        - likeCount
+        - likedByMe
+        - replyCount
+        - isMine
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        parentId:
+          description: The top-level comment this replies to; `null` for a top-level comment.
+          oneOf:
+            - $ref: '#/components/schemas/Id'
+            - type: 'null'
+        author:
+          $ref: '#/components/schemas/UserSummary'
+        text:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: As saved (trimmed). Line breaks inside are kept.
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        likeCount:
+          type: integer
+          minimum: 0
+        likedByMe:
+          type: boolean
+          description: Always `false` for guests.
+        replyCount:
+          type: integer
+          minimum: 0
+          description: How many replies it has (can be more than `replies` holds). Always 0 on a reply.
+        replies:
+          type: array
+          description: |
+            On a top-level comment in `GET /songs/{songId}/comments`: its first
+            replies, oldest first (up to 3). Empty in `Song.latestComment`.
+            Absent on a reply.
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/Comment'
+        isMine:
+          type: boolean
+          description: Whether the viewer wrote it (and so can delete it). Always `false` for guests.
+    Song:
+      type: object
+      description: |
+        One song as the player shows it. Songs are `Content` items of type
+        `song` (same ids as `GET /me/content`). `liked` and `playable` are the
+        viewer's. The audio address is not here: get it from
+        `GET /songs/{songId}/playback` right before playing.
+      required:
+        - id
+        - title
+        - artist
+        - album
+        - image
+        - durationMs
+        - waveform
+        - transcriptLanguages
+        - listens
+        - commentCount
+        - latestComment
+        - liked
+        - followersOnly
+        - playable
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        title:
+          type: string
+          examples:
+            - Kites Over Tallow Bay
+        artist:
+          $ref: '#/components/schemas/ArtistSummary'
+        album:
+          description: The album the song is on; `null` for a single (the header then shows the song title).
+          oneOf:
+            - $ref: '#/components/schemas/AlbumSummary'
+            - type: 'null'
+        image:
+          description: |
+            The artwork the server chose: the album's when the song is on one,
+            else the song's own, with `palette` and `blurhash`. `null` when there
+            is none: the app then shows `artist.image`, else its standard picture.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        durationMs:
+          type: integer
+          minimum: 0
+          description: Length in milliseconds (the audio file's, once it is processed).
+        waveform:
+          type:
+            - array
+            - 'null'
+          description: |
+            Loudness across the song for the seek bar: levels from 0 (silence) to
+            1 (loudest), evenly spaced in time. Any length: the server makes 128
+            when the audio is uploaded, and the app resamples to the bars it
+            draws. `null` until it is worked out.
+          minItems: 1
+          maxItems: 1024
+          items:
+            type: number
+            minimum: 0
+            maximum: 1
+        transcriptLanguages:
+          type: array
+          description: Languages it has a transcript in, the original first. Empty when it has none (the app hides the flip button).
+          items:
+            $ref: '#/components/schemas/TranscriptLanguage'
+        listens:
+          type: integer
+          minimum: 0
+          description: Counted listens (the rule is under `POST /me/listens`).
+        commentCount:
+          type: integer
+          minimum: 0
+          description: Every comment on it, replies included (the "Comments (549)" tab label).
+        latestComment:
+          description: The newest top-level comment, for the pill under the player (its `replies` is empty); `null` when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/Comment'
+            - type: 'null'
+        liked:
+          type: boolean
+          description: Whether the viewer has it in Liked songs. Always `false` for guests.
+        followersOnly:
+          type: boolean
+          description: Restrict Content is on for the song or for its album, so only the artist's followers can play it.
+        playable:
+          type: boolean
+          description: |
+            Whether the viewer can play it now. `false` when it is followers-only
+            and the viewer may not play it, or when its audio is not ready yet;
+            `GET /songs/{songId}/playback` then answers `CONTENT_RESTRICTED` or
+            `AUDIO_UNAVAILABLE`.
+    SongList:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Song'
+    Playback:
+      type: object
+      description: |
+        Where to stream a song from, for one play. `url` is short-lived (6
+        hours) and answers HTTP Range requests, so the player can seek and
+        resume. Fetch it right before playing and again once it has expired;
+        never store or share it.
+      required:
+        - url
+        - expiresAt
+        - mimeType
+        - sizeBytes
+        - durationMs
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Signed address of the audio file. Works without the access token, until `expiresAt`.
+        expiresAt:
+          description: When `url` stops working (6 hours after this answer). After that it answers 403.
+          $ref: '#/components/schemas/Timestamp'
+        mimeType:
+          type: string
+          description: The audio file's type.
+          examples:
+            - audio/mp4
+            - audio/mpeg
+        sizeBytes:
+          type: integer
+          minimum: 1
+          description: Size of the audio file.
+        durationMs:
+          type: integer
+          minimum: 0
+          description: Length of the audio file in milliseconds.
+    TranscriptWord:
+      type: object
+      description: One word, heard from `startMs` up to (not including) `endMs`.
+      required:
+        - text
+        - startMs
+        - endMs
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: The word as shown, with its punctuation. Never blank.
+        startMs:
+          type: integer
+          minimum: 0
+        endMs:
+          type: integer
+          minimum: 0
+          description: Never before `startMs`.
+    TranscriptWordsLine:
+      type: object
+      description: A line whose words each have their own times.
+      required:
+        - words
+      properties:
+        words:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/TranscriptWord'
+    TranscriptTextLine:
+      type: object
+      description: A line with one time for the whole line; the app spreads it evenly over the line's words.
+      required:
+        - text
+        - startMs
+        - endMs
+      properties:
+        text:
+          type: string
+          minLength: 1
+          description: The line as shown. Never blank.
+        startMs:
+          type: integer
+          minimum: 0
+        endMs:
+          type: integer
+          minimum: 0
+          description: Never before `startMs`.
+    TranscriptLine:
+      description: One line of a transcript (it may wrap on screen). Either timed words or one line-level time.
+      oneOf:
+        - $ref: '#/components/schemas/TranscriptWordsLine'
+        - $ref: '#/components/schemas/TranscriptTextLine'
+    Transcript:
+      type: object
+      description: |
+        The words of a song with their times, for the player's live transcript.
+        The shape the app parses (`TimedTranscript.fromJson`). Times are whole
+        milliseconds from the start of the song; words never go back in time
+        (each starts at or after the start of the one before, across lines).
+      required:
+        - language
+        - translatedFrom
+        - lines
+        - availableLanguages
+      properties:
+        language:
+          $ref: '#/components/schemas/TranscriptLanguage'
+        translatedFrom:
+          description: |
+            The language the song is in when this text is a translation (the
+            "Translated from English" pill); `null` for the original.
+          oneOf:
+            - $ref: '#/components/schemas/TranscriptLanguage'
+            - type: 'null'
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/TranscriptLine'
+        availableLanguages:
+          type: array
+          description: Every language the song has a transcript in, the original first (the same list as `Song.transcriptLanguages`).
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/TranscriptLanguage'
+    Album:
+      type: object
+      description: An album and its songs. Albums are `Content` items of type `album` (same ids).
+      required:
+        - id
+        - title
+        - artist
+        - image
+        - year
+        - durationMs
+        - songCount
+        - songs
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        title:
+          type: string
+          examples:
+            - Tallow Bay
+        artist:
+          $ref: '#/components/schemas/ArtistSummary'
+        image:
+          description: The album's artwork, with `palette` and `blurhash`; `null` when it has none.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        year:
+          type:
+            - integer
+            - 'null'
+          description: Release year.
+          examples:
+            - 2026
+        durationMs:
+          type: integer
+          minimum: 0
+          description: Total length of its songs in milliseconds.
+        songCount:
+          type: integer
+          minimum: 0
+        songs:
+          type: array
+          description: Every song on it, in album order.
+          items:
+            $ref: '#/components/schemas/Song'
+    Playlist:
+      type: object
+      description: |
+        A playlist's header; its songs are paged by
+        `GET /playlists/{playlistId}/songs`. Playlists are `Content` items of
+        type `playlist` (same ids).
+      required:
+        - id
+        - title
+        - owner
+        - image
+        - songCount
+        - durationMs
+        - updatedAt
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        title:
+          type: string
+          examples:
+            - Rainy Commute
+        owner:
+          $ref: '#/components/schemas/UserSummary'
+        image:
+          description: The playlist's own picture; `null` draws the app's 2x2 mosaic.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        songCount:
+          type: integer
+          minimum: 0
+        durationMs:
+          type: integer
+          minimum: 0
+          description: Total length of its songs in milliseconds.
+        updatedAt:
+          description: When a song was last added to or taken out of it.
+          $ref: '#/components/schemas/Timestamp'
+    SongPage:
+      type: object
+      required:
+        - data
+        - page
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Song'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    ListenSource:
+      type: object
+      description: |
+        Where the song was played from. A `playlist` or `liked_songs` source
+        also moves that entry's `playedAt` in the listener's library (the
+        "Recently played" sort).
+      required:
+        - type
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum:
+            - album
+            - playlist
+            - liked_songs
+            - song
+          description: '`song` when it was played on its own (a link, a single).'
+        id:
+          description: |
+            The album's or playlist's id, for `album` and `playlist` (not sent
+            for the others). A source that needs an id and has none is ignored;
+            the listen itself still counts.
+          $ref: '#/components/schemas/Id'
+    ListenEvent:
+      type: object
+      description: One song that stopped being the current one (it finished, was skipped or replaced, or the app closed).
+      required:
+        - songId
+        - listenedMs
+        - completed
+        - endedAt
+      additionalProperties: false
+      properties:
+        songId:
+          $ref: '#/components/schemas/Id'
+        listenedMs:
+          type: integer
+          minimum: 0
+          maximum: 86400000
+          description: |
+            Time actually played, in the song's own time: seeking does not add
+            to it, and pauses do not count.
+        completed:
+          type: boolean
+          description: Whether it played to the end.
+        endedAt:
+          description: When it stopped being the current song, by the device's clock.
+          $ref: '#/components/schemas/Timestamp'
+        source:
+          $ref: '#/components/schemas/ListenSource'
+    ListenBatch:
+      type: object
+      required:
+        - events
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/ListenEvent'
+    LikedSong:
+      description: A song in Liked songs, with when the user liked it.
+      allOf:
+        - $ref: '#/components/schemas/Song'
+        - type: object
+          required:
+            - likedAt
+          properties:
+            likedAt:
+              $ref: '#/components/schemas/Timestamp'
+    LikedSongPage:
+      type: object
+      required:
+        - data
+        - page
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LikedSong'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    LibraryPlaylist:
+      type: object
+      description: |
+        One playlist in the user's library, as Add to Playlist lists it: the
+        user's own playlists, playlists saved from others, and the Liked songs
+        entry (`isLikedSongs: true`).
+      required:
+        - id
+        - title
+        - image
+        - artwork
+        - songCount
+        - updatedAt
+        - savedAt
+        - playedAt
+        - isLikedSongs
+        - editable
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        title:
+          type: string
+          description: For the Liked songs entry this is `Liked songs` (English); the app shows its own words instead.
+          examples:
+            - Rainy Commute
+        image:
+          description: The playlist's own picture; `null` draws the app's 2x2 mosaic of `artwork`.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        artwork:
+          type: array
+          maxItems: 4
+          description: |
+            Covers for the app's 2x2 mosaic when the playlist has no `image`:
+            the artwork of its first songs by playlist position, as `Song.image`
+            gives it (the album's artwork, else the song's own), skipping songs
+            that have none and covers already listed, up to 4. Only the first 20
+            songs are looked at. Always present; `[]` when none has artwork, and
+            always `[]` for the Liked songs entry (the app draws its own).
+          items:
+            $ref: '#/components/schemas/Image'
+        songCount:
+          type: integer
+          minimum: 0
+        updatedAt:
+          description: When a song was last added to or taken out of it ("Recently updated").
+          $ref: '#/components/schemas/Timestamp'
+        savedAt:
+          description: When it joined the library ("Recently saved"); for the user's own playlists, when it was created.
+          $ref: '#/components/schemas/Timestamp'
+        playedAt:
+          description: When the user last played from it ("Recently played", from `POST /me/listens`); `null` if never.
+          oneOf:
+            - $ref: '#/components/schemas/Timestamp'
+            - type: 'null'
+        isLikedSongs:
+          type: boolean
+          description: Marks the one Liked songs entry, which only the heart fills. Exactly one entry has it.
+        editable:
+          type: boolean
+          description: |
+            `true` for the user's own playlists: only these can take songs (Add
+            to Playlist). `false` for saved playlists and for Liked songs.
+    LibraryPlaylistPage:
+      type: object
+      required:
+        - data
+        - page
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/LibraryPlaylist'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    SongLibraryState:
+      type: object
+      description: The player's heart and "+" states for one song.
+      required:
+        - liked
+        - playlistIds
+      properties:
+        liked:
+          type: boolean
+          description: Whether the song is in Liked songs.
+        playlistIds:
+          type: array
+          description: The user's editable playlists that hold the song (Liked songs not included), in no particular order.
+          items:
+            $ref: '#/components/schemas/Id'
+    SongPlaylists:
+      type: object
+      description: |
+        The user's playlists, other than Liked songs, that hold a song. Sent
+        to set them, answered as saved. When sent, duplicates and the Liked
+        songs id are ignored.
+      required:
+        - playlistIds
+      additionalProperties: false
+      properties:
+        playlistIds:
+          type: array
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/Id'
+    ReleaseKind:
+      type: string
+      description: |
+        What an artist's release is. Only `album` and `song` for now; more kinds
+        (stories, playlists) may be added, so clients skip rows of a kind they
+        do not know.
+      enum:
+        - album
+        - song
+    ArtistRelease:
+      type: object
+      description: |
+        One row of an artist's releases. The id is the album's or the song's
+        (`GET /albums/{albumId}`, `GET /songs/{songId}`).
+      required:
+        - id
+        - kind
+        - title
+        - releasedAt
+        - plays
+        - songCount
+        - image
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        kind:
+          $ref: '#/components/schemas/ReleaseKind'
+        title:
+          type: string
+          examples:
+            - Tallow Bay
+        releasedAt:
+          description: When it was published.
+          $ref: '#/components/schemas/Timestamp'
+        plays:
+          type: integer
+          minimum: 0
+          description: Counted listens; for an album, the sum of its songs'.
+        songCount:
+          type:
+            - integer
+            - 'null'
+          minimum: 0
+          description: An album's songs (as `Album.songCount`); `null` for a song.
+        image:
+          description: |
+            The artwork, with `palette` and `blurhash`: an album's own; a song's
+            as `Song.image` (its album's when it is on one, else its own). `null`
+            when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+    Artist:
+      type: object
+      description: An artist's page (the account that published the songs) for this viewer.
+      required:
+        - id
+        - name
+        - avatar
+        - banner
+        - genre
+        - followerCount
+        - followingCount
+        - following
+        - releases
+      properties:
+        id:
+          $ref: '#/components/schemas/Id'
+        name:
+          type: string
+          description: As `ArtistSummary.name` (`''` when the account has no name).
+          examples:
+            - Mara Quillon
+        avatar:
+          description: The profile photo (the round picture); `null` when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        banner:
+          description: The profile banner (the picture at the top); `null` when there is none.
+          oneOf:
+            - $ref: '#/components/schemas/Image'
+            - type: 'null'
+        genre:
+          type:
+            - string
+            - 'null'
+          description: The line over the name. Not stored yet, so always `null` (the app hides the line).
+        followerCount:
+          type: integer
+          minimum: 0
+          description: How many accounts follow the artist.
+        followingCount:
+          type: integer
+          minimum: 0
+          description: How many artists the artist follows.
+        following:
+          type: boolean
+          description: Whether the viewer follows the artist. Always `false` for guests and for the artist themselves.
+        releases:
+          type: array
+          description: Albums and songs, newest first (`releasedAt`, then `id`), at most 200; hidden ones left out.
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ArtistRelease'
+    CommentPage:
+      type: object
+      required:
+        - data
+        - page
+        - commentCount
+      properties:
+        data:
+          type: array
+          description: Top-level comments, newest first.
+          items:
+            $ref: '#/components/schemas/Comment'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+        commentCount:
+          type: integer
+          minimum: 0
+          description: Every comment on the song, replies included (`page.total` counts top-level comments only).
+    CommentCreate:
+      type: object
+      required:
+        - text
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: |
+            Trimmed (line breaks inside are kept), then it must be 1 to 500
+            characters; otherwise `VALIDATION_FAILED` with `field` `/text`.
+    CommentReplyPage:
+      type: object
+      required:
+        - data
+        - page
+      properties:
+        data:
+          type: array
+          description: Replies, oldest first.
+          items:
+            $ref: '#/components/schemas/Comment'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+    CommentLike:
+      type: object
+      description: A comment's likes after a like or unlike.
+      required:
+        - likeCount
+        - likedByMe
+      properties:
+        likeCount:
+          type: integer
+          minimum: 0
+        likedByMe:
+          type: boolean
   parameters:
     ClientPlatform:
       name: X-Client-Platform
@@ -4903,6 +7705,41 @@ components:
       schema:
         type: string
         format: uuid
+    SongId:
+      name: songId
+      in: path
+      required: true
+      description: A song's id (`Content.id` of an item of type `song`).
+      schema:
+        $ref: '#/components/schemas/Id'
+    AlbumId:
+      name: albumId
+      in: path
+      required: true
+      description: An album's id (`Content.id` of an item of type `album`).
+      schema:
+        $ref: '#/components/schemas/Id'
+    PlaylistId:
+      name: playlistId
+      in: path
+      required: true
+      description: A playlist's id (`Content.id` of an item of type `playlist`).
+      schema:
+        $ref: '#/components/schemas/Id'
+    ArtistId:
+      name: artistId
+      in: path
+      required: true
+      description: An artist's id (`Song.artist.id`, the id of the account that published the song).
+      schema:
+        $ref: '#/components/schemas/Id'
+    CommentId:
+      name: commentId
+      in: path
+      required: true
+      description: A comment's or a reply's id.
+      schema:
+        $ref: '#/components/schemas/Id'
   headers:
     ETag:
       description: Version of the returned resource, for `If-None-Match` / `If-Match`.

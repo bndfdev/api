@@ -1,0 +1,301 @@
+# The listener's library (/me): liked songs and playlists, as the player's
+# heart and Add to Playlist need them. Design notes: docs/api/PLAYER.md.
+
+meLikedSongs:
+  get:
+    operationId: listLikedSongs
+    tags: [Library]
+    summary: List the Liked songs
+    description: |
+      The Liked songs playlist: every song the user liked, the most
+      recently liked first, each with `likedAt` (the Liked songs screen and
+      the covers of its shortcut). A song stays listed when it later becomes
+      followers-only or loses its audio, with `playable: false`. A cursor
+      only works for 24 hours (`CURSOR_INVALID`). Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: A page of liked songs, the most recently liked first.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/LikedSongPage'
+            example:
+              data:
+                - id: 6650f1c2a4b7e9d3c1f00c21
+                  title: Northbound Hum
+                  artist: { id: 6650f1c2a4b7e9d3c1f00a22, name: Theo Brannick, image: null }
+                  album: null
+                  image: { url: 'https://cdn.bondfire.app/c/northbound-hum/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#FFFFFF', accent: '#747676', neutral: true } }
+                  durationMs: 176500
+                  waveform: [0.02, 0.33, 0.61, 0.66, 0.70, 0.57, 0.25, 0.23, 0.48, 0.58, 0.58, 0.77, 0.90, 0.64, 0.20, 0.02]
+                  transcriptLanguages: []
+                  listens: 913
+                  commentCount: 0
+                  latestComment: null
+                  liked: true
+                  followersOnly: false
+                  playable: true
+                  likedAt: '2026-11-12T21:03:00Z'
+              page: { nextCursor: null, hasMore: false, total: 1 }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meLikedSong:
+  put:
+    operationId: likeSong
+    tags: [Library]
+    summary: Like a song
+    description: |
+      The player's heart: puts the song in Liked songs. Idempotent: liking
+      a liked song changes nothing (it keeps its `likedAt`). The Liked songs
+      entry's `songCount` and `updatedAt` follow. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+      an id that is not a song).
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: unlikeSong
+    tags: [Library]
+    summary: Unlike a song
+    description: |
+      Takes the song out of Liked songs. Idempotent: a song that is not
+      liked (or no longer exists) answers `204` too. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403).
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meLibraryPlaylists:
+  get:
+    operationId: listLibraryPlaylists
+    tags: [Library]
+    summary: List the playlists in the user's library
+    description: |
+      Add to Playlist and the library: the user's own playlists, playlists
+      saved from others, and the Liked songs entry (`isLikedSongs: true`,
+      exactly one, there even when empty). Accounts only.
+
+      - `limit` goes up to 200 so the app can load the whole library in a
+        call or two; it sorts and searches on the device.
+      - `sort`: `recently_updated` (the default; `updatedAt`, newest
+        first), `recently_played` (`playedAt`, newest first, never played
+        last), `recently_saved` (`savedAt`, newest first) or `title` (A to
+        Z, ignoring case and accents). Liked songs is sorted like any other
+        entry. Ties keep a stable order.
+      - Only `editable` playlists (the user's own) can take songs; Liked
+        songs is filled by the heart only.
+      - A cursor only works for the same `sort` and for 24 hours
+        (`CURSOR_INVALID`).
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CURSOR_INVALID` (422).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          enum: [recently_updated, recently_played, recently_saved, title]
+          default: recently_updated
+      - name: limit
+        in: query
+        required: false
+        description: Page size (up to 200, so the whole library fits in a call or two).
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: A page of the library's playlists.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/LibraryPlaylistPage'
+            example:
+              data:
+                - id: liked_6650f1c2a4b7e9d3c1f00a12
+                  title: Liked songs
+                  image: null
+                  artwork: []
+                  songCount: 128
+                  updatedAt: '2026-11-12T21:03:00Z'
+                  savedAt: '2026-09-27T10:15:00Z'
+                  playedAt: '2026-11-13T09:58:21Z'
+                  isLikedSongs: true
+                  editable: false
+                - id: 6650f1c2a4b7e9d3c1f00d01
+                  title: Rainy Commute
+                  image: null
+                  artwork:
+                    - { url: 'https://cdn.bondfire.app/c/northbound-hum/512.jpg', width: 512, height: 512, status: ready, blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj', palette: { version: 1, seed: '#FFFFFF', accent: '#747676', neutral: true } }
+                    - { url: 'https://cdn.bondfire.app/a/tallow-bay/512.jpg', width: 512, height: 512, status: ready, blurhash: null, palette: null }
+                  songCount: 37
+                  updatedAt: '2026-11-10T08:05:00Z'
+                  savedAt: '2026-10-02T17:30:00Z'
+                  playedAt: '2026-11-11T07:45:00Z'
+                  isLikedSongs: false
+                  editable: true
+                - id: 6650f1c2a4b7e9d3c1f00d02
+                  title: Quiet Hours
+                  image: { url: 'https://cdn.bondfire.app/p/quiet-hours/512.jpg', width: 512, height: 512, status: ready, blurhash: null }
+                  artwork: []
+                  songCount: 24
+                  updatedAt: '2026-11-01T22:10:00Z'
+                  savedAt: '2026-10-20T12:00:00Z'
+                  playedAt: null
+                  isLikedSongs: false
+                  editable: false
+              page: { nextCursor: null, hasMore: false, total: 3 }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meLibrarySong:
+  get:
+    operationId: getSongLibraryState
+    tags: [Library]
+    summary: Get a song's heart and playlist states
+    description: |
+      One call for the player's heart and "+" button: whether the song is
+      in Liked songs, and which of the user's editable playlists hold it
+      (Liked songs not included). Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `CONTENT_NOT_FOUND` (404, also for
+      an id that is not a song).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The song's states in the user's library.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/SongLibraryState'
+            example:
+              liked: true
+              playlistIds: ['6650f1c2a4b7e9d3c1f00d01']
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+meLibrarySongPlaylists:
+  put:
+    operationId: setSongPlaylists
+    tags: [Library]
+    summary: Set which playlists hold a song
+    description: |
+      Save on Add to Playlist: makes `playlistIds` exactly the set of the
+      user's playlists, other than Liked songs, that hold the song. The
+      song is added at the end of the new ones and taken out of the
+      others, all or nothing. Answers with the saved set. Accounts only.
+
+      - The Liked songs id is ignored if sent (the heart owns it), and so
+        are duplicates. `[]` takes the song out of every playlist.
+      - Each playlist that changes gets a new `updatedAt` and `songCount`.
+      - Idempotent: the same set again changes nothing, so no
+        `Idempotency-Key` is needed.
+      - Unknown ids are reported before ones the user cannot edit. Nothing
+        is saved when the request fails.
+
+      Errors: `GUEST_NOT_ALLOWED` (403), `PLAYLIST_NOT_EDITABLE` (403, a
+      playlist that is not the user's own; `meta.playlistIds`),
+      `CONTENT_NOT_FOUND` (404, the song), `PLAYLIST_NOT_FOUND` (404, ids
+      that are not playlists in the user's library; `meta.playlistIds`).
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/SongPlaylists'
+          example:
+            playlistIds: ['6650f1c2a4b7e9d3c1f00d01', '6650f1c2a4b7e9d3c1f00d04']
+    responses:
+      '200':
+        description: The saved set.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/SongPlaylists'
+            example:
+              playlistIds: ['6650f1c2a4b7e9d3c1f00d01', '6650f1c2a4b7e9d3c1f00d04']
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404':
+        description: No such song (`CONTENT_NOT_FOUND`), or ids that are not playlists in the user's library (`PLAYLIST_NOT_FOUND`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+            example:
+              type: https://api.bondfire.app/errors/playlist-not-found
+              title: Some playlists were not found
+              status: 404
+              code: PLAYLIST_NOT_FOUND
+              requestId: req_01J8Z3K5QH
+              meta:
+                playlistIds: ['6650f1c2a4b7e9d3c1f00d09']
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }

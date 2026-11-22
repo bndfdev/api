@@ -8,6 +8,28 @@ Every change this API makes to the MongoDB database is recorded here, in the sam
 
 ---
 
+## 2026-11-20: Artist pages and following artists
+
+**Existing data affected:** none. Nothing in existing documents is written; `contents` and `users` are only read. Everything else below is new: one new collection.
+
+**New collection**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `follows` | One account following an artist (`PUT /v1/me/following/artists/{id}`): `followerId` (`users` id), `artistId` (`users` id of an account that has published a song), `followedAt` | `follower_artist` `{followerId: 1, artistId: 1}` unique (an artist once per follower; following twice at once stores one row; "does the viewer follow this artist"; how many artists an account follows, by its prefix); `artist_followers` `{artistId: 1, followedAt: -1, _id: -1}` (how many accounts follow an artist, by its prefix; also ready for a followers list, newest first, read by key) | Unfollowing deletes the row. Account deletion (not built) must delete the rows where the account is the follower or the artist. Rows of an account that is no longer an artist stay until the follower unfollows (which always works); they still count in its `followerCount` if it publishes again. About 100 bytes per row; at most 60 follows a minute per account. |
+
+**What the reads use:** the page reads the account from `users` by `_id` (projection `{name, avatar, banner}`); "has this account published a song" is one `contents` `exists({ownerId, type: 'song'})` (the `owner_recent` index, by `ownerId`); the releases are `contents` `{ownerId, type: {$in: ['album', 'song']}, hidden: {$ne: true}}` sorted `{createdAt: -1, _id: -1}` with a limit of 200 (`owner_recent`, no sort in memory); the albums' song counts and plays are one `$group` over `contents` `{albumId: {$in}, ownerId, type: 'song'}` (`album_order`); the songs' albums by `_id`. The two follow counts are `countDocuments` on `follows` (each on an index prefix), one per page view: fine at today's sizes; an artist with very many followers would want a stored counter later (a `users` field, which would be a new entry here). Nothing is written to `users` or `contents`.
+
+**Writes and concurrency:** one `insertOne` per follow (a duplicate-key error from `follower_artist` means "already followed", and the first `followedAt` is kept) and one `deleteOne` per unfollow. No transactions, no counters.
+
+**Rollback:**
+- Stop the new code.
+- Drop `follows`.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
 ## 2026-11-17: Google and Facebook identities and account-link tokens
 
 **Existing data affected:** existing user documents are unchanged. Migration 16
@@ -55,6 +77,117 @@ index requires resolving multiple documents with an absent email first. The
 optional identity array and `link_tokens` collection can remain until the
 database owner approves removing them; do not remove identities while accounts
 depend on them to sign in.
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
+## 2026-11-13: Media player, step 3: comments on songs (comments, replies, comment likes)
+
+**Existing data affected:**
+- **`contents.commentCount` (step 1's optional field) is now written, only on songs**, by posting and deleting comments (`POST /v1/songs/{id}/comments`, `POST /v1/comments/{id}/replies`, `DELETE /v1/comments/{id}`): one `updateOne({_id, type: 'song'}, [pipeline])` per change, adding or taking away the number of comments and replies stored or deleted, in one atomic step that never goes below 0 (`$max: [0, $add: [current, delta]]`; a value that is not a number counts as 0, so the field is created at the first comment). Written with `timestamps: false`: the song's `updatedAt` does not move. Nothing else in existing documents changes. No migration: every song stored today has no comments and reads as 0.
+- Everything else below is new: two new collections.
+
+**New collections**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `comments` | A comment on a song or a reply to one: `songId` (`contents` id), `parentId` (the top-level comment for a reply, `null` for a top-level comment; replies are one level deep), `authorId` (`users` id), `text` (trimmed, 1 to 500 characters), `likeCount` and `replyCount` (counters, see below), `createdAt` | `song_thread` `{songId: 1, parentId: 1, createdAt: -1, _id: -1}`: one index serves a song's top-level comments newest first (`{songId, parentId: null}`), a comment's replies oldest first (`{songId, parentId}`, the index read backwards), the count of a song's top-level comments, its newest top-level comment (`Song.latestComment`, one lookup per song) and the replies deleted with their comment. Both page orders end in `_id`, so pages are read by key and no sort happens in memory. Comments are read by `_id` otherwise. | Deleting a comment deletes the row; deleting a top-level comment deletes its replies (`{songId, parentId}` ids, then `deleteMany({_id: {$in}})`). Account deletion (not built) must delete or anonymise the user's comments (no index by author yet: one would be added with that feature). Rows whose song no longer exists are not shown (nothing deletes songs yet). About 300 bytes per comment plus its text; at most 10 posts a minute per account. |
+| `comment_likes` | One like of a comment or a reply: `commentId`, `userId`, `createdAt` | `comment_user` `{commentId: 1, userId: 1}` unique (a comment liked once per user; liking twice at once stores one row; "which of these comments did the viewer like" for a page, one `{commentId: {$in}, userId}` read; a deleted comment's likes) | Unliking deletes the row; deleting a comment (and a top-level comment's replies) deletes their likes. Account deletion must delete the user's rows (no index by user yet, as above). About 100 bytes per like. |
+
+**Counters and concurrency:** `contents.commentCount` (every comment on the song, replies included), `comments.replyCount` (a top-level comment's replies) and `comments.likeCount` are changed only by atomic update pipelines (the same `$max: [0, ...]` step), never read and written back. Each moves up **before** its row is inserted and down only **after** a row was really deleted (by `deletedCount`), so with posts, likes and deletes running at once a counter is never below the real number and settles on it; a failed insert puts it back. No transactions (nothing else in this API uses them). A reply inserted while its top-level comment was being deleted is found by the replying request (it checks the comment still exists after inserting) and deleted again, so no reply outlives its comment; a like likewise. If the server stops between two of these writes, a counter can be left one too high (never too low).
+
+**What the reads use:** a song and its album by `_id` (`contents`, as before); comment authors from `users` by `_id` with the projection `{name, avatar}`, one query per page; the viewer's likes, one `comment_likes` query per page. Nothing is written to `users`.
+
+Locally, `tools.local/e2e/seed_player.js` (not in this repo) writes demo comments, replies and likes marked `seed: 'player'` (and two demo `users` accounts with invented names, also marked), and refuses any non-localhost database.
+
+**Rollback:**
+- Stop the new code.
+- Drop `comments` and `comment_likes`.
+- `contents.commentCount` can stay (step 1's code reads it as the count), or be cleared with `db.contents.updateMany({type: 'song'}, { $unset: { commentCount: '' } })` (it then reads as 0).
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
+## 2026-11-13: Media player, step 2: the library (likes, library playlists, Add to Playlist)
+
+**Existing data affected:**
+- **`contents.songCount` (an existing field) is now written, only on playlists**, by Add to Playlist (`PUT /v1/me/library/songs/{id}/playlists`): each playlist the request changes gets its number of `playlist_items` after the change, in one `bulkWrite` of `updateOne({_id, type: 'playlist'}, {$set: {songCount, songsUpdatedAt}})`. The model's timestamps also move those documents' `updatedAt`. Only playlists of the requesting account are written; nothing else in existing documents changes. No migration.
+- **`playlist_items` (step 1's collection) is now written** by the same request: one row inserted per playlist the song goes into (after the playlist's highest `position`), one row deleted per playlist it leaves. Nothing else writes there.
+- Everything else below is new: one optional field on playlists and three new collections.
+
+**`contents`: new optional field** (no default; absent reads as before)
+
+| Field | On | Purpose |
+| --- | --- | --- |
+| `songsUpdatedAt` | playlists | Date: when Add to Playlist last added a song to or took one out of the playlist. The player's `updatedAt` for a playlist is the later of this and its newest item's `addedAt` (its creation while it has neither); the document's own `updatedAt` is not used, as it moves with any change (Hide Content too). |
+
+**New collections**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `song_likes` | One song a user liked: `userId`, `songId` (`contents` id), `likedAt` | `user_song` `{userId: 1, songId: 1}` unique (a song once per user; liking twice at once stores one row; "which of these songs did the viewer like" for every `Song`); `user_liked` `{userId: 1, likedAt: -1, _id: -1}` (Liked songs pages, newest first, by key) | Unliking deletes the row. Account deletion (not built) must delete the user's rows; a deleted song's rows are left out when read. About 100 bytes per like. |
+| `library_entries` | What a user's library keeps about a playlist or Liked songs: `userId`, `kind` (`playlist` or `liked_songs`), `playlistId` (null for Liked songs), `savedAt` (playlists: when saved, or an own playlist's creation), `playedAt` (newest play from it), `unlikedAt` (Liked songs: the last unlike) | `user_playlist` `{userId: 1, playlistId: 1}` unique (one row per playlist per user, and one Liked songs row, whose `playlistId` is null) | A row is made when an own playlist or Liked songs is first played from, or a song is first unliked; saved playlists' rows would be made by saving, which v1 does not specify yet (locally, `tools.local/e2e/seed_player.js` writes some). Rows are only updated with `$max` (times never move back). Account deletion must delete the user's rows; rows whose playlist is gone are left out when read. |
+| `library_locks` | One account's Add to Playlist lock while its writes run (a few milliseconds): `_id` (the account's id), `owner` (a random value of the request holding it), `expiresAt` | `expires` `{expiresAt: 1}` TTL (`expireAfterSeconds: 0`) | Deleted by the request when it ends; a lock left by a crash is taken over after its 10-second lease and removed by the TTL monitor soon after. At most one small document per account, usually none. |
+
+**What the new reads use:** a user's playlists are `contents` `{ownerId, type: 'playlist'}` (the existing `owner_recent` index, by `ownerId`); saved playlists and songs by `_id`; a playlist's size and newest item are one `$group` over `playlist_items` `{playlistId: {$in}}` (`playlist_song` or `playlist_order`); which of the user's playlists hold a song is `{playlistId: {$in}, songId}` (`playlist_song`); a playlist's last position is one `playlist_order` lookup read backwards. The account's creation time is read from `users` by `_id` (projection `{createdAt}`); nothing is written to `users`.
+
+**Writes and concurrency:** no transactions (nothing else in this API uses them). Add to Playlist validates every id first, then runs under the account's lock: it inserts and deletes items in one unordered `bulkWrite` (the `playlist_song` unique index refuses a duplicate), then writes the counts. If any of that fails, it deletes what it inserted, puts back what it deleted (same `_id`, `position` and `addedAt`) and restores `songCount` and `songsUpdatedAt`, then answers 500.
+
+Locally, `tools.local/e2e/seed_player.js` (not in this repo) writes demo rows marked `seed: 'player'` into these collections too, and refuses any non-localhost database.
+
+**Rollback:**
+- Stop the new code.
+- Drop `song_likes`, `library_entries` and `library_locks`.
+- `songsUpdatedAt` can stay (nothing else reads it), or be removed with `db.contents.updateMany({type: 'playlist'}, { $unset: { songsUpdatedAt: '' } })`.
+- `playlist_items` rows added or removed by Add to Playlist, and the `songCount` values it wrote, stay as they are (they are users' own playlists; there is no record of the previous state to go back to).
+
+**Reviewed by:** _pending (database owner)_
+
+---
+
+## 2026-11-13: Media player, step 1: listening (songs, albums, playlists, transcripts, listens)
+
+**Existing data affected:**
+- **`contents.listens` (an existing field) is now written**, only on songs: each listen that counts (`POST /v1/me/listens`, 30 seconds played or played to the end) adds 1, with one `bulkWrite` of `updateOne({_id, type: 'song'}, {$inc: {listens: n}})` per batch, right after its events are stored. Nothing else in existing documents changes. No migration.
+- Everything else below is new: optional fields that nothing stored today has (every existing item reads as before: a song with no `audio` is described with `playable: false`), one new index, and three new collections.
+
+**`contents`: new optional fields** (no defaults, so documents created through the model do not get them; the player reads values in another shape as their defaults)
+
+| Field | On | Purpose |
+| --- | --- | --- |
+| `audio` | songs | `{key, mimeType, sizeBytes, durationMs, status, uploadedAt}`: the audio file by storage key (never an address), its type, size and length, and `status` `processing`, `ready` or `failed`. The player streams it only when `ready` (`GET /v1/songs/{id}/playback` builds the address from the key). |
+| `waveform` | songs | Array of numbers from 0 to 1 (128, made when the audio is processed): the seek bar's loudness. |
+| `transcriptLanguages` | songs | Array of language tags with a transcript in `transcripts`, the original first. Kept in step with `transcripts` by whatever writes them. |
+| `albumId`, `trackNumber` | songs | The album the song is on (an ObjectId of a `contents` item of type `album`, same owner) and its place there (1, 2, ...). |
+| `commentCount` | songs | Integer counter for the comments (step 3 writes it); absent reads as 0. |
+| `image.palette`, `image.blurhash` | songs, albums, playlists | The artwork's colours (`{version, seed, accent, neutral}`, as for avatars) and BlurHash, inside the existing `image` sub-document. Worked out when the artwork is stored; absent reads as `null`. |
+
+**`contents`: new index**
+
+| Name | Keys | Options | Serves |
+| --- | --- | --- | --- |
+| `album_order` | `{albumId: 1, trackNumber: 1, _id: 1}` | partial: `{albumId: {$exists: true}}` (only songs on an album are in it) | `GET /v1/albums/{id}`: `{albumId, ownerId, type: 'song'}` sorted by `trackNumber`, `_id`. Nothing stored today has `albumId`, so it builds empty. |
+
+The other player reads of `contents` are by `_id` (`{_id: {$in: [...]}}`, at most 50 ids for `GET /v1/songs`, or a playlist's song ids), served by the existing `_id` index. The player also reads `users` by `_id` with the projection `{name, avatar}` (artists and playlist owners), and writes nothing there.
+
+**New collections**
+
+| Collection | Holds | Indexes | Clean-up |
+| --- | --- | --- | --- |
+| `playlist_items` | A playlist's songs: `playlistId` and `songId` (`contents` ids), `position` (number; a song added later gets a higher one), `addedAt` | `playlist_song` `{playlistId: 1, songId: 1}` unique (a song once per playlist); `playlist_order` `{playlistId: 1, position: 1, _id: 1}` (paging) | None yet. Read only in this step (nothing in v1 writes it; Add to Playlist, step 2, will). Whatever deletes playlists or songs later (account deletion) must delete their items. |
+| `transcripts` | A song's timed words in one language: `songId`, `language` (tag), `translatedFrom` (the original's tag for a translation, `null` for the original), `lines` (each `{words: [{text, startMs, endMs}]}` or `{text, startMs, endMs}`; the model refuses blank text and times that go back), `updatedAt` | `song_language` `{songId: 1, language: 1}` unique | None yet. Read only in this step (no upload endpoint). |
+| `listens` | One reported listen: `listenerId` (a `users` or `guest_accounts` id) and `listenerType` (`user` or `guest`), `songId`, `listenedMs`, `completed`, `endedAt` (the device's time), `source` (`{type, id}` or null), `counted` (met the counting rule), `receivedAt` | `listener_song_end` `{listenerId: 1, songId: 1, endedAt: 1}` unique: a resend is refused by the index and so never counted twice | **None yet: retention is an open question** (`docs/api/PLAYER.md`). A TTL on `receivedAt` can be added once decided; it must be longer than the 30 days an event is accepted, or a late resend would count again. Grows by one small document (about 200 bytes) per listen, at most 50 per request and 60 requests a minute per listener. |
+
+Locally, `tools.local/e2e/seed_player.js` (not in this repo) writes demo rows marked `seed: 'player'` into these collections and `contents`, and refuses any non-localhost database.
+
+**Rollback:**
+- Stop the new code.
+- Drop `playlist_items`, `transcripts` and `listens`.
+- Drop the `album_order` index: `db.contents.dropIndex('album_order')`.
+- The new `contents` fields can stay (nothing else reads them), or be removed with `db.contents.updateMany({}, { $unset: { audio: '', waveform: '', transcriptLanguages: '', albumId: '', trackNumber: '', commentCount: '', 'image.palette': '', 'image.blurhash': '' } })`.
+- Listens already added to `contents.listens` stay added (the raw events in `listens` say which; count them per song before dropping it if the numbers must be rolled back).
 
 **Reviewed by:** _pending (database owner)_
 

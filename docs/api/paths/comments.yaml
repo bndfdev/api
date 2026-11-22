@@ -1,0 +1,334 @@
+# Comments on songs: the player drawer's Comments tab and the latest-comment
+# pill. Design notes: docs/api/PLAYER.md.
+
+songComments:
+  get:
+    operationId: listSongComments
+    tags: [Comments]
+    summary: List a song's comments
+    description: |
+      The Comments tab: top-level comments, newest first, each with
+      `replyCount` and its first replies (up to 3, oldest first). More
+      replies come from `GET /comments/{commentId}/replies`. The app loads
+      3, then pages of 10 (`limit`). Guests allowed.
+
+      - `commentCount` counts every comment, replies included (the tab
+        label); `page.total` counts the top-level comments only.
+      - A cursor only works for the same song and for 24 hours
+        (`CURSOR_INVALID`).
+
+      Errors: `CONTENT_RESTRICTED` (403, followers-only song the viewer may
+      not play), `CONTENT_NOT_FOUND` (404), `CURSOR_INVALID` (422).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: A page of top-level comments, newest first.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/CommentPage'
+            example:
+              data:
+                - id: 6650f1c2a4b7e9d3c1f00e01
+                  parentId: null
+                  author: { id: 6650f1c2a4b7e9d3c1f00a12, name: Amelia Jane, avatar: null }
+                  text: The second half of this one stays with me all day.
+                  createdAt: '2026-11-12T18:40:00Z'
+                  likeCount: 12
+                  likedByMe: false
+                  replyCount: 1
+                  replies:
+                    - id: 6650f1c2a4b7e9d3c1f00e02
+                      parentId: 6650f1c2a4b7e9d3c1f00e01
+                      author: { id: 6650f1c2a4b7e9d3c1f00a23, name: null, avatar: null }
+                      text: Same here, it was on repeat on my walk home.
+                      createdAt: '2026-11-12T19:02:00Z'
+                      likeCount: 3
+                      likedByMe: true
+                      replyCount: 0
+                      isMine: true
+                  isMine: false
+              page: { nextCursor: 'eyJvIjoxfQ', hasMore: true, total: 412 }
+              commentCount: 549
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403':
+        description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  post:
+    operationId: postSongComment
+    tags: [Comments]
+    summary: Comment on a song
+    description: |
+      Posts a top-level comment as the signed-in user. `text` is trimmed
+      (line breaks inside are kept) and must then be 1 to 500 characters.
+      Answers with the comment as saved (`isMine: true`, no replies). At
+      most 10 a minute per account, comments and replies together.
+      Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+      `CONTENT_NOT_FOUND` (404), `VALIDATION_FAILED` (422, blank or too
+      long; `field` `/text`); `IDEMPOTENCY_IN_PROGRESS` (409) and
+      `IDEMPOTENCY_KEY_REUSED` (422) as described on `Idempotency-Key`.
+    x-rate-limit:
+      - { key: account, limit: 10, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/SongId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/CommentCreate'
+          example:
+            text: The quiet bridge before the last chorus is perfect.
+    responses:
+      '201':
+        description: The comment as saved.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Comment'
+            example:
+              id: 6650f1c2a4b7e9d3c1f00e05
+              parentId: null
+              author: { id: 6650f1c2a4b7e9d3c1f00a12, name: Amelia Jane, avatar: null }
+              text: The quiet bridge before the last chorus is perfect.
+              createdAt: '2026-11-13T10:01:00Z'
+              likeCount: 0
+              likedByMe: false
+              replyCount: 0
+              replies: []
+              isMine: true
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+commentReplies:
+  get:
+    operationId: listCommentReplies
+    tags: [Comments]
+    summary: List a comment's replies
+    description: |
+      "View more replies" under a comment: its replies, oldest first. The
+      first page starts at the oldest reply, so it repeats the ones the
+      comment already carries; the app skips those it has. A reply has no
+      replies of its own (its list is empty). `page.total` is the
+      comment's `replyCount`. Guests allowed.
+
+      Errors: `CONTENT_RESTRICTED` (403, the song is followers-only and the
+      viewer may not play it), `COMMENT_NOT_FOUND` (404), `CURSOR_INVALID`
+      (422).
+    x-rate-limit:
+      - { key: account, limit: 120, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/CommentId'
+      - $ref: '../components/parameters.yaml#/Limit'
+      - $ref: '../components/parameters.yaml#/Cursor'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: A page of replies, oldest first.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/CommentReplyPage'
+            example:
+              data:
+                - id: 6650f1c2a4b7e9d3c1f00e02
+                  parentId: 6650f1c2a4b7e9d3c1f00e01
+                  author: { id: 6650f1c2a4b7e9d3c1f00a23, name: null, avatar: null }
+                  text: Same here, it was on repeat on my walk home.
+                  createdAt: '2026-11-12T19:02:00Z'
+                  likeCount: 3
+                  likedByMe: false
+                  replyCount: 0
+                  isMine: false
+              page: { nextCursor: null, hasMore: false, total: 1 }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403':
+        description: The song is followers-only and the viewer may not play it (`CONTENT_RESTRICTED`).
+        content:
+          application/problem+json:
+            schema:
+              $ref: '../components/schemas.yaml#/Problem'
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  post:
+    operationId: postCommentReply
+    tags: [Comments]
+    summary: Reply to a comment
+    description: |
+      Replies are one level deep: replying to a reply adds the new reply to
+      the same top-level comment, and the answer's `parentId` says which.
+      Same text rules and limit as `POST /songs/{songId}/comments` (10 a
+      minute, comments and replies together). Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+      `COMMENT_NOT_FOUND` (404), `VALIDATION_FAILED` (422, blank or too
+      long; `field` `/text`); `IDEMPOTENCY_IN_PROGRESS` (409) and
+      `IDEMPOTENCY_KEY_REUSED` (422) as described on `Idempotency-Key`.
+    x-rate-limit:
+      - { key: account, limit: 10, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/CommentId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+      - $ref: '../components/parameters.yaml#/IdempotencyKey'
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/CommentCreate'
+          example:
+            text: Agreed, that part gets me every time.
+    responses:
+      '201':
+        description: The reply as saved.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/Comment'
+            example:
+              id: 6650f1c2a4b7e9d3c1f00e06
+              parentId: 6650f1c2a4b7e9d3c1f00e01
+              author: { id: 6650f1c2a4b7e9d3c1f00a12, name: Amelia Jane, avatar: null }
+              text: Agreed, that part gets me every time.
+              createdAt: '2026-11-13T10:03:00Z'
+              likeCount: 0
+              likedByMe: false
+              replyCount: 0
+              isMine: true
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '409': { $ref: '../components/responses.yaml#/Conflict' }
+      '415': { $ref: '../components/responses.yaml#/UnsupportedMediaType' }
+      '422': { $ref: '../components/responses.yaml#/Unprocessable' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+commentLike:
+  put:
+    operationId: likeComment
+    tags: [Comments]
+    summary: Like a comment or a reply
+    description: |
+      Idempotent: liking it again changes nothing. Answers with its likes
+      after the change. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+      `COMMENT_NOT_FOUND` (404).
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/CommentId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The comment's likes after the change.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/CommentLike'
+            example:
+              likeCount: 13
+              likedByMe: true
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+  delete:
+    operationId: unlikeComment
+    tags: [Comments]
+    summary: Unlike a comment or a reply
+    description: |
+      Idempotent: unliking one not liked changes nothing. Answers with its
+      likes after the change. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED`, `CONTENT_RESTRICTED` (403),
+      `COMMENT_NOT_FOUND` (404).
+    x-rate-limit:
+      - { key: account, limit: 60, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/CommentId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '200':
+        description: The comment's likes after the change.
+        content:
+          application/json:
+            schema:
+              $ref: '../components/schemas.yaml#/CommentLike'
+            example:
+              likeCount: 12
+              likedByMe: false
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+comment:
+  delete:
+    operationId: deleteComment
+    tags: [Comments]
+    summary: Delete a comment or a reply
+    description: |
+      For its author, and for the song's owner (the artist, `Song.artist.id`).
+      Deleting a top-level comment deletes its replies too; `commentCount`
+      and `replyCount` drop at once. A comment already deleted is
+      `COMMENT_NOT_FOUND`, which the app treats as done. Accounts only.
+
+      Errors: `GUEST_NOT_ALLOWED`, `FORBIDDEN` (403, someone else's comment
+      on someone else's song), `COMMENT_NOT_FOUND` (404).
+    x-rate-limit:
+      - { key: account, limit: 30, window: 1m }
+    parameters:
+      - $ref: '../components/parameters.yaml#/CommentId'
+      - $ref: '../components/parameters.yaml#/ClientPlatform'
+      - $ref: '../components/parameters.yaml#/ClientVersion'
+    responses:
+      '204': { $ref: '../components/responses.yaml#/NoContent' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '403': { $ref: '../components/responses.yaml#/Forbidden' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '426': { $ref: '../components/responses.yaml#/UpgradeRequired' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }

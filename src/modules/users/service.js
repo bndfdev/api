@@ -222,6 +222,6 @@ function isSuspended(user, at) {
 }
 
 module.exports = {
-  toImage, toUserResponse, toGuestResponse, buildOnboarding, isSuspended,
+  toImage, paletteOrNull, toUserResponse, toGuestResponse, buildOnboarding, isSuspended, BLURHASH,
   ONBOARDING_STEPS, GENDERS, NO_CONSENTS, NAME_MAX_LENGTH, LOCATION_MAX_LENGTH, ACCOUNT_PRIVACY, LOCATION_SHARING,
 };
